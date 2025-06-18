@@ -6,9 +6,6 @@ set -e
 # 克隆next主题
 git clone https://github.com/next-theme/hexo-theme-next.git ./themes/next
 
-# 替换next主题配置文件
-cat ./_next_theme_config.yml > ./themes/next/_config.yml 
-
 # 安装所有依赖
 npm install
 
