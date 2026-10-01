@@ -1,3 +1,2 @@
 # 文章及附件按字节保存，避免 checkout 或提交时转换换行。
-content/articles/** -text
-public/articles/** -text
+articles/** -text

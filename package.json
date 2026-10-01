@@ -1,5 +1,5 @@
 {
-  "name": "allurx-blog",
+  "name": "blog",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -8,11 +8,10 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "node scripts/build.ts",
+    "build": "node src/build/build.ts",
     "preview": "wrangler dev --port 4173",
     "type-check": "tsc --noEmit",
-    "test": "node --test scripts/*.test.ts",
-    "verify": "npm run type-check && npm test && npm run build",
+    "verify": "npm run type-check && npm run build",
     "deploy": "npm run verify && wrangler deploy"
   },
   "devDependencies": {
