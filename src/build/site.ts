@@ -1,6 +1,7 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readArticles, type ArticleAsset } from './content.ts';
+import type { ArticleAsset } from './content/article.ts';
+import { readArticles } from './content/read.ts';
 
 /**
  * 开发与生产共用内容和资源清单。文章资源按文章 URL 发布，public 文件保持根路径。

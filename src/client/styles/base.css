@@ -1,0 +1,132 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--canvas);
+  color: var(--color);
+  font-family: var(--sans);
+  -webkit-text-size-adjust: 100%;
+  scrollbar-gutter: stable;
+  scroll-padding-top: var(--anchor-offset);
+}
+
+body {
+  margin: 0;
+}
+[hidden] {
+  display: none !important;
+}
+::selection {
+  background: var(--selection);
+}
+
+a {
+  color: var(--accent);
+  text-underline-offset: .25em;
+  text-decoration-thickness: 1px;
+}
+
+button, input, select {
+  font: inherit;
+}
+button, select {
+  cursor: pointer;
+}
+button {
+  color: inherit;
+}
+button:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+input, select {
+  min-width: 0;
+}
+option {
+  color: var(--color);
+  background: var(--panel);
+}
+a, button, select, summary {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: var(--selection);
+}
+
+.icon {
+  display: inline-block;
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+  vertical-align: -.2em;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+.skip-link {
+  position: fixed;
+  top: -6rem;
+  left: var(--gutter);
+  z-index: 100;
+  padding: .75rem 1rem;
+  border-radius: var(--control-radius);
+  background: var(--panel);
+}
+.skip-link:focus {
+  top: .75rem;
+}
+.eyebrow {
+  margin: 0 0 .75rem;
+  color: var(--accent);
+  font-size: .8rem;
+  font-weight: 600;
+  line-height: 1.6;
+  letter-spacing: .04em;
+}
+
+.button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .6rem;
+  min-height: 44px;
+  margin-top: 1rem;
+  padding: .65rem 1rem;
+  border: 1px solid var(--control-border);
+  border-radius: var(--control-radius);
+  background: var(--panel);
+  color: var(--color);
+  font-size: .875rem;
+  text-decoration: none;
+}
+
+.button-link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.button-link:active {
+  background: var(--accent-soft);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* 颜色同步切换，避免主题切换时背景与文字分别过渡而短暂失去对比。 */
+  .icon {
+    transition: transform 160ms ease;
+  }
+}
+
+@media print {
+  .skip-link, #copy-status {
+    display: none !important;
+  }
+  a {
+    color: inherit;
+  }
+}

@@ -12,7 +12,7 @@
   },
   "routes": [
     {
-      "pattern": "allurx.io",
+      "pattern": "blog.allurx.io",
       "custom_domain": true
     }
   ]

@@ -8,15 +8,22 @@
 
 | 修改内容 | 维护位置 |
 | --- | --- |
-| 文章目录与元数据契约 | [src/build/content.ts](../src/build/content.ts) |
-| Markdown、摘要、目录与公式 | [src/build/markdown.ts](../src/build/markdown.ts) |
-| 页面模板、RSS 与 sitemap | [src/build/pages.ts](../src/build/pages.ts) |
+| 文章元数据与正文契约 | [src/build/content/article.ts](../src/build/content/article.ts) |
+| 文章包读取、附件与排序 | [src/build/content/read.ts](../src/build/content/read.ts) |
+| Markdown 文本与摘要 | [src/build/markdown/text.ts](../src/build/markdown/text.ts) |
+| Markdown、目录、公式与代码高亮 | [src/build/markdown/render.ts](../src/build/markdown/render.ts)、[highlight.ts](../src/build/markdown/highlight.ts) |
+| HTML 转义与原始标签处理 | [src/build/markdown/html.ts](../src/build/markdown/html.ts) |
+| 页面装配、RSS 与 sitemap | [src/build/pages.ts](../src/build/pages.ts) |
+| 页面壳、文章与列表模板 | [src/build/templates/](../src/build/templates/) |
 | 内容与资源清单、本地链接校验 | [src/build/site.ts](../src/build/site.ts)、[src/build/links.ts](../src/build/links.ts) |
 | 生产输出、开发服务器接入 | [src/build/build.ts](../src/build/build.ts)、[src/build/dev-plugin.ts](../src/build/dev-plugin.ts) |
-| 浏览器交互与样式 | [src/client/main.ts](../src/client/main.ts)、[src/client/styles.css](../src/client/styles.css) |
+| 浏览器增强入口 | [src/client/main.ts](../src/client/main.ts)；主题、搜索、代码复制与目录分别由同目录下的独立模块初始化 |
+| 视觉与响应式样式 | [src/client/styles.css](../src/client/styles.css) 汇集 [styles/](../src/client/styles/) 中的颜色尺寸、公共背景、控件、页面壳、列表及文章样式 |
 | Vite 配置和插件接入 | [vite.config.ts](../vite.config.ts) |
 
 `public/` 保存全站资源。图标以 `public/favicon.svg` 为维护源，`favicon.ico` 和 `apple-touch-icon.png` 是由它导出的兼容文件；修改图标时同步导出这两个文件。响应头在 `public/_headers` 中维护。
+
+代码高亮由构建时的 highlight.js 生成，浏览器仅加载对应主题样式。支持语言在 `markdown/highlight.ts` 中显式注册；无语言标记或不支持的语言保留为转义后的纯文本，不自动猜测。
 
 ## 验证与预览
 

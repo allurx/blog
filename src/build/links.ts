@@ -36,7 +36,7 @@ function htmlReferences(html: string): HtmlReferences {
  * 按最终输出检查本地链接。路径区分大小写，避免 Windows 上存在的文件在部署后失效。
  * documents 与 assetPaths 均使用相对于输出目录的正斜杠路径；非 HTML 资源只检查存在性。
  */
-export function checkLocalLinks(documents: ReadonlyMap<string, string>, assetPaths: Iterable<string>, siteUrl = "https://allurx.io"): void {
+export function checkLocalLinks(documents: ReadonlyMap<string, string>, assetPaths: Iterable<string>, siteUrl: string): void {
     const origin = new URL(siteUrl).origin;
     const errors: string[] = [];
     const paths = new Set<string>();

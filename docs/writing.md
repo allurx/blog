@@ -4,10 +4,10 @@
 
 ## 文章目录与元数据
 
-每篇文章独立放在 `articles/YYYY-MM/ID/` 中，正文与配图、附件共同维护，例如：
+每篇文章独立放在 `articles/<slug>/` 中。`slug` 是简短、明确的英文主题名称，目录内共同维护正文与配图、附件，例如：
 
 ```text
-articles/2026-09/2026-09-07-java-volatile-increment-lost-update/
+articles/volatile-increment/
 ├─ index.md
 ├─ images/
 │  └─ increment-interleaving.png
@@ -20,7 +20,6 @@ articles/2026-09/2026-09-07-java-volatile-increment-lost-update/
 ---
 title: 为什么 volatile 不能保证自增原子性
 date: 2026-09-07
-id: 2026-09-07-java-volatile-increment-lost-update
 domain: Java
 tags: [Java, Concurrency, Volatile]
 ---
@@ -32,9 +31,10 @@ tags: [Java, Concurrency, Volatile]
 如果两个线程都读到 0，各自计算出 1 再写回，最终结果就是 1。
 ```
 
-- `title`、`date`、`id`、`domain` 和字符串数组 `tags` 必填，标签不带 `#`。
-- `id` 使用日期加小写英文主题标识，与文章目录名一致；月份目录与 `date` 一致。文章地址为 `/articles/ID/`。
-- 首次发表不填 `updated`；修订保留原日期和 ID，以 `updated` 记录实际修订日期。
+- `title`、`date`、`domain` 和字符串数组 `tags` 必填，标签不带 `#`；不在元数据中重复填写 `id`。
+- 目录名是文章的唯一标识，使用小写英文、数字和连字符，突出主题或标准技术名称，不添加日期和无关前缀。公开地址直接使用 `/<slug>/`，例如 `/volatile-increment/`。
+- 目录名不能与现有文章重名，也不能占用 `archives`、`assets`、`favicon`、`index`、`404`、`rss`、`sitemap`、`robots`、`apple-touch-icon`、`cdn-cgi` 等站点保留路径。
+- 首次发表不填 `updated`；修订保留原日期和目录名，以 `updated` 记录实际修订日期。修改标题不改变文章地址。
 - 正文标题从二级开始，文章标题由页面模板生成。数学公式在构建时转为 MathML。
 
 作者本人的署名、示例包名和个人标识使用 `allurx`，Java 示例命名空间使用 `io.allurx`；保留他人署名和版权信息。
@@ -56,6 +56,8 @@ tags: [Java, Concurrency, Volatile]
 ## 配图与附件
 
 正文只引用实际交付且读者可访问的材料，不使用私有或临时文件地址。同目录材料使用相对链接，例如 `![两个线程的自增交错](./images/increment-interleaving.png)` 和 `[完整示例](./IncrementDemo.java)`。图片放在 `images/`，采用简短、描述内容的小写连字符文件名；代码附件遵循对应语言的命名要求。
+
+引用其他文章时使用其公开路径，例如 `[volatile 自增](/volatile-increment/)`，不写源文件路径或固定域名。
 
 **注意事项**：文章目录内的附件会按原相对路径公开，只放读者需要的文件。`index.html` 保留给生成页面，`index.md` 不复制到发布目录；不维护旧资源路径、兼容副本或重定向。
 

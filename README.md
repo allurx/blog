@@ -1,6 +1,6 @@
 # allurx 的博客
 
-面向软件工程读者的静态博客，发布于 [allurx.io](https://allurx.io)。文章以 Markdown 维护，构建时生成完整 HTML；浏览器脚本提供搜索、主题和代码复制，无 JavaScript 时仍可阅读和打印。
+面向软件工程读者的静态博客，站点地址配置为 [blog.allurx.io](https://blog.allurx.io)。文章以 Markdown 维护，构建时生成完整 HTML；浏览器脚本提供搜索、主题和代码复制，无 JavaScript 时仍可阅读和打印。
 
 ## 本地运行
 
