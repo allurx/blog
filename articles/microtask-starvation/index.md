@@ -1,7 +1,7 @@
 ---
 title: "微任务为什么会饿死定时器"
 date: 2026-10-01
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "JavaScript"
 tags: ["EventLoop", "Microtask", "Performance"]
 ---
@@ -104,7 +104,7 @@ console.log('immediate: timer saw all work =', immediate.timerSawAllWork);
 console.log('both sums match =', microtask.sum === immediate.sum);
 ```
 
-2026-10-01 修订时，在 Windows 的 Node.js v26.8.2 中运行该程序，得到：
+以 Windows、Node.js v26.8.2 为运行环境，可以观察到下面这种输出；其中 `immediate` 一行取决于实际调度与计时：
 
 ```text
 microtask: timer saw all work = true
@@ -112,7 +112,7 @@ immediate: timer saw all work = false
 both sums match = true
 ```
 
-第一组的整个微任务链先执行完，定时器才能观察结果。第二组在工作尚未结束时执行了定时器，说明这次运行中的事件循环得到了处理其他回调的机会。代码只对第一组的顺序做断言，没有断言第二组必须在第几批插入定时器：批次数、机器速度和计时条件变化后，观察结果可能不同。这不是吞吐量基准，也不代表真实浏览器的输入或绘制已经验证。
+第一组的整个微任务链先执行完，定时器才能观察结果。第二组若输出 false，说明定时器在工作结束前获得了执行机会。代码只对第一组的顺序做断言，没有断言第二组必须在第几批插入定时器：批次数、机器速度和计时条件变化后，观察结果可能不同。该程序演示 Node.js 的调度顺序，不测量吞吐量或浏览器的输入、绘制响应。
 
 ## Node.js 的 nextTick 顺序要看执行上下文
 

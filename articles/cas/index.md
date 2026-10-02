@@ -1,7 +1,7 @@
 ---
 title: CAS
 date: 2019-07-23
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Concurrent
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 CAS 原子地完成一次“比较预期值并更新”的操作，失败时由调用方决定是否重试。自增循环必须从同一次读取的值计算预期值和更新值；`volatile` 的可见性不能把两次读取合并成一个快照。CAS 也不天然比锁更快，高竞争下重试会消耗 CPU。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/sun/misc/Unsafe.java) 的 Unsafe 实现解释 CAS 重试，再用公开的 AtomicInteger 演示共享计数。单变量 CAS 不自动解决多个字段的一致性，应用应使用公开原子类，而不是直接依赖 Unsafe。
 
-本文回答 CAS 如何完成共享计数，以及循环为什么需要重新读取。正文保留 `Unsafe` 的旧实现片段，未标注精确 JDK 修订；它用于解释机制，不作为应用调用入口。可运行例子改用公开的 `AtomicInteger`。单变量 CAS 不自动解决多个字段的一致性，也不能仅凭一次失败次数推断性能。
-
-<!-- more -->
 
 ## CAS原理
 
@@ -32,20 +27,20 @@ CAS全称为Compare and Swap，意为比较然后交换的意思。那么比较�
 
 ## Unsafe
 
-原文展示的 JDK 旧实现通过 `Unsafe` 提供底层比较更新操作。下面的 `getAndAddInt` 在这个原子操作之外增加了重试循环；这是实现机制，应用可以直接使用公开的原子类。
+OpenJDK 8u202-b08 使用 Unsafe 提供底层比较更新操作。getAndAddInt 在 CAS 之外增加重试循环；应用直接使用公开的原子类即可。
 
 ```java
-public final native boolean compareAndSwapInt(Object var1, long var2, int var4, int var5);
+public final native boolean compareAndSwapInt(Object o, long offset,
+                                              int expected, int x);
 
-public native int getIntVolatile(Object var1, long var2);
+public native int getIntVolatile(Object o, long offset);
 
-public final int getAndAddInt(Object var1, long var2, int var4) {
-    int var5;
+public final int getAndAddInt(Object o, long offset, int delta) {
+    int v;
     do {
-        var5 = this.getIntVolatile(var1, var2);
-    } while(!this.compareAndSwapInt(var1, var2, var5, var5 + var4));
-
-    return var5;
+        v = getIntVolatile(o, offset);
+    } while (!compareAndSwapInt(o, offset, v, v + delta));
+    return v;
 }
 ```
 

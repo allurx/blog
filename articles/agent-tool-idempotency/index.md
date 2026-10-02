@@ -1,7 +1,7 @@
 ---
 title: "Agent 工具重试为什么会重复执行副作用"
 date: 2026-09-22
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "Agent"
 tags: ["Agent","Idempotency","ToolCalling"]
 ---
@@ -182,7 +182,7 @@ public final class IdempotencyLedgerDemo {
 }
 ```
 
-2026-10-01 修订时，使用 JDK 25.0.2 的 `javac --release 17` 编译并运行，得到以下输出，代码中的检查均通过：
+使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；程序中的检查会核对这些结果。
 
 ```text
 concurrent receipts=[rcpt-1]

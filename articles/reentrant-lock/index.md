@@ -1,7 +1,7 @@
 ---
-title: ReentrantLock源码分析
+title: "ReentrantLock 源码分析"
 date: 2019-07-24
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Concurrent
@@ -10,20 +10,15 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `ReentrantLock` 提供独占重入、可中断获取、超时获取和多个条件队列等控制能力。公平模式倾向于按等待顺序获取锁，但不保证线程调度公平；不带超时的 `tryLock()` 仍可插队。是否采用它应取决于所需能力，不能笼统认定它总比 `synchronized` 更快。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/locks/ReentrantLock.java) 分析公平与非公平获取、重入计数、释放和 AQS 的关系。使用时在成功加锁后通过 finally 释放；选择锁的依据是功能与实际负载，不是未经测量的性能判断。
 
-本文回答原文公平与非公平获取、重入计数、释放和 AQS 的关系，保留未标注精确 JDK 修订的旧源码。使用时需在成功获取锁后通过 `finally` 释放；内部 `Sync` 等结构不属于跨版本 API。本文不提供未经实测的性能比较。
-
-<!-- more -->
 
 ## 公平锁和非公平锁
 
-* 公平锁是指多个线程按照申请锁的顺序来获取锁，类似排队打饭，按顺序打饭。
-* 非公平锁是指多个线程获取锁的顺序并不是按照申请锁的顺序，有可能后申请的线程比先申请的线程先获取锁，完全取决于cpu的调度
+* 公平模式在已有排队前驱时让新竞争者排队，倾向于按等待顺序获取；它不保证操作系统调度公平，也不限制当前拥有者重入。
+* 非公平模式允许新到达线程在锁空闲时直接竞争，因此可能越过已经排队的线程。能否成功既受锁状态和 CAS 结果影响，也受执行调度影响。
 
 ReentrantLock是通过内部类Sync的两个子类FairSync（公平锁）和NonfairSync（非公平锁）来实现线程获取锁的。其中默认的构造函数创建的就是非公平锁。可以通过ReentrantLock另一个构造函数传入true来构造公平锁。
 
@@ -104,7 +99,7 @@ final boolean nonfairTryAcquire(int acquires) {
 }
 ```
 
-nonfairTryAcquire方法尝试获取锁是通过非公平的方式去获取锁，为什么是非公平的方式呢？因为这里线程第一次获取锁本质上是通过compareAndSetState方法cas设置state的值，也就是说存在多个线程去竞争，假设a，b，c三个线程按顺序都执行到了`compareAndSetState(0, acquires)`这行代码，但是最终哪个线程能够获取到锁完全取决于cpu的调度，结果是不明确的，这就是非公平性的体现，获取到锁的顺序并不是申请锁的顺序。
+nonfairTryAcquire 在 state 为零时直接 CAS 获取，不先检查队列中是否已有前驱，因此新到达线程可以越过等待者。若当前线程本就持锁，则增加重入计数；其余情况获取失败，由 AQS 安排后续等待。
 
 ### FairSync
 
@@ -143,7 +138,7 @@ static final class FairSync extends Sync {
 }
 ```
 
-FairSync和NonfairSync在加锁的过程中唯一有区别的地方就在于线程第一次获取锁的处理方式上，NonfairSync完全是由cpu调度取决哪个线程能够获取锁，而 FairSync 在此基础上添加了一个前提，**当前队列中没有其它线程等待时间超过当前线程才使当前线程尝试去获取锁，这就是公平性的体现，就像排队取饭一样，谁先来的（等待的时间最长）就能够获取锁，后来的（等待的时间短）需要排队。**这里我们只需要重点关注AQS中的hasQueuedPredecessors方法是如何判断是否有线程排队时间超过当前线程的。
+FairSync 在 state 为零时，先通过 hasQueuedPredecessors 检查是否存在排队前驱，再尝试 CAS。当前持锁线程仍可重入。非公平版本省略前驱检查，并在 lock 入口先做一次直接 CAS；不带超时的 tryLock 也使用非公平获取。
 
 #### hasQueuedPredecessors
 

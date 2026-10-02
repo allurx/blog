@@ -1,7 +1,7 @@
 ---
 title: "截止时间为什么必须沿调用链递减"
 date: 2026-09-17
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "分布式"
 tags: ["Deadline","Timeout","可靠性"]
 ---
@@ -115,7 +115,7 @@ public final class DeadlineBudgetDemo {
 }
 ```
 
-程序2026-10-01 修订时，使用 JDK 25.0.2 的 `javac --release 17` 编译并运行，得到以下输出，代码中的检查均通过：
+使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；程序中的检查会核对这些结果。
 
 ```text
 wire=750ms remaining=150ms database=130ms

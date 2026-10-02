@@ -1,7 +1,7 @@
 ---
 title: "If-Match 如何阻止并发编辑相互覆盖"
 date: 2026-09-16
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "Web"
 tags: ["HTTP","ETag","乐观并发控制"]
 ---
@@ -105,7 +105,7 @@ public final class ConditionalUpdateDemo {
 }
 ```
 
-2026-10-01 修订时，使用 JDK 25.0.2 的 `javac --release 17` 编译并运行，输出 `success=1 conflict=1 version=2`。闩锁提供竞争起点，不保证两次调用都走到 CAS；其中一个也可能在标签检查时就失败。HTTP 字段解析与数据库条件提交需要各自的集成测试。
+使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出 `success=1 conflict=1 version=2`。闩锁提供竞争起点，不保证两次调用都走到 CAS；其中一个也可能在标签检查时就失败。HTTP 字段解析与数据库条件提交需要各自的集成测试。
 
 ## 让整个编辑流程尊重版本
 

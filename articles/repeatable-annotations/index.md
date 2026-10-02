@@ -1,22 +1,17 @@
 ---
-title: Repeatable注解
+title: "Repeatable 注解"
 date: 2019-10-29
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Annotation
 domain: Java
 ---
 
-## 核心结论
-
 `@Repeatable` 让同一种注解可以在同一元素上重复使用，但仍需要声明一个容器注解，其 `value()` 返回该注解数组。反射消费者应使用 `getAnnotationsByType()` 或 `getDeclaredAnnotationsByType()` 展开结果，避免单个注解与容器形式产生不同读取行为。
 
-## 问题与适用范围
+下面沿定义、class 文件中的表示和反射读取三个步骤，说明 Java 8 引入的可重复注解。容器还需满足目标、保留策略等语言约束；运行时读取需要 `RUNTIME` 保留策略。反编译展示的是例子的编译结果，不能把内部表示当作应用直接依赖的唯一入口。
 
-本文回答 Java 8 引入的可重复注解如何定义、如何存入 class 文件、如何读取。容器还需满足目标、保留策略等语言约束；运行时读取需要 `RUNTIME` 保留策略。反编译展示的是例子的编译结果，不能把内部表示当作应用直接依赖的唯一入口。
-
-<!-- more -->
 
 ## 用法
 

@@ -1,6 +1,7 @@
 ---
-title: Spring-Security基本概念
+title: "Spring Security 基本概念"
 date: 2019-06-02
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,21 +9,15 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 Servlet 应用通过 FilterChainProxy 选择匹配的 SecurityFilterChain，再依次执行链上的过滤器。SecurityContext 保存 Authentication，认证回答“当前主体是谁”，授权根据该主体和权限决定是否允许操作；有 Authentication 对象并不意味着用户已经完成登录。
-
-## 问题与适用范围
-
-本文回答：Spring Security 如何把一个 HTTP 请求中的认证与授权连接起来？
 
 本文以表单登录的 Servlet 过滤器链为例，介绍 SecurityContext、Authentication 与认证令牌。过滤器是否出现及顺序由实际配置决定，下面列出的默认链不是所有应用的固定清单。
 
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/FilterChainProxy.java)。
 
 ## 概述
 
-本文主要讲解spring-security相关的一些基本概念，熟悉一些相关的类和认证大概流程。不涉及源码的探讨，为接下来的几篇深入解析作铺垫。本文以及接下来的文章使用的Spring Boot版本为：
+下面从表单登录的过滤器链进入 SecurityContext 与 Authentication。示例的 Spring Boot 父 POM 为：
 ```
 <parent>
     <groupId>org.springframework.boot</groupId>
@@ -30,7 +25,6 @@ Servlet 应用通过 FilterChainProxy 选择匹配的 SecurityFilterChain，再�
     <version>2.1.5.RELEASE</version>
 </parent>
 ```
-<!-- more -->
 ## spring-security简述
 
 ### 概念
@@ -224,4 +218,3 @@ UsernamePasswordAuthenticationToken
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

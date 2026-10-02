@@ -1,30 +1,22 @@
 ---
-title: 发布jar包到Maven中央仓库
+title: "发布 JAR 包到 Maven 中央仓库"
 date: 2019-08-22
+updated: 2026-10-02
 tags:
   - Maven
 domain: Maven
 ---
 
-## 核心结论
-
 发布到 Maven Central 需要先取得命名空间权限，再准备完整的 POM、主 JAR、源码 JAR、Javadoc JAR 和签名，最后上传到 Central Publisher Portal 验证并发布。上传成功与公开发布是两个阶段，应分别确认；正式版本发布后不能覆盖同一坐标。
 
-## 问题与适用范围
+以下示例面向已能通过本地构建的普通 JAR 项目，使用 Central 发布插件；多模块、SNAPSHOT 和已有发布父 POM 的工程需要按自身结构调整。下面固定插件版本以便复现配置；运行环境仍需满足这些插件与项目自身的 JDK 要求。
 
-本文回答：一个已有的 Maven Java 库怎样通过 Central Publisher Portal 发布正式版本？
-
-本文于 **2026-09-30 修订发布流程**，保留 2019-08-22 的原发表日期。旧 OSSRH 已于 2025-06-30 结束服务，原先申请 Sonatype issue、上传旧 staging 仓库再 close/release 的流程不再适用。[OSSRH 关闭说明](https://central.sonatype.org/pages/ossrh-eol/)。
-
-以下示例面向已能通过本地构建的普通 JAR 项目，使用 Central 发布插件；多模块、SNAPSHOT 和已有发布父 POM 的工程需要按自身结构调整。示例中的插件版本按修订时官方文档固定，运行环境仍需满足各插件及项目 JDK 的要求。
-
-<!-- more -->
 
 ## 取得命名空间权限
 
 在 [Central Publisher Portal](https://central.sonatype.com/) 登录，检查目标 groupId 所属命名空间是否已验证。使用自有域名时，按门户给出的验证值设置域名 TXT 记录；使用 GitHub 身份时，可采用对应的 io.github 用户命名空间，具体权限以门户中的 Verified 状态为准。
 
-命名空间代表发布权，不能仅因 pom.xml 填了一个 groupId 就在该坐标下发布。已有 OSSRH 用户也应先核对迁移后的命名空间。[命名空间注册与验证](https://central.sonatype.org/register/namespace/)。
+命名空间代表发布权，不能仅因 pom.xml 填了一个 groupId 就在该坐标下发布。[命名空间注册与验证](https://central.sonatype.org/register/namespace/)。
 
 ## 准备发布元数据与签名
 
@@ -180,7 +172,6 @@ mvn -Prelease deploy
 
 ## 资料来源
 
-- [OSSRH 结束服务](https://central.sonatype.org/pages/ossrh-eol/)
 - [Central 命名空间验证](https://central.sonatype.org/register/namespace/)
 - [Central 发布要求](https://central.sonatype.org/publish/requirements/)
 - [Portal 发布令牌](https://central.sonatype.org/publish/generate-portal-token/)

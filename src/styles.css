@@ -1,0 +1,16 @@
+/*
+ * Copyright 2026 allurx
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* 按职责组织样式；响应式和打印规则跟随各自的页面或组件。 */
+@import "./styles/tokens.css";
+@import "./styles/base.css";
+@import "./styles/backdrop.css";
+@import "./styles/shell.css";
+@import "./styles/listing.css";
+@import "./styles/controls.css";
+@import "./styles/article.css";
+@import "./styles/toc.css";
+@import "./styles/page-tools.css";
+@import "./styles/prose.css";

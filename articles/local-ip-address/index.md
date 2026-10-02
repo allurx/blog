@@ -1,26 +1,21 @@
 ---
-title: 获取本机ip地址
+title: "获取本机 IP 地址"
 date: 2019-06-22
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - InetAddress
 domain: Java
 ---
 
-## 核心结论
-
 `InetAddress.getLocalHost()` 根据本机主机名解析地址，不能保证返回业务所需的内网地址。枚举 `NetworkInterface` 可以得到各接口绑定的地址，但多网卡、多地址场景仍需按目标网络和路由选择，不能把“第一个非回环地址”当成通用答案。
 
-## 问题与适用范围
+下面比较主机名解析与网卡枚举的结果。Windows、Linux 的配置观察来自特定实验环境，不能推导出所有系统都只依赖某个 hosts 文件。接口列表也不能单独确定访问某个远端时实际使用的源地址。
 
-本文回答如何发现本机地址，以及为什么主机名解析与网卡枚举会给出不同结果。正文保留原来的 Windows、Linux 配置观察；这些是特定环境的实验结果，不能推导出所有系统都只依赖某个 hosts 文件。接口列表也不能单独确定访问某个远端时实际使用的源地址。
-
-<!-- more -->
 
 ## InetAddress
 
-常见调用 `InetAddress.getLocalHost().getHostAddress()` 先取得本机主机名，再由名称服务解析地址。解析路径受操作系统、名称服务与缓存配置影响，hosts 文件可能参与其中，也可能使用 DNS 等机制。原文 Linux 实验把 hostname 映射到 127.0.0.1 后返回了回环地址，这说明该调用不能保证得到业务所需的内网地址；它不是对所有 Windows 或 Linux 环境的统一结论。
+常见调用 `InetAddress.getLocalHost().getHostAddress()` 先取得本机主机名，再由名称服务解析地址。解析路径受操作系统、名称服务与缓存配置影响，hosts 文件可能参与其中，也可能使用 DNS 等机制。下面的 Linux 实验把 hostname 映射到 127.0.0.1 后返回了回环地址，这说明该调用不能保证得到业务所需的内网地址；它不是对所有 Windows 或 Linux 环境的统一结论。
 
 ## NetworkInterface
 

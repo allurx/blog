@@ -1,7 +1,7 @@
 ---
 title: InheritableThreadLocal
 date: 2019-07-22
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Thread
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `InheritableThreadLocal` 在创建子线程时初始化继承值，默认 `childValue()` 返回父线程的同一对象引用。它不是持续同步，也不是按任务传播上下文：线程池复用已经存在的工作线程时，不会随每次提交重新复制提交者的值。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/InheritableThreadLocal.java) 分析线程构造时如何复制继承值。默认只复制绑定关系，childValue 返回同一对象；需要隔离可变对象时应定义复制规则。线程池任务需要提交时的上下文时，应显式传递并按任务边界清理。
 
-本文回答原文线程初始化中继承值的复制过程，保留未标注精确修订的旧源码。示例适用于直接新建并允许继承线程局部值的线程。需要隔离可变对象时应定义复制规则；需要让线程池任务读取提交时的上下文时，应显式传递，并在任务结束后按边界清理。
-
-<!-- more -->
 
 ## 线程初始化
 

@@ -1,7 +1,7 @@
 ---
-title: CountDownLatch源码分析
+title: "CountDownLatch 源码分析"
 date: 2019-09-11
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Concurrent
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `CountDownLatch` 让等待者在计数降至零后继续执行。计数的是 `countDown()` 调用次数，未必等于线程数量；到零后不能重置。需要等待一组工作完成时，应保证成功、失败等约定路径都会完成相应的计数，否则等待者可能一直无法通过。
 
-## 问题与适用范围
+下面从开工信号与完成信号的配合入手，再分析 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/CountDownLatch.java) 中的 AQS 共享模式实现。CountDownLatch 是一次性计数器，不自动收集结果或异常；需要限制等待时间时使用带超时的 await。
 
-本文回答开工信号与完成信号如何配合，并解释原文 AQS 共享模式实现。旧源码未标注精确 JDK 修订。它不是可循环屏障，也不自动收集任务结果或异常；需要超时或中断响应时使用对应的 `await()` 契约。
-
-<!-- more -->
 
 ## 例子
 

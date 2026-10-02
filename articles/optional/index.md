@@ -1,26 +1,21 @@
 ---
 title: Optional
 date: 2019-06-24
-updated: "2026-10-01"
+updated: 2026-10-02
 tags:
   - Java
   - Optional
 domain: Java
 ---
 
-## 核心结论
-
 `Optional` 表达一个结果可能不存在，`map` 用于转换值，`flatMap` 用于衔接已经返回 `Optional` 的操作。它不会自动消除所有空指针：`Optional.of(null)`、返回 `null` 的 `flatMap` 函数以及映射函数内部的异常仍会失败。缺值时的默认行为或异常应在链的末尾明确处理。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/Optional.java) 的 Optional 实现说明转换与缺值处理。Optional 主要适合表达可能不存在的返回结果，不应代替所有空值判断，也不应把 Optional 变量本身设为 null。
 
-本文回答如何用 Java 8 引入的 `Optional` API 组织查询与缺值处理，保留原文源码解释。源码片段未标注精确修订，不代表当前完整实现。`Optional` 主要适合表达返回结果，不应以它代替所有空值判断，也不应把 `Optional` 变量本身设为 `null`。
-
-<!-- more -->
 
 ## 原理
 
-Optional处理null的原理很简单，我们可以把Optional当做是一个容器，它仅仅包含了某个将要被处理的对象，当然了这个对象可能是null也可能不是null，例如当我们调用：`Optional.ofNullable(value)`方法后，一个Optional实例就被创建完成了，接下来我们就不用关心这value是不是null，只需要调用Optional提供的方法，传入一些`FunctionalInterface`，**只有当value不为null时**，这些`FunctionalInterface`才会被执行。接下来我们看一下它的源码
+Optional 用容器表示有值或缺值。map、flatMap、filter 和 ifPresent 只在有值时执行相应函数；orElseGet 和 orElseThrow 的提供者则只在缺值时调用。orElse 的实参会在调用前求值，即使 Optional 有值也可能执行代价较高的默认值计算。
 
 ## Optional源码
 
@@ -168,7 +163,7 @@ public final class Optional<T> {
 }
 ```
 
-Optional的源码很简单，内部方法执行的逻辑都是基于Optional包含的对象不为null的情况下才会执行，极大的减少了程序运行期间抛出的NullPointerException同时也使得我们编码的方式变得更加的优雅。里面有两个比较相似的方法
+Optional 的方法按有值和缺值分支组织逻辑，不能笼统地说所有函数只在有值时执行。它让缺值路径更清楚，但不会捕获映射函数抛出的异常。下面比较 map 和 flatMap。
 
 ```java
 public<U> Optional<U> map(Function<? super T, ? extends U> mapper) {

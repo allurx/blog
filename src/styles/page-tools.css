@@ -1,0 +1,230 @@
+/*
+ * Copyright 2026 allurx
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* 入口固定在右下角，工具向上展开；整个组件都不参与正文布局。 */
+.page-with-tools {
+  --rail-width: 4rem;
+  --rail-gap: .75rem;
+  --rail-inset: max(.75rem, env(safe-area-inset-right));
+  --panel-edge: max(var(--gutter), calc((100% - var(--page-width)) / 2));
+  --rail-right: calc(var(--panel-edge) + var(--rail-inset));
+}
+.page-end {
+  height: 0;
+}
+.page-tools {
+  -webkit-user-select: none;
+  user-select: none;
+  --tools-bottom: max(1rem, env(safe-area-inset-bottom));
+  position: fixed;
+  z-index: 40;
+  right: var(--rail-right);
+  bottom: var(--tools-bottom);
+  display: block;
+  width: var(--rail-width);
+  color: var(--muted);
+}
+.page-tools-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin-inline: auto;
+  padding: 0;
+  border: 1px solid var(--control-border);
+  border-radius: 50%;
+  background: var(--panel);
+  box-shadow: 0 4px 18px color-mix(in srgb, var(--color) 9%, transparent);
+  list-style: none;
+  cursor: pointer;
+}
+.page-tools-toggle::-webkit-details-marker {
+  display: none;
+}
+.page-tools-toggle > .icon {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  transition: none;
+}
+.page-tools-toggle > .icon-close {
+  opacity: 0;
+  transform: rotate(-45deg) scale(.7);
+}
+.page-tools[open] .page-tools-toggle > .icon-close {
+  opacity: 1;
+  transform: none;
+}
+.page-tools[open] .page-tools-toggle > .icon-more-horizontal {
+  opacity: 0;
+  transform: rotate(45deg) scale(.7);
+}
+.page-tools:not([open]) .tools-collapse-label,
+.page-tools[open] .tools-expand-label {
+  display: none;
+}
+.page-tools-actions {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + .65rem);
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  width: 100%;
+  max-height: calc(100dvh - var(--tools-bottom) - 3rem - .65rem - max(1rem, env(safe-area-inset-top)));
+  margin: 0;
+  padding: .375rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 1.125rem;
+  background: var(--panel);
+  box-shadow: var(--floating-shadow);
+  scrollbar-width: thin;
+}
+.page-tools:not([open]) .page-tools-actions {
+  pointer-events: none;
+}
+.page-tool-group {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: .25rem;
+}
+.page-tool-group + .page-tool-group {
+  padding-top: .5rem;
+  border-top: 1px solid var(--border);
+}
+.page-tools a, .page-tools button {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: .25rem;
+  width: 100%;
+  min-width: 44px;
+  min-height: 56px;
+  padding: .375rem .125rem;
+  border: 0;
+  border-radius: .75rem;
+  background: transparent;
+  color: inherit;
+  font-size: .75rem;
+  line-height: 1.4;
+  text-decoration: none;
+}
+.page-tools-actions .icon {
+  width: 1.125rem;
+  height: 1.125rem;
+}
+.page-tools .toc-toggle {
+  display: none;
+}
+.page-tools :focus-visible {
+  outline-offset: -2px;
+}
+.page-tools a:active, .page-tools button:active, .page-tools-toggle:active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+@media (hover: hover) and (pointer: fine) {
+  .page-tools a:hover, .page-tools button:hover, .page-tools-toggle:hover {
+    background: var(--surface);
+    color: var(--accent);
+  }
+  .page-tools[data-motion-ready] .page-tools-toggle:hover {
+    box-shadow: 0 6px 22px color-mix(in srgb, var(--color) 13%, transparent);
+  }
+}
+@supports selector(:popover-open) {
+  .page-tools .toc-toggle {
+    display: flex;
+  }
+  .page-with-tools:has(.toc:popover-open) .toc-toggle {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+}
+
+/* 原生内容容器固定在入口上方，开合时入口本身不移动。 */
+@supports selector(::details-content) {
+  .page-tools::details-content {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + .65rem);
+    width: 100%;
+  }
+  .page-tools-actions {
+    position: relative;
+    inset: auto;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .page-tools[data-motion-ready] .page-tools-toggle,
+  .page-tools[data-motion-ready] .page-tools-toggle > .icon,
+  .page-tools[data-motion-ready] a,
+  .page-tools[data-motion-ready] button {
+    transition: transform 160ms ease, opacity 160ms ease, box-shadow 160ms ease;
+  }
+  .page-tools[data-motion-ready] .page-tools-toggle:active,
+  .page-tools[data-motion-ready] a:active,
+  .page-tools[data-motion-ready] button:active {
+    transform: scale(.94);
+  }
+  /* 浮层不需要高度折叠；保留外部阴影，避免矩形裁切容器截断圆角周围的阴影。 */
+  @supports selector(::details-content) and (transition-behavior: allow-discrete) {
+    .page-tools::details-content {
+      opacity: 0;
+      transform: translateY(.35rem);
+    }
+    .page-tools[open]::details-content {
+      opacity: 1;
+      transform: none;
+    }
+    .page-tools[data-motion-ready]::details-content {
+      transition: opacity 140ms ease, transform 180ms ease, content-visibility 180ms allow-discrete;
+    }
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .page-tools-toggle > .icon {
+    transition: none;
+  }
+}
+
+/* 两侧空间足够时放在面板外，其余宽度仍保持为临时浮层。 */
+@media (width >= 82rem) {
+  .page-with-tools {
+    --rail-right: calc(var(--panel-edge) - var(--rail-width) - var(--rail-gap));
+  }
+}
+@media (width < 40rem) {
+  .page-with-tools {
+    --rail-width: 3.25rem;
+    --rail-gap: .5rem;
+  }
+  .page-tools-actions {
+    padding: 3px;
+    border-radius: .9rem;
+  }
+  .page-tools a, .page-tools button {
+    min-height: 48px;
+    font-size: .6875rem;
+    gap: .125rem;
+  }
+}
+@media (forced-colors: active) {
+  .page-with-tools:has(.toc:popover-open) .toc-toggle {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
+@media print {
+  .page-tools {
+    display: none !important;
+  }
+}

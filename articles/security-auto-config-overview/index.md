@@ -1,6 +1,7 @@
 ---
-title: Spring-Security自动配置类概述
+title: "Spring Security 自动配置类概述"
 date: 2019-06-16
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,17 +9,11 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
+Servlet 自动配置可以沿三条职责理解：SecurityAutoConfiguration 启用安全基础配置，UserDetailsServiceAutoConfiguration 在未提供用户或认证组件时补默认用户，SecurityFilterAutoConfiguration 将代理注册到容器；请求匹配器由相应适配配置提供。条件装配使自定义组件可以替代默认行为。
 
-历史 Servlet 自动配置可以沿三条职责理解：SecurityAutoConfiguration 启用安全基础配置，UserDetailsServiceAutoConfiguration 在未提供用户或认证组件时补默认用户，SecurityFilterAutoConfiguration 将代理注册到容器；请求匹配器由相应适配配置提供。条件装配使自定义组件可以替代默认行为。
+分析范围是 Servlet 自动配置；Spring Boot 2.1.5 通过 `META-INF/spring.factories` 发现这些配置类，Reactive Web 应用则使用另一组配置。
 
-## 问题与适用范围
-
-本文回答：Spring Boot 的默认用户、过滤器链与 Servlet 注册分别由哪些自动配置负责？
-
-本文介绍原文列出的 Servlet 自动配置类，不展开 Reactive Web 栈。下面通过 spring.factories 发现配置的方式属于该时期的 Boot 机制，不能外推为当前所有版本的加载入口。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SecurityAutoConfiguration.java)。
 
 ## 概述
 
@@ -35,7 +30,6 @@ ReactiveUserDetailsServiceAutoConfiguration
 
 下面对这些自动配置类进行简单的分析
 
-<!-- more -->
 
 ## SecurityAutoConfiguration
 
@@ -51,7 +45,7 @@ ReactiveUserDetailsServiceAutoConfiguration
 public class SecurityAutoConfiguration {
 
    @Bean
-   // 类路径下存在AuthenticationEventPublisher时才进行装配
+   // 容器中不存在 AuthenticationEventPublisher Bean 时才进行装配
    @ConditionalOnMissingBean(AuthenticationEventPublisher.class)
    public DefaultAuthenticationEventPublisher authenticationEventPublisher(
          ApplicationEventPublisher publisher) {
@@ -213,4 +207,3 @@ SecurityFilterAutoConfiguration这四个配置类，接下来的文章我们将�
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

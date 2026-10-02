@@ -1,6 +1,7 @@
 ---
-title: ExceptionTranslationFilter源码分析
+title: "ExceptionTranslationFilter 源码分析"
 date: 2019-06-13
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 ExceptionTranslationFilter 将下游抛出的安全异常转换为 HTTP 处理动作。认证异常交给 AuthenticationEntryPoint；访问被拒绝时，匿名或记住我身份可能需要重新认证，完整认证的用户通常交给 AccessDeniedHandler。它负责衔接异常与响应，不执行凭据验证或权限投票。
-
-## 问题与适用范围
-
-本文回答：认证或授权异常怎样转成登录入口或拒绝访问响应？
 
 本文分析 Servlet 过滤器链中的异常转换。具体响应可以是重定向、401 或 403，由实际配置的入口与处理器决定，正文展示的实现不能当作所有登录方式的统一默认值。
 
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/access/ExceptionTranslationFilter.java)。
 
 ## 概述
 
 ExceptionTranslationFilter处理过滤器链中抛出的任何AccessDeniedException和AuthenticationException，如果是AuthenticationException则调用AuthenticationEntryPoint处理，如果是AccessDeniedException并且当前的Authentication是匿名用户或者是记住我用户依旧是调用AuthenticationEntryPoint处理，否则调用AccessDeniedHandler进行处理。
 
-<!-- more -->
 
 ## ExceptionTranslationFilter
 
@@ -235,7 +229,7 @@ public class ExceptionTranslationFilter extends GenericFilterBean {
 }
 ```
 
-默认的AuthenticationEntryPoint和AccessDeniedHandler分别是Http403ForbiddenEntryPoint和AccessDeniedHandlerImpl，接下来我们看一下它们是如何处理的
+下面以 Http403ForbiddenEntryPoint 和 AccessDeniedHandlerImpl 为例说明响应处理。AuthenticationEntryPoint 由认证方式和配置决定，例如表单登录使用的入口会引导用户访问登录页。
 
 ### Http403ForbiddenEntryPoint
 
@@ -282,7 +276,7 @@ public class AccessDeniedHandlerImpl implements AccessDeniedHandler {
             // 设置403响应码
             response.setStatus(HttpStatus.FORBIDDEN.value());
 
-            // 重定向到错误页
+            // 在服务端转发到错误页
             RequestDispatcher dispatcher = request.getRequestDispatcher(errorPage);
             dispatcher.forward(request, response);
          }
@@ -305,7 +299,7 @@ public class AccessDeniedHandlerImpl implements AccessDeniedHandler {
 }
 ```
 
-在响应未提交的情况下，如果已经设置了错误页url就重定向到错误页，否则直接设置403响应码
+响应尚未提交时，AccessDeniedHandlerImpl 先设置 403 状态，再通过 RequestDispatcher.forward() 在服务端转发到配置的错误页；没有错误页时直接调用 sendError(403)。这里没有向浏览器发送重定向。
 
 ## 总结
 
@@ -318,4 +312,3 @@ public class AccessDeniedHandlerImpl implements AccessDeniedHandler {
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

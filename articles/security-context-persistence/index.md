@@ -1,6 +1,7 @@
 ---
-title: SecurityContextPersistenceFilter源码分析
+title: "SecurityContextPersistenceFilter 源码分析"
 date: 2019-06-05
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 SecurityContextPersistenceFilter 在请求开始时从 SecurityContextRepository 加载上下文并放入 SecurityContextHolder，在请求结束时保存上下文并清理当前线程的持有状态。默认的会话仓库可以复用已有会话中的认证信息；没有上下文时创建空上下文，创建空上下文本身不等于必须创建会话。
 
-## 问题与适用范围
+下面分析 Servlet 链中的 SecurityContextPersistenceFilter 与默认 HttpSessionSecurityContextRepository。上下文保存、会话创建和线程持有策略承担不同职责；选择无状态配置时，还要明确是否跨请求保存认证结果。
 
-本文回答：认证上下文如何跨请求保存，同时避免在线程复用时串到其他请求？
-
-本文分析旧 Servlet 链中的 SecurityContextPersistenceFilter 与默认 HttpSessionSecurityContextRepository。上下文保存、会话创建和线程持有策略是不同问题；无状态应用或当前版本的显式保存配置需要按各自契约核对。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/context/SecurityContextPersistenceFilter.java)。
 
 ## 概述
 
-SecurityContextPersistenceFilter在整个过滤器链中排在了第二的位置，由此可见该过滤器的重要性，并且从该过滤器的名字大概可以看出它主要作用是持久化SecurityContext（安全上下文信息），即将整个安全相关的信息保存起来，这样下游的其它过滤器就可以使用这个安全信息进行相关的操作了。
+SecurityContextPersistenceFilter 在认证与授权过滤器之前建立请求的安全上下文，并在请求结束时保存结果和清理线程中的绑定。它在链中的具体序号取决于配置，关键是让下游过滤器在正确的生命周期内访问上下文。
 
-<!-- more -->
 
 ## SecurityContextRepository
 
@@ -46,7 +40,7 @@ public class SecurityContextPersistenceFilter extends GenericFilterBean {
 ```
 从上面可以看出SecurityContextPersistenceFilter内部维护了一个SecurityContextRepository，这个类就是初始化SecurityContext的地方：
 ![](./images/security-context-repository.png)
-一共有2个类实现了该接口，其中NullSecurityContextRepository没有太大的意义，代表这是一个空的安全上下文仓库，我们这里主要关注HttpSessionSecurityContextRepository，这是SecurityContextPersistenceFilter内部默认的安全上下文仓库。
+该版本提供 HttpSessionSecurityContextRepository 和 NullSecurityContextRepository。前者通过 HttpSession 跨请求保存上下文；后者每次返回空上下文且不保存，适合不需要仓库存储的配置。下面分析默认构造器使用的 HttpSessionSecurityContextRepository。
 
 ``` java
 public class SecurityContextPersistenceFilter extends GenericFilterBean {
@@ -234,7 +228,7 @@ public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
 		}
 	}
 ```
-分析到这，SecurityContext从创建到获取再到销毁的整个流程大概都理清了，而且我们发现最终SecurityContext是通过另一个SecurityContextHolder类来存储和销毁的，这似乎和SecurityContextRepository有点重复的概念在里面，我的理解是SecurityContextRepository负责初始化生成并保存SecurityContext信息，当下次请求时就可以从session中获取上一次的SecurityContext信息了，相当于缓存的作用。而SecurityContextHolder则负责作为一个载体将查询出来的SecurityContext保存在其中，下游过滤器就可以从SecurityContextHolder中获取到SecurityContext内部的Authentication信息了。
+SecurityContextRepository 负责跨请求加载和保存，SecurityContextHolder 负责让当前执行上下文访问认证信息。请求结束时，过滤器清理 Holder 的线程绑定，并将需要保留的上下文交回仓库；清理线程绑定不等于销毁会话中保存的对象。这样线程被下一次请求复用时，才不会继续持有上一次请求的认证信息。
 
 ## SecurityContextHolder
 
@@ -356,4 +350,3 @@ SecurityContext就保存在这三个实现类中。
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

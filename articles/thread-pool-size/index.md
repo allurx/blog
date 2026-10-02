@@ -1,7 +1,7 @@
 ---
 title: "线程池的最大线程数为什么没有生效"
 date: 2026-09-15
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "Java 并发"
 tags: ["ThreadPoolExecutor","队列","过载保护"]
 ---
@@ -127,7 +127,7 @@ public final class PoolAdmissionDemo {
 }
 ```
 
-2026-10-01 修订时，使用 JDK 25.0.2 的 `javac --release 17` 编译并运行，断言通过，输出为：
+使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；断言会检查工作线程数、排队量和拒绝结果。
 
 ```text
 unbounded: workers=2 queued=5 rejected=0

@@ -1,115 +1,134 @@
 ---
-title: 利用Git-Hook动态发布博客
+title: 用 Git Hook 触发 Hexo 构建与发布
 date: 2018-10-05
-updated: 2026-10-01
-tags:
-  - Hexo
-  - Git
-  - Git-Hook
+updated: 2026-10-02
+tags: [Hexo, Git, Git-Hook, 自动部署]
 domain: Hexo
 ---
 
-## 核心结论
+Git 推送可以触发博客构建，但“代码已经保存”和“页面已经发布”是两个不同的结果。可靠的发布流程需要明确构建哪个提交，并在构建成功后才替换线上入口，避免访问者看到生成到一半的目录。
 
-服务端裸仓库的接收 hook 可以把指定版本的内容导出到博客构建目录，再生成静态文件，由 Web 服务器提供访问。内容版本管理、构建和公开发布分别是不同阶段；推送完成并不能独自证明构建和线上页面更新成功。
+下面面向一台 Linux 服务器：使用 Bash、Git、Node.js 24、npm、GNU coreutils、util-linux 的 `flock`，由 nginx 提供静态文件。部署账号通过 SSH 接收推送，具有专用目录的写权限；仓库中的构建代码由可信维护者提交。
 
-## 问题与适用范围
+## 保存完整项目，监听准确的分支
 
-本文回答：自有服务器如何在接收博客内容的 Git 推送后重新生成静态站点？
+版本库应保存完整 Hexo 项目，包括文章、站点配置、`_config.next.yml`、自定义资源和 `package-lock.json`。只保存 `source/` 会让主题、插件和构建条件游离在文章版本之外。项目准备可参考[Hexo 与 NexT 入门](/hexo-writing/)。
 
-本文保留 2018 年自有 Linux 服务器、Bash、Hexo 与 nginx 的历史部署场景。下面脚本会替换指定 source 目录中的内容，只适用于已核对的专用构建目录，不能直接用于保存其他数据的目录；原路径与 Node.js 版本也是当时环境的示例。当前博客部署方式以仓库 README 为准。
-
-## 概述
-
-平时在写博客的时候经常会遇到昨天晚上在家里写好了一半的文章，第二天来到公司想要接着昨天晚上的博客继续写，这是一件很苦恼的事。就像我们平时写代码一样，需要多人协作在不同的地方同时开发一样，为了解决这个问题，人们引入了版本控制的概念，本篇文章为了解决这个问题，通过使用git来对博客内容进行管理，利用git-hook动态发布博客，达到多台电脑编写文章并且能够快速部署博客的目的。
-
-<!-- more -->
-
-## 在服务器端初始化blog的hexo工程
-
-创建流程参见[使用Hexo撰写博客](/hexo-writing/)。
-
-## 在服务器端初始化blog的git裸仓库
+在服务器上，以部署账号创建专用目录和裸仓库。以下路径是本文完整示例的约定，实际使用时统一替换为该账号有权管理的目录：
 
 ```sh
-$ mkdir blog.git
-$ cd blog.git
-$ git init --bare
+mkdir -p /srv/blog/releases
+git init --bare --initial-branch=main /srv/blog/repo.git
 ```
-### 编辑该git仓库的post-update脚本
 
-``` sh
-$ cd blog.git/hooks
-$ mv post-update.sample post-update
-$ chmod +x post-update
-$ vim post-update
+在本地项目中配置 SSH 远端；将 `deploy` 和 `server.example` 替换为实际账号与主机：
+
+```sh
+git remote add deploy deploy@server.example:/srv/blog/repo.git
+git push deploy main
 ```
-修改内容如下：
-``` sh
+
+服务器使用 `post-receive`，它从标准输入接收 `旧提交 新提交 引用名`。只处理 `refs/heads/main`，忽略其他分支和删除引用。不能无条件构建裸仓库的 `HEAD`，因为它不一定指向刚被更新的分支。[Git 接收钩子](https://git-scm.com/docs/githooks#post-receive)
+
+## 在独立目录构建，再切换入口
+
+将以下内容保存为 `/srv/blog/repo.git/hooks/post-receive`。脚本按阶段处理：筛选主分支更新、串行化部署、导出确切提交、安装并构建，最后替换静态入口。
+
+```bash
 #!/usr/bin/env bash
+set -euo pipefail
+umask 022
 
-set -e
+repository=/srv/blog/repo.git
+release_root=/srv/blog/releases
+site_link=/srv/blog/current
 
-# git在执行hook的时候会修改环境变量,导致找不到相关的命令
-# 我们手动添加一些需要的环境变量或者指定需要执行命令的全路径
+requested=
+while read -r previous revision reference; do
+  if [[ "$reference" == refs/heads/main && ! "$revision" =~ ^0+$ ]]; then
+    requested=$revision
+  fi
+done
+[[ -n "$requested" ]] || exit 0
 
-# 将hexo命令所在的路径添加到PATH中
-PATH=/root/node-v10.16.0/bin:$PATH
+# 同一站点串行发布；等待锁后以主分支当前提交为准。
+exec 9>/srv/blog/deploy.lock
+flock 9
+revision=$(git --git-dir="$repository" rev-parse refs/heads/main)
+release=$(mktemp -d "$release_root/$revision.XXXXXX")
+git --git-dir="$repository" archive "$revision" | tar -x -C "$release"
 
-# hexo工程目录
-blogPath=/root/blog/
+# 接收钩子的 Git 环境不能泄漏到构建工具调用的其他仓库。
+while read -r variable; do
+  unset "$variable"
+done < <(git rev-parse --local-env-vars)
 
-# hexo工程的source目录
-blogContentPath=/root/blog/source/
+# PATH 必须包含部署账号安装的 node/npm；不要依赖交互式 shell 的版本管理初始化。
+cd "$release"
+npm ci
+./node_modules/.bin/hexo generate --bail
+test -s public/index.html
+chmod 755 "$release"
 
-# 归档文件名
-archivedFile=latest.tar.gz
+# 构建期间若主分支已推进，把发布交给该次推送的钩子。
+latest=$(git --git-dir="$repository" rev-parse refs/heads/main)
+if [[ "$revision" != "$latest" ]]; then
+  printf 'Built %s; main advanced to %s, skip activation.\n' "$revision" "$latest"
+  exit 0
+fi
 
-# 将最新提交的文件归档到hexo工程的source目录下
-git archive -o "$blogContentPath$archivedFile" HEAD
-
-# 使用Bash扩展模式匹配，包含隐藏文件并使空匹配不保留为字面量
-shopt -s extglob dotglob nullglob
-
-# 删除之前的博客文件并且解压刚刚归档的仓库最新文件最后再删除归档文件
-cd "$blogContentPath" && rm -rf -- !("$archivedFile") && tar -xzf "$archivedFile" && rm -- "$archivedFile"
-
-# 清除hexo缓存文件(db.json)和已生成的静态文件(public)并且重新生成静态文件
-cd "$blogPath" && hexo clean && hexo g
-
+# 临时链接与正式链接位于同一文件系统；current 必须不存在或为符号链接。
+if [[ -e "$site_link" && ! -L "$site_link" ]]; then
+  printf 'Refusing to replace non-symlink: %s\n' "$site_link" >&2
+  exit 1
+fi
+next_link="/srv/blog/.current-$(basename "$release")"
+ln -s "$release/public" "$next_link"
+mv -Tf "$next_link" "$site_link"
+printf 'Published %s\n' "$revision"
 ```
-这个脚本的作用是在客户端执行git push操作时，将最新的博客内容打包复制到上一步创建的hexo工程source文件夹下，然后执行`hexo clean && hexo g`命令，这样只要对博客内容进行了修改，服务器上hexo的内容就会自动重新生成。
-并且由于我是通过nginx对hexo生成的public文件夹做了静态映射，所以这里没有启动hexo服务，如果服务器上没有安装nginx，可以在最后一步加上hexo server来启动hexo服务
 
-## 在客户端初始化blog的hexo工程
+赋予执行权限：
 
-创建流程参考上一篇如何使用hexo撰写博客的文章，hexo工程创建好之后，进入到source文件夹下，执行以下命令对该文件夹下所有文件进行git仓库初始化并关联服务端仓库。
-``` sh
-$ cd source
-$ git init
-$ git add .
-$ git commit -m "初始化提交"
-$ git remote add origin https://xxx/blog.git
+```sh
+chmod +x /srv/blog/repo.git/hooks/post-receive
 ```
-最终的目录结构如下：
-![](./images/source-directory-structure.png)
 
-这样以后我们只需要在source文件下进行md文件的编写，然后执行git push操作就会触发我们刚刚编写的post-update脚本，从而实现自动部署。
+`git archive` 根据指定提交导出项目，子模块内容不会自动展开，因此这个示例使用 npm 管理 NexT，而不把主题藏在未导出的子模块中。[Git archive](https://git-scm.com/docs/git-archive)
 
-至此，所有步骤已经完成，接下来我们测试一下：
-1. 在_posts文件夹下添加一个md文件，编写一些内容
+`flock` 让两个推送触发的构建顺序执行。取得锁后重新读取主分支，可以避免等待中的旧钩子最终把较旧版本覆盖到线上。构建后再次检查分支，能跳过已知过期产物；它不是 Git 引用与文件系统之间的原子事务，极短的竞争窗口中仍可能先激活一个完整版本，再由下一次钩子发布新版本。[flock 使用方式](https://man7.org/linux/man-pages/man1/flock.1.html)
 
-2. 将新增的文件推送到远程服务器
+构建失败时，`current` 仍指向上一次成功产物；失败目录留在 `releases/`，便于排查。符号链接切换避免新请求命中半成品，但不能使已经打开页面的后续资源请求固定到同一个版本。需要严格保持跨请求版本一致时，应使用带版本的资源 URL，并保留相应版本资源。
 
-   ```sh
-   $ git add .
-   $ git commit -m "新增文章" && git push origin master
-   ```
+## 让 Web 服务器只暴露生成文件
 
-3. 检查服务端hook输出与构建产物，再刷新对应页面，确认文章已由Web服务器提供访问。
+nginx 的站点配置可以使用以下最小结构，将 `server_name` 替换为真实域名。TLS、访问权限和站点配置加载按服务器现有管理方式完成：
 
-## 资料来源
+```nginx
+server {
+    listen 80;
+    server_name blog.example;
+    root /srv/blog/current;
+    index index.html;
 
-- [Git hook 官方说明](https://git-scm.com/docs/githooks)
-- [Git archive 官方说明](https://git-scm.com/docs/git-archive)
-- [Hexo 命令](https://hexo.io/zh-cn/docs/commands)
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+```
+
+Web 根目录指向生成后的 `public/`，不能指向 Git 仓库或项目根目录，后两者包含源码与构建资料。脚本使用 `umask 022`，并在构建成功后为 `mktemp` 创建的发布目录设置 `755`；否则该目录默认只有部署账号能进入，独立运行的 nginx 进程会无法访问。还需确保 `/srv/blog`、`releases` 等父目录允许 nginx 遍历，生成文件允许它读取；部署账号负责构建和切换链接。[nginx 静态文件服务](https://nginx.org/en/docs/beginners_guide.html#static)
+
+## 分别确认保存、构建和页面
+
+安装 hook 后再次推送一次真实内容变更，查看远端输出中的提交号，再核对 `/srv/blog/current` 指向的目录和公开文章的关键正文。首次配置没有新的提交时，可以在服务器上向 hook 输入一条该分支的更新记录来重新部署，不必制造一篇新文章：
+
+```sh
+revision=$(git --git-dir=/srv/blog/repo.git rev-parse refs/heads/main)
+printf '%s %s %s\n' "$revision" "$revision" refs/heads/main |
+  (cd /srv/blog/repo.git && hooks/post-receive)
+```
+
+`post-receive` 在引用更新之后执行，失败不会撤销已经保存的 Git 提交。因此推送成功不能代替构建与页面核验，构建失败也不需要重新提交同一篇正文。
+
+发布目录的清理应另外安排，只删除确认不再被入口或资源引用的版本。这份脚本不自动删除版本，也不把可恢复的构建失败扩大为线上内容丢失。

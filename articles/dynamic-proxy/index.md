@@ -1,7 +1,7 @@
 ---
-title: Jdk动态代理
+title: "JDK 动态代理"
 date: 2019-12-17
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - 代理
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 JDK 动态代理在运行时生成实现指定接口的代理类，并把代理方法调用交给 `InvocationHandler`。它帮助复用调用前后的增强逻辑，但不能直接代理一个没有接口的具体类；传给处理器的 `proxy` 与被委托的目标对象也承担不同职责。
 
-## 问题与适用范围
+下面先比较静态代理与 JDK 动态代理，再以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/reflect/Proxy.java) 分析 Proxy 与 InvocationHandler 的协作。ProxyGenerator、defineClass0 和 sun.misc.ProxyGenerator.saveGeneratedFiles 属于这一版本的内部实现；应用通过公开的 Proxy API 创建代理。
 
-本文回答静态代理与 JDK 动态代理的差异，以及 `Proxy`、`InvocationHandler` 如何配合。正文中的 `ProxyGenerator`、`defineClass0` 和保存生成类文件的属性来自原文旧实现，未给出精确 JDK 修订；这些属于内部机制，不能作为跨版本调用契约。生产代码优先使用公开的 `Proxy` API。
-
-<!-- more -->
 
 ## 静态代理
 
@@ -58,7 +53,7 @@ public class Alex implements Person {
 }
 ```
 
-现在我们需要在Person吃饭前添加一个洗手的操作，直接在Alex中的eat方法中添加洗手的方法是可以达到目的的，但是这就不符合开闭原则，如果哪天再来一个需求在吃饭前添加n个操作，或者此时项目中存在大量Person的实现类，我们就需要去修改每个Person实现类中eat方法的逻辑，这显然是不对的。此时合适的做法是给Person添加一个代理类，Person类的所有操作都由这个代理类去做。
+如果增强逻辑需要由多个 Person 实现共享，或者希望独立组合和替换，就可以使用代理，把增强职责与各实现的业务职责分开。只有单个实现、增强本来就属于其业务时，直接修改实现也可能更简单；是否引入代理取决于实际变化边界。
 
 ```java
 
@@ -125,6 +120,7 @@ public interface InvocationHandler {
 package io.allurx;
 
 import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 /**
@@ -141,13 +137,16 @@ public class PersonInvocationHandler implements InvocationHandler {
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
         System.out.println("吃饭前先洗个手");
-        method.invoke(person, args);
-        return null;
+        try {
+            return method.invoke(person, args);
+        } catch (InvocationTargetException exception) {
+            throw exception.getCause();
+        }
     }
 }
 ```
 
-上面我们定义了Person接口的InvocationHandler，构造器通过传入Person的实例来代理该实例，然后invoke方法中在方法调用前进行增强，接着再通过反射调用代理对象的原始方法。整个PersonInvocationHandler就是我们对Person接口进行增强的处理器，接下来我们就要通过另一个Proxy类来生成具体的代理对象。
+处理器保存被委托的 Person，对该目标调用 method.invoke 并返回结果；proxy 是代理对象，不能把它当作反射调用目标，否则会再次进入处理器。InvocationTargetException 需要解包，保留目标方法的原始异常。代理的 equals、hashCode、toString 也会进入处理器，通用代理应明确这些方法的语义。
 
 ### Proxy
 

@@ -1,7 +1,7 @@
 ---
-title: UsernamePasswordAuthenticationFilter源码分析
+title: "UsernamePasswordAuthenticationFilter 源码分析"
 date: 2019-06-08
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -9,24 +9,17 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 UsernamePasswordAuthenticationFilter 先用 RequestMatcher 判断请求是否属于登录处理，再提取用户名和密码构造未认证令牌，交给 AuthenticationManager。认证成功后设置安全上下文并调用成功处理器，失败则清理认证信息并调用失败处理器；过滤器本身不负责查询用户或比较密码。
 
-## 问题与适用范围
+本文分析 Servlet 表单登录，所分析版本默认匹配 POST /login，实际路径与匹配方式可配置。JSON 登录请求需要另外处理，不能假定该过滤器会自动读取 JSON 字段。
 
-本文回答：表单登录请求怎样从用户名密码变成认证结果？
-
-本文分析 Servlet 表单登录，原文默认匹配 POST /login，实际路径与匹配方式可配置。JSON 登录请求需要另外处理，不能假定该过滤器会自动读取 JSON 字段。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/authentication/UsernamePasswordAuthenticationFilter.java)。
 
 ## 概述
 
 UsernamePasswordAuthenticationFilter顾名思义，用户名密码认证过滤器，是用来处理用户名密码登陆请求的过滤器。匹配/login请求，从请求中获取用户名和密码，然后进行认证。如果认证成功则将生成的Authentication对象放入当前线程的SecurityContext，回顾
 [SecurityContextPersistenceFilter](/security-context-persistence/)中SecurityContext的生成过程，然后调用配置的AuthenticationSuccessHandler。如果认证失败则调用AuthenticationFailureHandler。
 
-<!-- more -->
 
 ## AbstractAuthenticationProcessingFilter
 
@@ -430,10 +423,9 @@ UsernamePasswordAuthenticationFilter的认证过程相对来说还是比较简�
 2. 如果需要认证，调用attemptAuthentication方法进行认证
 3. 认证成功则将Authentication设置到SecurityContext中然后调用AuthenticationSuccessHandler处理
 4. 认证失败则清空SecurityContext中的认证信息然后调用AuthenticationFailureHandler处理
-5. 最终的认证处理是委托给AuthenticationManager进行认证的，它内部的认证原理将在下一篇文章中详细分析
+5. 凭据验证委托给 AuthenticationManager，其提供者选择过程见 [AuthenticationManager](/authentication-manager/)。
 
 ## 资料来源
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

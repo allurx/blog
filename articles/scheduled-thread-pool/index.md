@@ -1,7 +1,7 @@
 ---
-title: ScheduledThreadPoolExecutor原理
+title: "ScheduledThreadPoolExecutor 原理"
 date: 2020-05-01
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Concurrent
@@ -11,15 +11,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `ScheduledThreadPoolExecutor` 使用延迟队列安排任务，调度时间表示任务最早可执行的时刻，不保证准点开始。固定频率按预定时间序列安排，固定延迟从上次完成后计时；同一个周期任务不会重叠执行，某次执行抛出异常后会停止后续周期执行。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/ScheduledThreadPoolExecutor.java) 分析延迟任务、周期任务、最小堆及 Leader-Follower 等待机制。无界延迟队列使 maximumPoolSize 不产生通常的扩容效果，调度并行度主要由 corePoolSize 控制。
 
-本文回答延迟任务、周期任务与延迟队列如何协作，保留原文最小堆和 Leader-Follower 的旧实现分析，未标注精确 JDK 修订。执行能力主要受 `corePoolSize` 影响，无界延迟队列使 `maximumPoolSize` 不产生通常的扩容效果。耗时任务与调度延迟需要通过实际负载观察。
-
-<!-- more -->
 
 ## 例子
 
@@ -171,7 +166,7 @@ public interface ScheduledExecutorService extends ExecutorService {
 
 ### scheduleAtFixedRate(Runnable command,long initialDelay,long period,TimeUnit unit);
 
-这个方法的作用是在给定的initialDelay之后开始执行command任务，然后以固定的频率period周期性的执行这个任务。需要注意的是**如果任务本身执行时长超过了period，那么就会等待任务执行完毕后立马执行该任务而不会让另一个核心线程并发执行这个任务**。
+固定频率的计划时间依次为 initialDelay、initialDelay + period、initialDelay + 2 × period。任务耗时超过周期时，后续执行会延后，但同一个周期任务不会重叠；它可以在工作线程可用时继续执行，不保证完成后立刻获得 CPU。
 
 ### scheduleWithFixedDelay(Runnable command,long initialDelay,long delay,                                              TimeUnit unit);
 
@@ -236,7 +231,7 @@ public ScheduledThreadPoolExecutor(int corePoolSize,
 }
 ```
 
-从上面的构造器参数我们可以发现，最终的ScheduledThreadPoolExecutor对象的maximumPoolSize值都是Integer.MAX_VALUE，BlockingQueue都是一个DelayedWorkQueue。对ThreadPoolExecutor内部原理了解的同学都知道只有当阻塞队列任务已满的情况下线程池才会去创建一个新的线程直到超过maximumPoolSize然后执行拒绝策略，而在文章的开头处我提到了ScheduledThreadPoolExecutor内部是通过一个最小堆无界队列来保存任务的，所以任务队列是永远不会满的，线程池中存活的只有核心线程，**从侧面告诉我们执行调度任务的线程就是核心线程。能够同时执行调度任务的数量取决于核心线程数。**
+构造器使用 DelayedWorkQueue 和 Integer.MAX_VALUE 的 maximumPoolSize。队列按需扩容，不会通过“队列已满”触发常规扩容，因此正常并行度由 corePoolSize 控制；但无界并不表示内存无限。ensurePrestart 在工作线程数为零时还会尝试创建一个线程，不能将所有工作线程按固定身份区分为核心或非核心。
 
 ### 重写的execute和submit方法
 
@@ -285,7 +280,7 @@ public interface RunnableScheduledFuture<V> extends RunnableFuture<V>, Scheduled
 
 RunnableScheduledFuture接口继承了RunnableFuture接口使自身成为了一个Runnable对象，同时也继承了ScheduledFuture对象使自身成为了一个能够调度的任务对象。内部仅仅定义了一个isPeriodic方法，判断任务本身是否是一个周期性任务。
 
-我不是很明白这个接口的意义，为什么不直接让ScheduledFuture继承Runnable然后将这个方法定义在ScheduledFuture内部呢？
+ScheduledFuture 只向调用者暴露结果、取消和延迟信息；执行器内部还需要可执行入口和周期标记，因此 RunnableScheduledFuture 再组合 RunnableFuture 与 isPeriodic。公开返回的结果句柄无需让使用者承担执行任务的职责。
 
 现在我们知道内部类ScheduledFutureTask是一个继承FutureTask的能够运行的Runnable，同时本身也是一个延迟对象，能够通过Delayed的getDelay方法来获取剩余执行的时间和RunnableScheduledFuture的isPeriodic方法来表明自身是否是一个周期任务。下面我们详细看一下这个ScheduledFutureTask类内部的定义：
 
@@ -512,7 +507,7 @@ long triggerTime(long delay) {
 }
 ```
 
-任务下次执行的时间为当前时间加上入参delay，这里对用户传递的参数delay进行了一个溢出操作的判断，如果传递的参数超过了`Long.MAX_VALUE / 2`的话则调用overflowFree方法矫正延迟时间。（为什么是Long最大值的一半？）
+triggerTime 以 System.nanoTime 的单调时间基准计算触发时刻。较小延迟直接相加；接近 long 上限的延迟交给 overflowFree，避免与队列中已过期任务的时间差超过有符号 long 可比较的范围。
 
 ##### overflowFree
 
@@ -528,9 +523,7 @@ private long overflowFree(long delay) {
 }
 ```
 
-说实话我也没看懂这个方法的的意图，不过作者在方法注释上面写道：**将队列中所有延迟的值限制在Long.MAX_VALUE之内，以避免compareTo中溢出。 当添加某些延迟为Long.MAX_VALUE的任务时，如果任务有资格出队，但尚未出队，则可能会发生这种情况。**
-
-意思是如果线程池中没有空闲的线程时，此刻往线程池中提交一个延迟时间为Long.MAX_VALUE的任务时，在任务入队时进行compareTo方法比较会产生溢出。我还是不能完全理解这段话的意思，有理解的同学麻烦留言告诉我一下。
+overflowFree 先检查队头任务的剩余延迟。队头已经过期时 headDelay 为负；新任务延迟又接近 Long.MAX_VALUE 时，`delay - headDelay` 可能溢出，反转 compareTo 的符号。此时把 delay 限制为 `Long.MAX_VALUE + headDelay`，使两者差值仍可比较。队头过期但未出队可能源于工作线程正忙，关键是相对时间差，而不是某次绝对时间相加的数值外观。
 
 计算出任务延迟执行的时间后，接下来则是调用delayedExecute方法对任务的执行进行一些提前的操作。
 
@@ -568,7 +561,7 @@ ScheduledThreadPoolExecutor继承了ThreadPoolExecutor使自身拥有了线程�
 
 ## DelayedWorkQueue
 
-在DelayedWorkQueue的注释中我们知道该队列是一个基于最小堆通过数组实现的阻塞队列，并且将任务添加到队列时都会将任务在数组中的索引记录到ScheduledFutureTask的heapIndex属性中，这样的话在执行注入contains和remove方法时可以将查找元素的时间复杂度可以从O(n)提升到O(logn)（这里有一个疑问点，DelayedWorkQueue的contains和remove方法都是直接通过数组索引定位元素的，时间复杂度不是O(1)吗？），前提是不要通过decorateTask方法来包装调度任务对象，因为在contains方法内部是只有ScheduledFutureTask类型的任务才会通过数组下标来定位，否则的话会遍历所有任务使得寻找任务的时间与总任务数成正比。下面我们来看一下这个队列内部的一些属性：
+DelayedWorkQueue 用数组保存最小堆，并在 ScheduledFutureTask.heapIndex 中记录位置。未包装的任务可在 O(1) 时间定位；contains 因此是 O(1)，remove 还需维护堆序，为 O(log n)。通过 decorateTask 包装成其他类型后，定位需要线性扫描，不能继续依赖内部 heapIndex。
 
 ```java
 // 队列初始化容量为16
@@ -833,7 +826,7 @@ DelayedWorkQueue使用数组实现最小堆来保存调度任务，数组中的�
 
 ## 总结
 
-ScheduledThreadPoolExecutor继承了ThreadPoolExecutor使自身拥有了线程池的基本属性，但是由于任务调度的特殊屏蔽了对maximumPoolSize的支持，仅仅使用corePoolSize作为固定大小线程池，并通过一个以数组实现的**最小堆**无界队列来保存那些被调度的任务，执行这些任务的线程只能是核心线程。
+ScheduledThreadPoolExecutor 将任务封装为带触发时间的 Future，再通过最小堆选择最早到期的任务。正常并行度主要由 corePoolSize 控制，maximumPoolSize 不提供常规扩容；任务到期、工作线程获得任务与实际开始执行是不同时间点。
 
 ## 资料来源
 

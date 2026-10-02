@@ -1,6 +1,7 @@
 ---
-title: Thread常用方法
+title: "Thread 常用方法"
 date: 2019-07-09
+updated: 2026-10-02
 tags:
   - Java
   - Thread
@@ -8,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `interrupt()` 发出协作式中断信号，`join()` 等待另一个线程终止，`sleep()` 暂停当前线程且不释放已持有的监视器。`Object.wait()` 则要求持有目标监视器，并在等待时释放它；被唤醒后还需重新获取监视器。选择方法时要明确等待的是时间、线程终止还是业务条件。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/Thread.java) 的 Thread 实现与平台线程示例解释中断、休眠和等待。中断是协作式请求；wait 必须在循环中检查业务条件，并在返回前重新获得监视器。
 
-本文回答中断、休眠、等待和通知的实际行为，保留原文平台线程例子与旧实现片段。中断不等于强制停止，超时不保证立即获得 CPU，通知也不保证等待的条件已满足。使用 `wait()` 时应在循环中检查业务条件，以处理虚假唤醒和多个等待者的竞争。
-
-<!-- more -->
 
 ## isAlive方法
 
@@ -70,7 +66,7 @@ private native boolean isInterrupted(boolean ClearInterrupted);
 
 ### `public void interrupt()`
 
-该方法仅仅设置当前线程为中断状态，但是该线程什么时候中断是不确定的，只有当该线程拥有了某个对象的monitor时，并且此时该对象调用了`wait`,`join`,`sleep`这些方法，那么如果此时该线程调用interrupt方法，它就会立即被中断抛出InterruptedException异常，并且该线程的中断状态将被清除
+interrupt 作用于接收调用的目标线程，发出协作式中断请求。目标线程在 wait、join 或 sleep 中等待时，会抛出 InterruptedException 并清除中断标记；sleep 和 join 不要求调用者预先持有某个监视器。一般计算代码不会因此自动停止，必须主动检查中断；LockSupport.park 因中断返回时保留标记。
 
 ```java
 public class DemoApplication {
@@ -187,7 +183,7 @@ public static void sleep(long millis, int nanos)
 }
 ```
 
-第二个带有纳秒的sleep方法最终调用的还是第一个native方法，所以我们只需要分析带纳秒的sleep方法即可。首先需要明确`1毫秒(ms)=1000000纳秒(ns)`。当我们传入纳秒参数时，只要纳秒值在1到1000000范围内，如果纳秒值超过一半或者没传毫秒值传了纳秒值的话，对应的毫秒值加一，然后调用native方法让当前的线程睡眠指定的毫秒时间。并且从方法的注释上可以知道，当前线程虽然睡眠了，如果它此时拥有某个对象的monitor，它是不会失去该monitor的。所以sleep方法只是让当前线程睡眠指定的毫秒时间，不会失去对象的monitor，在指定的毫秒时间结束后，线程继续执行。
+在本版本中，sleep(long millis, int nanos) 校验 nanos 位于 0 到 999999，再将达到半毫秒的余量，或 millis 为零时的非零余量，向毫秒进位后委托给 native sleep。计时精度和恢复执行受调度影响。sleep 不释放当前线程已持有的任何监视器。
 
 ## join方法
 
@@ -236,7 +232,7 @@ public class DemoApplication {
 1
 ```
 
-可以发现主线程是在Worker线程执行完毕后才继续执行代码，join方法的作用就显而易见了。join方法会使当前线程处于WAITING状态，只有在执行join方法的线程执行完毕后，当前线程才会继续往下执行。那么它的原理是什么呢？接下来我们看一下它的源码
+无超时的 worker.join 等待 worker 终止；等待的是目标线程，不是执行 join 调用的主线程。主线程也可能因中断提前退出等待。下面的实现通过反复检查 worker 是否存活来应对通知和虚假唤醒。
 
 ```java
 public final synchronized void join(long millis)
@@ -327,7 +323,7 @@ public class DemoApplication {
 
 ## yield方法
 
-yield意为让步的意思，它的作用是让当前正在执行的线程让出cpu执行权，使当前线程的状态变为`RUNNABLE`状态。cpu会再次从`RUNNABLE`状态中的线程选择执行，所以该线程可能再次被选中执行。
+yield 是给调度器的让步提示，调度器可以忽略它。线程仍处于 RUNNABLE，调用不保证其他线程先运行，也不提供内存同步或业务顺序保证。
 
 ```java
 public class DemoApplication {
@@ -392,7 +388,7 @@ public final void wait(long timeout, int nanos) throws InterruptedException {...
 notify意为通知的意思，它的作用是唤醒正在此对象monitor上等待的线程，这些线程指的是上面调用了wait方法的线程，一般来说wait方法和notify方法是成对出现的。在Object类中一共定义了两个和notify相关的方法。
 
 ```java
-// 随机唤醒正在此对象monitor上等待的一个线程
+// 选择正在此对象监视器上等待的一个线程，不保证选择顺序
 public final native void notify();
 // 唤醒正在此对象monitor上等待的所有线程
 public final native void notifyAll();
@@ -401,15 +397,19 @@ public final native void notifyAll();
 这两个方法仅仅是用来唤醒由于调用了wait方法处于WAITING状态的线程，唤醒它们后，这些线程不一定会立马执行，是否能够继续执行取决于cpu的调度。下面的例子给出了wait和notify配合使用的场景
 
 ```java
+import java.time.LocalDateTime;
+
 public class DemoApplication {
 
     private static final Object lock = new Object();
+    private static boolean ready;
 
     public static void main(String[] args) throws Exception {
         new Worker("Worker").start();
         Thread.sleep(2000);
         synchronized (lock) {
-            lock.notify();
+            ready = true;
+            lock.notifyAll();
         }
     }
 
@@ -424,7 +424,9 @@ public class DemoApplication {
             synchronized (lock) {
                 try {
                     System.out.println(getName() + "开始运行: " + LocalDateTime.now());
-                    lock.wait();
+                    while (!ready) {
+                        lock.wait();
+                    }
                     System.out.println(getName() + "结束运行: " + LocalDateTime.now());
                 } catch (InterruptedException e) {
                     e.printStackTrace();
@@ -444,7 +446,7 @@ Worker结束运行: 2019-07-10T19:26:57.739
 ```
 
 在主线程中开启一个Worker线程，在子线程的run方法内同步一个对象lock，所以子线程执行run后就会获取lock的monitor，然后lock执行wait方法，Worker线程就会阻塞并处于WAITING状态，并且失去lock的monitor。
-然后主线程休眠两秒，执行同步lock的代码，获取到lock的monitor，调用notify方法，唤醒正在lock的monitor上等待的线程即Worker线程，Worker线程继续执行剩下的代码。
+主线程在同一监视器保护下设置 ready 并通知等待者。即使通知先发生，Worker 也会根据 ready 跳过等待；发生虚假唤醒时继续检查条件。主线程退出 synchronized 后，Worker 才能重新取得监视器并继续。sleep 只用于演示时间间隔，不承担正确性保障。
 
 ## setUncaughtExceptionHandler方法
 
@@ -468,7 +470,7 @@ public void uncaughtException(Thread t, Throwable e) {
 }
 ```
 
-可以发现如果存在父ThreadGroup的话则会将该异常委托给它的父ThreadGroup处理，处理前先判断Thread有没有默认的UncaughtExceptionHandler，（注意在Thread中有两个UncaughtExceptionHandler，一个是Thread实例的UncaughtExceptionHandler，就是调用setUncaughtExceptionHandler方法设置的，还有一个是static修饰的UncaughtExceptionHandler，这是所有Thread实例的UncaughtExceptionHandler，可以通过Thread的setDefaultUncaughtExceptionHandler方法设置），如果有默认的UncaughtExceptionHandler就让默认的处理器去处理，否则再判断异常的类型，只要不是ThreadDeath就将异常信息打印到标准错误流中，这就是为什么我们平时程序出现异常能够在控制台看到错误信息的原因。
+ThreadGroup.uncaughtException 先委托父线程组。到达没有父组的根组后，才检查通过 Thread.setDefaultUncaughtExceptionHandler 设置的默认处理器；没有默认处理器且异常不是 ThreadDeath 时，将信息打印到标准错误流。线程实例自己的处理器优先于所属线程组。
 
 ```java
 public class DemoApplication {

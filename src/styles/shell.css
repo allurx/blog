@@ -1,0 +1,194 @@
+/*
+ * Copyright 2026 allurx
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* 导航与页面自然滚动；列表和归档共用内容表面，详情自行组织正文面板与外置目录。 */
+.site-header, .site-footer, .index-page, .article-page, .text-page {
+  width: calc(100% - 2 * var(--gutter));
+  max-width: var(--page-width);
+  margin-inline: auto;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  height: var(--header-height);
+  margin-top: var(--header-top);
+  padding-inline: clamp(1rem, 2.5vw, 2rem);
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  background: var(--glass);
+  box-shadow: 0 8px 32px #253b6908;
+  backdrop-filter: blur(20px);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-right: auto;
+  color: var(--color);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.8rem;
+  font-style: italic;
+  font-weight: 700;
+  letter-spacing: -.055em;
+  text-decoration: none;
+}
+.brand, .site-nav, .site-footer nav {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.brand::after {
+  content: ".";
+  color: var(--accent);
+}
+.brand:hover {
+  color: var(--accent);
+}
+
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+.site-nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .45rem;
+  min-height: 40px;
+  padding: .5rem .85rem;
+  border-radius: .75rem;
+  color: var(--muted);
+  font-size: .875rem;
+  text-decoration: none;
+}
+.site-nav .icon {
+  width: 1rem;
+  height: 1rem;
+}
+.site-nav a:hover {
+  background: var(--surface);
+  color: var(--color);
+}
+.site-nav a[aria-current] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.index-page, .article-page, .text-page {
+  margin-top: 2rem;
+}
+.index-page, .text-page {
+  padding: var(--sheet-padding);
+  border: 1px solid var(--border);
+  border-radius: 1.65rem;
+  background: var(--panel);
+  box-shadow: var(--panel-shadow);
+}
+.site-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .5rem 2rem;
+  margin-top: 1.5rem;
+  padding: .75rem .5rem 2rem;
+  color: var(--muted);
+  font-size: .75rem;
+}
+.site-credits {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin: 0;
+}
+.site-footer nav {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+.site-footer a {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  min-height: 36px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.site-footer .icon {
+  width: 1rem;
+  height: 1rem;
+}
+.site-footer a:hover {
+  color: var(--accent);
+}
+
+@media (width < 40rem) {
+  :root {
+    --gutter: 0px;
+    --header-top: env(safe-area-inset-top);
+  }
+  .site-header, .index-page, .article-page > .page-panel, .text-page {
+    border-inline: 0;
+    border-radius: 0;
+  }
+  .site-header {
+    gap: .5rem;
+    padding-inline: .85rem;
+    border-radius: 0;
+  }
+  .brand {
+    font-size: 1.55rem;
+  }
+  .site-nav {
+    gap: .1rem;
+  }
+  .site-nav a {
+    min-height: 44px;
+    padding-inline: .65rem;
+    font-size: .8rem;
+  }
+  .site-nav .icon {
+    display: none;
+  }
+  .index-page, .article-page, .text-page {
+    margin-top: 1rem;
+  }
+  .index-page, .text-page {
+    border-radius: 0;
+  }
+  .site-footer {
+    justify-content: center;
+    padding-bottom: 1.5rem;
+  }
+}
+
+@media print {
+  .site-header {
+    display: none;
+  }
+  .site-footer {
+    display: block;
+    margin-top: 1.5rem;
+    padding: .5rem 0 0;
+    border-top: 1px solid var(--border);
+    font-size: 9pt;
+  }
+  .site-footer nav {
+    display: none;
+  }
+  .article-page, .index-page, .text-page {
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}

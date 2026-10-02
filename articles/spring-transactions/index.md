@@ -1,21 +1,17 @@
 ---
-title: Spring事务
+title: "Spring 事务"
 date: 2020-06-20
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-transaction
 domain: Spring
 ---
 
-## 核心结论
-
 Spring 事务把不同资源的事务管理统一成编程模型。传播行为决定被调用方法如何参与已有事务，隔离级别决定事务之间可见性，两者不能混用。声明式事务还受代理边界影响：默认代理模式下，自调用不会触发新的事务拦截。
 
-## 问题与适用范围
+下面从核心属性和七种传播行为进入命令式事务拦截链；源码采用 Spring Framework 5.2.5.RELEASE，可对照 [TransactionAspectSupport](https://github.com/spring-projects/spring-framework/blob/v5.2.5.RELEASE/spring-tx/src/main/java/org/springframework/transaction/interceptor/TransactionAspectSupport.java)。讨论范围不包含响应式事务；命令式事务也不会自动传播到新线程。`REQUIRES_NEW` 可能需要额外连接，`NESTED` 则依赖保存点等资源能力，不能对所有事务管理器作相同假设。
 
-本文回答命令式事务中的核心属性、七种传播行为和原文拦截链，保留未标注精确修订的旧源码。它不覆盖响应式事务；命令式事务也不会自动传播到新线程。`REQUIRES_NEW` 可能需要额外连接，`NESTED` 则依赖保存点等资源能力，不能对所有事务管理器作相同假设。
-
-<!-- more -->
 
 ## 事务的相关属性
 
@@ -29,7 +25,7 @@ TransactionDefinition中定义了事务本身能够拥有的基本属性，例�
 
 ### TransactionStatus
 
-包含明确的事务对象以及当前事务的一些状态信息
+TransactionStatus 表示当前事务执行状态，提供回滚标记、保存点等操作；它不要求调用方直接持有底层连接等资源对象。
 
 ### TransactionInfo
 
@@ -70,7 +66,7 @@ TransactionDefinition中定义了事务本身能够拥有的基本属性，例�
 
 ## 原理
 
-spring事务是通过AOP实现的，具体的实现是通过`TransactionInterceptor`这个方法拦截器在每个方法执行期间进行拦截，然后再根据发生异常的策略进行提交或者回滚。
+Spring 声明式事务在默认代理模式下由 `TransactionInterceptor` 拦截经过代理的方法调用，再根据事务属性建立边界、提交或回滚。并非每个方法调用都经过拦截：同一对象内部的自调用通常绕过代理，编程式事务也有单独入口。
 
 ```java
 public class TransactionInterceptor extends TransactionAspectSupport implements MethodInterceptor, Serializable {
@@ -178,11 +174,11 @@ finally {
 }
 ```
 
-首先通过createTransactionIfNecessary方法根据情况来创建事务信息，然后执行下一个拦截器的lamda表达式，如果发生异常的话则判断是否需要回滚或者提交，finally中清除本次事务的信息。其中最为核心的部分在于createTransactionIfNecessary这个方法，内部会根据当前的事务属性（事务的传播级别）来判断是否需要创建事务。有兴趣的同学可以自行翻阅源码。
+createTransactionIfNecessary 根据事务属性决定加入或创建事务，随后执行调用链。异常路径由 completeTransactionAfterThrowing 根据回滚规则处理；正常路径则在 cleanupTransactionInfo 恢复线程中的事务信息之后，继续调用 commitTransactionAfterReturning。清理拦截器上下文不等于已经提交或回滚，最终资源操作由事务管理器完成。
 
 ## 总结
 
-本文简单的讲述了spring事务框架的一些基本概念以及其背后的运行原理，同时解释了spring的几种事务传播机制，由于精力有限同时整个spring事务框架在事务创建、回滚那一块的逻辑的确十分复杂，并没有详细的分析源码。
+选择传播行为时，先确定内层操作是否必须与外层一起成功，再判断它需要加入当前事务、独立事务还是保存点。实现是否符合这个选择，还取决于调用能否经过代理，以及事务管理器是否支持所需的资源行为。
 
 ## 资料来源
 

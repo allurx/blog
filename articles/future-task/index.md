@@ -1,7 +1,7 @@
 ---
 title: FutureTask
 date: 2019-12-28
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Concurrent
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `FutureTask` 同时是可执行的 `Runnable` 和可读取结果的 `Future`，包装任务后记录完成、异常或取消状态。`get()` 等待的是任务结果；取消会改变 Future 的状态，并可能请求中断执行线程，但不能保证任务的业务代码立即停止。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/FutureTask.java) 为源码基线，沿任务执行、结果发布和等待者唤醒的顺序分析 FutureTask。任务执行期间仍可能保持 NEW 状态；Future 已取消与业务代码已退出是两个不同的事实。
 
-本文回答任务如何执行、如何发布结果，以及等待者如何被唤醒，保留原文基于 CAS 与 `LockSupport` 的旧实现分析，未标注精确 JDK 修订。正文列出的是原文版本的 `Future` 方法，不能当作当前 API 的完整清单。任务被取消与执行线程已经退出是不同事实。
-
-<!-- more -->
 
 ## FutureTask
 
@@ -39,7 +34,7 @@ public interface RunnableFuture<V> extends Runnable, Future<V> {
 }
 ```
 
-发现RunnableFuture继承了Runnable和Future接口，并且重写了Runnable的run方法，其实这个RunnableFuture笼统的讲是一个**将来能够运行任务**，但是由于java原生的Thread类只支持提交Runnable类型的执行任务，而Runnable本身是没有返回值的，提交给线程后就会立马被执行，你也不知道任务啥时候执行完毕，开发人员不能很好的控制提交的任务。因此RunnableFuture接口就出现了，它是用来替代Runnable接口的，同时继承Future接口的原因是因为Future内部提供了很多有用的方法以便我们能够灵活的控制提交给线程的任务，例如取消刚刚提交的任务、看看刚刚提交的任务有没有完成等等这些新特性。既然这个Future这么神奇，那我们就接着看一看它内部究竟定义了那些方法
+RunnableFuture 同时继承 Runnable 与 Future：run 表达执行入口，Future 表达结果、状态和取消操作。它可以交给 Thread 或执行器运行，但构造或提交不保证立即开始。Runnable 仍适合不需要结果句柄的任务，RunnableFuture 并不是对它的替代。
 
 ### Future
 
@@ -67,7 +62,7 @@ Future一共定义了五个有用的方法来帮助我们控制提交给线程�
 
 1.  `boolean cancel(boolean mayInterruptIfRunning)`
 
-   使用这个方法可以尝试取消刚刚提交的任务。 参数mayInterruptIfRunning为true代表会尝试中断当前执行该任务的线程来尝试终止该任务，false代表正在运行的任务将会被完成。
+   尝试把 Future 置为取消状态。mayInterruptIfRunning 为 true 时，可以请求中断执行线程；为 false 时不发送这个中断请求。FutureTask 即使已经开始运行，只要仍处于 NEW，也可能被 cancel(false) 成功取消；业务代码可以继续执行，但 get 会报告 CancellationException。
 
 2. `boolean isCancelled()`
 
@@ -279,7 +274,7 @@ public V get() throws InterruptedException, ExecutionException {
 }
 ```
 
-首先第一步获取当前任务执行状态，正常情况下是NEW，不正常情况是有多个线程执行了同一个FutureTask，实际操作中我们应该一个任务对于一个线程，不要多个线程执行同一个任务（为什么要多个线程执行同一个任务？）因此在执行get前对状态做了一个判断，如果没有其它线程已经完成这个任务，就调用awaitDone方法，看这个方法的名字大概也能猜出来它的作用是用来等待任务完成的，言外之意就是让当前执行get方法的线程阻塞一下，等任务完成了再通知你。
+get 先读取状态，已完成时直接报告结果；状态为 NEW 或 COMPLETING 时进入 awaitDone。多个线程等待同一个 FutureTask 是正常用途，get 不负责执行任务。run 通过 runner 的 CAS 防止同一任务体被并发执行。
 
 #### awaitDone方法
 
@@ -369,52 +364,33 @@ public V get() throws InterruptedException, ExecutionException {
 
 ```java
 public void run() {
-    // 任务执行前，如果是以下两种情况之一则不执行任务
-    // 1、当前任务不是NEW状态
-    // 2、当前的runner（真正执行任务的线程）已经被其它线程设置了。
-    // （cas失败只会发生在多个线程执行同一个FutureTask的时候）
-    // 发生以上两种情况说明当前FutureTask已经被其它线程执行了，就没必要执行了，直接返回即可
     if (state != NEW ||
         !UNSAFE.compareAndSwapObject(this, runnerOffset,
                                      null, Thread.currentThread()))
         return;
-    // 走到这里说明当前线程可能是即将执行任务的线程
     try {
         Callable<V> c = callable;
-        // 再次判断callable不为null以及状态为NEW
-        // 1、callable只会在finishCompletion方法中被置为null
-        // 而finishCompletion方法会在取消，发生异常、以及任务完成时被调用，
-        // 运行到这一步只会在取消，发生异常这两种情况下c==null
-        ///2、同样 运行到这一步在取消，发生异常这两种情况下state!=NEW，
-        // 因此这两个值在执行到这个if语句时都再次做了判断，这也解释了
-        // Future中cancel方法的mayInterruptIfRunning参数的含义，如果
-        // 这个if为true，当前线程就会走到下面的result = c.call()这一步，
-        // 然后调用cancel方法就会尝试中断当前线程
         if (c != null && state == NEW) {
             V result;
-            // 是否成功运行的标记
             boolean ran;
             try {
-                // 调用Callable的call方法，返回结果
                 result = c.call();
                 ran = true;
             } catch (Throwable ex) {
                 result = null;
                 ran = false;
-                // 发生异常的回调
                 setException(ex);
             }
             if (ran)
-                // 成功运行的回调
                 set(result);
         }
     } finally {
-		// 无论是否执行成功还是发生异常还是任务被取消了，都将当前的runner置为null，
-        // 防止并发的调用run方法
+        // runner must be non-null until state is settled to
+        // prevent concurrent calls to run()
         runner = null;
+        // state must be re-read after nulling runner to prevent
+        // leaked interrupts
         int s = state;
-        // 如果任务状态是被中断的则通过handlePossibleCancellationInterrupt方法通过
-        // Thread.yield()的方式使调用cancel方法的线程先去执行取消方法，直到其成功为止。
         if (s >= INTERRUPTING)
             handlePossibleCancellationInterrupt(s);
     }
@@ -492,7 +468,7 @@ private void finishCompletion() {
 }
 ```
 
-finishCompletion的作用是确保阻塞在get方法中的线程无论如何都会被唤醒。
+finishCompletion 遍历并清空等待者栈，为等待 get 的线程提供许可，再调用 done 并解除 callable 引用。等待者醒来后通过状态判断应返回结果还是抛出异常。
 
 现在我们继续回到get方法中来，我们已经理清了调用get方法的线程是如何被阻塞的和唤醒的，接下来在被唤醒之后就是获取任务的执行结果了
 
@@ -551,7 +527,7 @@ public boolean cancel(boolean mayInterruptIfRunning) {
 }
 ```
 
-cancel方法只会取消状态为NEW的任务，如果mayInterruptIfRunning参数为true则会尝试中断当前正在执行任务的线程。最终无论如何都会调用finishCompletion方法唤醒调用get方法的线程。
+cancel 只有在把 NEW 原子地转换为取消状态后才成功，NEW 包括尚未开始和正在执行但未完成的情况。mayInterruptIfRunning 为 true 时请求中断 runner；成功取消路径最终调用 finishCompletion。已完成任务上的失败取消会直接返回 false，不再执行收尾。
 
 #### runAndReset方法
 

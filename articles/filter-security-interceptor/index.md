@@ -1,6 +1,7 @@
 ---
-title: FilterSecurityInterceptor源码分析
+title: "FilterSecurityInterceptor 源码分析"
 date: 2019-06-14
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 FilterSecurityInterceptor 把 HTTP 请求包装成 FilterInvocation，在调用下游过滤器链之前取得配置属性、认证信息并进行访问决策。父类还支持临时 RunAs 身份与调用后的处理；这些扩展是否实际参与，取决于配置。URL 授权和方法授权复用部分基础机制，但拦截对象不同。
 
-## 问题与适用范围
+下面分析 FilterSecurityInterceptor 与 AbstractSecurityInterceptor 的协作。下游是 Servlet 过滤器链及最终请求处理，并不意味着这里直接拦截某个带注解的业务方法；方法安全由相应的方法拦截器处理。
 
-本文回答：旧的 URL 授权过滤器在调用下游链前后执行了哪些步骤？
-
-本文分析旧的 FilterSecurityInterceptor 与 AbstractSecurityInterceptor。下游是 Servlet 过滤器链及最终请求处理，并不意味着这里直接拦截某个带注解的业务方法；方法安全由相应的方法拦截器处理。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/access/intercept/FilterSecurityInterceptor.java)。
 
 ## 概述
 
-FilterSecurityInterceptor是整个过滤器链中的最后一个过滤器，它的整个执行机制很复杂，这里我简单的描述一下的作用：它负责将之前过滤产生的认证信息从当前请求上下文中取出来，对请求的资源做权限判断，如果无权访问相应的资源，则抛出spring-security异常，由上一篇的ExceptionTranslationFilter进行处理。
+FilterSecurityInterceptor 通常位于认证过滤器之后、业务处理之前。它从当前安全上下文读取认证信息，对请求资源执行授权；认证不足或访问被拒绝时抛出安全异常，由位于外层的 [ExceptionTranslationFilter](/exception-translation-filter/) 转换为响应。过滤器链可以定制，因此不能把它的位置固定为所有应用的最后一个。
 
-<!-- more -->
 
 ## FilterSecurityInterceptor
 
@@ -169,9 +163,8 @@ protected InterceptorStatusToken beforeInvocation(Object object) {
    if (debug) {
       logger.debug("Secure object: " + object + "; Attributes: " + attributes);
    }
-   // 如果当前没有认证信息，在前面的匿名认证过滤器分析中我们知道，无论如何SecurityContext
-   // 中都会填充认证信息的，至少也是匿名认证信息，所以此处会抛出一个
-   // AuthenticationCredentialsNotFoundException异常
+   // 受保护调用需要认证信息；未启用匿名认证或前置过滤器未填充上下文时，
+   // 这里抛出 AuthenticationCredentialsNotFoundException
    if (SecurityContextHolder.getContext().getAuthentication() == null) {
       credentialsNotFound(messages.getMessage(
             "AbstractSecurityInterceptor.authenticationNotFound",
@@ -281,16 +274,11 @@ public Collection<ConfigAttribute> getAttributes(Object object) {
 
 #### AccessDecisionManager
 
-访问决策管理器，最终判断是否有权访问特定资源的管理者，由于篇幅限制，暂时不做详细分析，以后会单独写一篇文章分析它的原理，现在我们只需要知道它的作用是对资源的访问权限进行判断就行了。
+AccessDecisionManager 根据 Authentication 与配置属性决定是否允许访问。三种投票策略及其差异见 [AccessDecisionManager](/access-decision-manager/)。
 
 #### RunAsManager
 
-> 仅为当前安全对象调用创建新的临时Authentication对象。
-> 此接口允许实现替换仅适用于当前安全对象调用的Authentication对象。 AbstractSecurityInterceptor将仅在安全对象回调的持续时间内替换SecurityContext中保存的Authentication对象，并在回调结束时将其返回到原始Authentication对象。
-> 提供这样可以建立具有两层对象的系统。一层是面向公众的，具有正常的安全方法，授权的权限预计由外部呼叫者持有。另一层是私有的，并且只能由面向公共层的对象调用。此私有层中的对象仍然需要安全性（否则它们将是公共方法），并且它们还需要安全性以防止外部调用者直接调用它们。私有层中的对象将配置为要求授予的权限永远不会授予外部调用者。 RunAsManager接口提供了一种以这种方式提升安全性的机制。
-> 预计实现将提供相应的具体Authentication和AuthenticationProvider，以便可以验证替换的Authentication对象。需要实现某种形式的安全性以确保AuthenticationProvider仅接受由RunAsManager的授权具体实现创建的Authentication对象。
-
-以上内容翻译自文档注释，我也没明白这个类的具体作用是什么，大概就是让当前的用户以另一个身份执行接下来的流程，有点系统后门的意思。它的实现类一共有两个，分别是NullRunAsManager和RunAsManagerImpl，NullRunAsManager没有任何作用，所以这里主要分析一下RunAsManagerImpl
+RunAsManager 为一次受保护调用临时替换 Authentication，使下游代码在限定调用范围内使用额外权限。AbstractSecurityInterceptor 保存原上下文，并在 finally 中恢复；它不是绕过授权的入口。NullRunAsManager 不替换身份，RunAsManagerImpl 则根据 RUN_AS_ 配置属性构造临时令牌，并由相应的 AuthenticationProvider 验证该令牌。
 
 ```java
 public class RunAsManagerImpl implements RunAsManager, InitializingBean {
@@ -420,7 +408,7 @@ protected Object afterInvocation(InterceptorStatusToken token, Object returnedOb
 }
 ```
 
-主要是对安全方法执行完毕后的返回值进行修改，委托给AfterInvocationManager进行处理
+AbstractSecurityInterceptor 可以把返回值交给 AfterInvocationManager 做后置检查或过滤。FilterSecurityInterceptor 调用这里时传入的是 null，因为 Servlet 过滤器链没有业务返回值；不能据此推断它会修改 Controller 返回的数据。
 
 ## 总结
 
@@ -438,4 +426,3 @@ FilterSecurityInterceptor的整体执行逻辑已经全部解析完了，这里�
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

@@ -1,22 +1,17 @@
 ---
-title: Import注解
+title: "Import 注解"
 date: 2019-07-03
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Annotation
 domain: Spring
 ---
 
-## 核心结论
-
 `@Import` 把配置类、普通组件以及选择或注册逻辑接入 Spring 的配置处理过程。固定组合可直接导入类；需根据元数据选择导入项时使用 `ImportSelector`；需构造 Bean 定义时使用 `ImportBeanDefinitionRegistrar`。它们承担的扩展职责不同，不必为简单注册引入额外层次。
 
-## 问题与适用范围
+下面通过示例说明 `@Import` 如何配合 `@Bean` 与配置类。示例使用 Spring Framework 5.2.5.RELEASE，导入能力可对照该版本的 [Import 声明](https://github.com/spring-projects/spring-framework/blob/v5.2.5.RELEASE/spring-context/src/main/java/org/springframework/context/annotation/Import.java)；选择器与注册器主要在配置解析阶段执行，不是每次业务方法调用时动态注入。当前项目还需核对 Bean 名称、重复定义与实际容器配置。
 
-本文回答 `@Import` 与 `@Bean`、配置类如何配合，保留原文示例及接口片段。原文未给出精确 Spring Framework 版本；选择器与注册器主要在配置解析阶段执行，不是每次业务方法调用时动态注入。当前项目还需核对 Bean 名称、重复定义与实际容器配置。
-
-<!-- more -->
 
 ## @Import 的声明
 

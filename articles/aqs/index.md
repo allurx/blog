@@ -1,7 +1,7 @@
 ---
 title: AbstractQueuedSynchronizer
 date: 2019-09-02
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Concurrent
@@ -10,15 +10,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 AQS 把同步状态与等待队列管理分开：子类定义独占或共享获取、释放的规则，框架负责排队、阻塞、唤醒与取消。FIFO 等待队列不自动等于公平获取，`state` 的含义也由同步器定义，不能统一理解为重入次数。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/locks/AbstractQueuedSynchronizer.java) 为源码基线，分析独占与共享钩子、等待节点及队列操作。子类负责定义同步状态的含义和获取协议，AQS 负责等待管理；常见锁与同步工具已有合适实现时，直接使用它们。
 
-本文回答自定义同步器需实现哪些钩子，并解释原文旧节点结构和队列操作，未标注精确 JDK 修订。文中 `Node`、状态常量与 `Unsafe` 操作只适用于展示的实现。使用 AQS 的业务前提是有明确的状态与获取协议；常见锁和同步工具已有实现时优先复用。
-
-<!-- more -->
 
 ## AbstractOwnableSynchronizer
 
@@ -60,7 +55,7 @@ AQS控制多线程访问共享资源使用的算法是基于CLH锁算法的一�
 * 共享模式
   例如读文件时可以有多个线程同时在读。基于此的实现有CountDownLatch
 
-在这两种模式下当前访问共享资源的线程都是通过其内部类Node来存放的，然后将这些Node组成一个FIFO（先进先出）的双向链表。原文 AQS 实现中定义了链表头尾节点与同步状态 state；state 的含义由具体同步器决定，可表示重入次数、剩余许可或倒计数等
+在这两种模式下当前访问共享资源的线程都是通过其内部类Node来存放的，然后将这些Node组成一个FIFO（先进先出）的双向链表。这里的 AQS 实现中定义了链表头尾节点与同步状态 state；state 的含义由具体同步器决定，可表示重入次数、剩余许可或倒计数等
 
 ```java
 // 头部节点
@@ -78,11 +73,11 @@ AQS是通过CAS高效的往链表尾部添加新的节点。同时AQS给不同�
 * tryAcquire(int arg)
   以独占模式获取共享资源，成功返回true，失败返回false。
 * tryAcquireShared(int arg)
-  以共享模式获取共享资源，成功返回true，失败返回false，然后AQS内部会针对该结果进行构造共享Node排队
+  返回负数表示获取失败，零表示获取成功但后续共享获取不能成功，正数表示获取成功且后续共享获取可能成功。返回值是 int，不是 boolean。
 * tryRelease(int arg)
-  以独占模式释放资源，成功返回true，失败返回false。
+  返回 true 表示资源已完全释放，可以尝试唤醒等待者；可重入锁只减少部分重入计数时返回 false。
 * tryReleaseShared(int arg)
-  以共享模式释放资源，成功返回true，失败返回false。
+  返回 true 表示本次释放可能允许等待的共享获取成功，需要传播通知。
 ### Node
 
 Node是AQS的内部静态类，同步队列就是基于此构成的
@@ -109,7 +104,7 @@ static final class Node {
     // 下一个执行acquireShared方法的线程能够无条件的执行（共享模式）
     static final int PROPAGATE = -3;
 
-	// 节点当前的状态值，只能是以上4种情况，初始化为0代表当前还没有线程访问共享资源
+    // 等待状态还可以是零；零表示当前没有上述等待协议标记。
     volatile int waitStatus;
 
     // 前一个结点
@@ -172,7 +167,7 @@ public final void acquire(int arg) {
 }
 ```
 * !tryAcquire(arg)==true
-  代表有其它线程已经获取锁了
+  代表子类定义的获取条件此刻不满足，不一定意味着资源被另一个线程独占。
 * addWaiter(Node.EXCLUSIVE)
   添加独占模式Node到链表尾部
 * acquireQueued(addWaiter(Node.EXCLUSIVE), arg))
@@ -290,23 +285,30 @@ acquireQueued在第一次for循环中先判断当前节点线程是否能够获�
 
 ```java
 private static boolean shouldParkAfterFailedAcquire(Node pred, Node node) {
-    // 前驱节点的状态
     int ws = pred.waitStatus;
-    // 如果前驱节点的状态是SIGNAL，返回true
     if (ws == Node.SIGNAL)
+        /*
+         * This node has already set status asking a release
+         * to signal it, so it can safely park.
+         */
         return true;
-    // 前驱节点状态是CANCELLED，往前追溯直到找到一个不是CANCELLED状态的节点并挂靠在上面
     if (ws > 0) {
+        /*
+         * Predecessor was cancelled. Skip over predecessors and
+         * indicate retry.
+         */
         do {
             node.prev = pred = pred.prev;
         } while (pred.waitStatus > 0);
         pred.next = node;
-    // 前驱节点状态是初始化或者是PROPAGATE，设置其状态为SIGNAL
     } else {
+        /*
+         * waitStatus must be 0 or PROPAGATE.  Indicate that we
+         * need a signal, but don't park yet.  Caller will need to
+         * retry to make sure it cannot acquire before parking.
+         */
         compareAndSetWaitStatus(pred, ws, Node.SIGNAL);
     }
-    // 走到这一步表明前驱节点的状态不是SIGNAL，但此刻已经重新设置为SIGNAL
-    // 返回false以便在上一步的acquireQueued方法中重新执行for循环
     return false;
 }
 ```
@@ -334,11 +336,11 @@ if (shouldParkAfterFailedAcquire(p, node) &&
 
 下面对acquireQueued方法做一个总结：
 
-1. 先判断当前线程是否能够获取锁，如果能的话，将其设置为头部节点，然后返回false。
+1. 当前节点成为头节点的后继后才尝试获取；成功时设置新头节点，并返回等待期间累计的中断标记。
 2. 如果不能获取锁，调用shouldParkAfterFailedAcquire方法过滤掉状态为CANCELLED的节点，依靠for循环挂靠在其前一个正常的节点上，等待第二次for循环后设置前驱节点状态为SIGNAL
 3. 在第二步返回true的情况下调用parkAndCheckInterrupt方法阻塞当前线程，直到前驱节点通知其运行
 
-综上acquireQueued方法返回的结果是当前节点在阻塞过程中是否被中断过。作用是给节点找一个恰当的位置最后再阻塞该节点线程。**注意线程阻塞后，其前驱节点的状态肯定是SIGNAL**
+`acquireQueued` 直到成功获取资源才返回，返回值记录等待期间是否检测到中断。准备阻塞时先让前驱承担通知责任，再重试获取，避免检查失败与真正停车之间丢失唤醒；前驱状态还会被释放者并发修改，SIGNAL 并非整个阻塞期间不变的事实。
 
 我们现在再重新回到一开始的acquire(int arg) 方法上来
 
@@ -444,7 +446,7 @@ private void unparkSuccessor(Node node) {
 }
 ```
 
-unparkSuccessor的执行流程是首先确保头部节点的状态是已完成状态，也就是说调用这个方法时，头部节点肯定是已经完成的。（如果有异常情况，就通过cas将其状态修改为0），然后找到靠近头部节点最近的一个不为null同时状态不是已取消的节点，然后调用LockSupport.unpark唤醒这个节点中的线程。
+`unparkSuccessor` 先尝试把传入节点的负状态清为零，再寻找未取消的后继；直接后继不可用时，从尾部沿 prev 回查。零不是“执行完成”的标记。最后通过 unpark 提供许可，让选中的线程重新参与获取。
 
 ### acquireShared(int arg)
 
@@ -459,7 +461,7 @@ public final void acquireShared(int arg) {
 
 #### tryAcquireShared(int arg)
 
-这是由子类实现的以共享模式获取锁的方法，返回负数代表获取失败，返回0代表获取成功，但是此刻已经没有资源可以获取了。返回正数依旧代表成功，但是还有剩余的资源等待其它线程获取。
+该钩子由子类实现。负数表示失败，零表示成功但后续共享获取不能成功，正数表示成功且后续共享获取可能成功。结果描述获取协议，不一定等于某种可数资源的剩余数量。
 
 #### doAcquireShared(int arg)
 
@@ -595,44 +597,41 @@ public final boolean releaseShared(int arg) {
 
 ```java
 private void doReleaseShared() {
+    /*
+     * Ensure that a release propagates, even if there are other
+     * in-progress acquires/releases.  This proceeds in the usual
+     * way of trying to unparkSuccessor of head if it needs
+     * signal. But if it does not, status is set to PROPAGATE to
+     * ensure that upon release, propagation continues.
+     * Additionally, we must loop in case a new node is added
+     * while we are doing this. Also, unlike other uses of
+     * unparkSuccessor, we need to know if CAS to reset status
+     * fails, if so rechecking.
+     */
     for (;;) {
-        // 头部节点
         Node h = head;
-        // 头部节点不为空且不为尾部节点（当前队列至少有2个节点）
-        // 注意h==tail这种情况只会在队列初始化时第一次设置头部时发生，
-        // 可以查看enq方法，说明此刻队列还没有完成初始化，不应该唤醒任何线程
         if (h != null && h != tail) {
             int ws = h.waitStatus;
-            // 头部节点的状态为SIGNAL，说明需要唤醒下一个节点
             if (ws == Node.SIGNAL) {
-                // 通过cas设置头部节点状态为0，成功则唤醒下一个节点的线程,否则的话再次循环
-                // 这里将头部节点状态设置为0的原因是
                 if (!compareAndSetWaitStatus(h, Node.SIGNAL, 0))
-                    continue;
-                // 成功则唤醒
+                    continue;            // loop to recheck cases
                 unparkSuccessor(h);
             }
-            // 头部节点的状态为0（初始化状态），通过cas设置其状态为PROPAGATE（传播状态），失败则再次循环
             else if (ws == 0 &&
                      !compareAndSetWaitStatus(h, 0, Node.PROPAGATE))
-                continue;
+                continue;                // loop on failed CAS
         }
-        // 这里判断h == head的原因是如果上面的unparkSuccessor方法执行成功后会唤醒头部节点的下一个
-        // 节点，被唤醒后的线程可能会立马执行，被唤醒后的执行逻辑在doAcquireSharedInterruptibly方法中的
-        // 第一个if判断，并且随着这个节点被唤醒，它会调用setHeadAndPropagate方法同时唤醒自己下一个处于
-        // 共享模式的节点，其中就会改变头结点的值，虽然在setHeadAndPropagate方法中会继续唤醒下一个节点，
-        // 这里再次作一个判断可能原因是为了效率吧，尽早的唤醒队列中剩余的其它节点。
-        if (h == head)
+        if (h == head)                   // loop if head changed
             break;
     }
 }
 ```
 
-doReleaseShared只会在头部节点状态为SIGNAL时才会唤醒下一个阻塞的线程，如果状态为0，仅仅是简单的设置其状态为PROPAGATE（暂时不理解这么做的原因）。
+`doReleaseShared` 在头节点为 SIGNAL 时清除通知标记并唤醒后继；状态为零时设为 PROPAGATE，记录共享释放还需要向后传播。头节点可能在并发获取时改变，循环与 `setHeadAndPropagate` 配合，避免释放与新头节点就位交错后遗漏通知。
 
 ## 例子
 
-AQS类的注释上给出了一个非重入互斥锁的例子，其中state=1代表锁定状态，state=0代表解锁状态。
+下面实现一个非重入互斥锁：state 为 1 表示已锁定，0 表示未锁定。除状态外还检查拥有者，防止其他线程错误地 unlock 或 signal；isLocked 只用于观察是否上锁，不代表当前线程持有锁。
 
 ```java
 package io.allurx;
@@ -652,7 +651,7 @@ public class Mutex implements Lock {
         // 是否持有锁
         @Override
         protected boolean isHeldExclusively() {
-            return getState() == 1;
+            return getState() == 1 && getExclusiveOwnerThread() == Thread.currentThread();
         }
 
         // 尝试获取锁
@@ -670,7 +669,7 @@ public class Mutex implements Lock {
         @Override
         protected boolean tryRelease(int releases) {
             assert releases == 1;
-            if (getState() == 0) {
+            if (!isHeldExclusively()) {
                 throw new IllegalMonitorStateException();
             }
             setExclusiveOwnerThread(null);
@@ -678,7 +677,11 @@ public class Mutex implements Lock {
             return true;
         }
 
-        // Provides a Condition
+        boolean isLocked() {
+            return getState() != 0;
+        }
+
+        // 为持有锁的线程提供条件等待
         Condition newCondition() {
             return new ConditionObject();
         }
@@ -708,7 +711,7 @@ public class Mutex implements Lock {
     }
 
     public boolean isLocked() {
-        return sync.isHeldExclusively();
+        return sync.isLocked();
     }
 
     public boolean hasQueuedThreads() {
@@ -784,7 +787,7 @@ public class DemoApplication {
 
 ## 总结
 
-AQS利用CAS和LockSupport通过基于CLH锁算法的变体算法提供了实现先进先出（FIFO）等待队列的阻塞锁和相关同步器的基础。获取锁的方式分为独占和共享两种模式，为其它基于这两种模式下的同步器的实现提供了顶级通用接口。加锁，解锁、入队，出队等细节方面的实现十分晦涩难懂，本文仅仅是从使用功能上做了一些浅显的解读，内部很多方法的实现原理上还有很多地方值得细究，例如为什么这样做不会产生死锁等等。理解AQS内部的实现原理有助于我们对其它并发容器的学习，待后续研究其它并发容器的时候再来慢慢补全AQS中一些没有深入研究和遗漏甚至是错误的知识点吧。
+AQS 通过同步状态、FIFO 等待队列和 LockSupport 管理获取失败后的等待。子类钩子决定独占或共享语义，队列本身不保证公平；取消、中断和共享传播负责让排队过程与实际获取协议保持一致。
 
 ## 资料来源
 

@@ -1,7 +1,7 @@
 ---
 title: "线程池里的 ThreadLocal 为什么必须清理"
 date: 2026-09-21
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "Java 并发"
 tags: ["ThreadLocal","线程池","上下文泄漏"]
 ---
@@ -84,7 +84,7 @@ public final class ThreadLocalLeakDemo {
 }
 ```
 
-2026-10-01 修订时，使用 JDK 25.0.2 的 `javac --release 17` 编译并运行，得到以下输出，代码中的检查均通过：
+使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；程序中的检查会核对这些结果。
 
 ```text
 without cleanup: alice

@@ -1,6 +1,7 @@
 ---
-title: SecurityFilterAutoConfiguration源码分析
+title: "SecurityFilterAutoConfiguration 源码分析"
 date: 2019-06-27
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 SecurityFilterAutoConfiguration 注册 DelegatingFilterProxyRegistrationBean，让 Servlet 容器中的代理按 Bean 名称找到 springSecurityFilterChain，并委托其处理请求。过滤器链的构建和它在 Servlet 容器中的注册承担不同职责，顺序及 dispatcher types 由安全属性控制。
-
-## 问题与适用范围
-
-本文回答：容器中的 springSecurityFilterChain 怎样接到 Servlet 请求入口？
 
 本文讨论嵌入式 Servlet 容器的 Boot 自动配置。它说明代理的注册入口，链内各过滤器怎样执行仍由 FilterChainProxy 及链内组件决定。
 
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SecurityFilterAutoConfiguration.java)。
 
 ## 概述
 
 SecurityFilterAutoConfiguration的作用是自动配置一个DelegatingFilterProxyRegistrationBean，这个bean通过name找到SecurityAutoConfiguration中往spring容器中添加名称为springSecurityFilterChain的过滤器并进行代理，最终将这个springSecurityFilterChain添加到ServletContext。
 
-<!-- more -->
 
 ## SecurityFilterAutoConfiguration
 
@@ -76,4 +70,3 @@ SecurityFilterAutoConfiguration将DelegatingFilterProxyRegistrationBean注册到
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

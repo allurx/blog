@@ -20,6 +20,7 @@
   },
   "include": [
     "src/**/*.ts",
+    "scripts/**/*.ts",
     "vite.config.ts",
     "site.config.ts"
   ]

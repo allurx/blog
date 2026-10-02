@@ -1,7 +1,7 @@
 ---
 title: "Redis 锁为什么还需要 Fencing Token"
 date: 2026-09-19
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "分布式"
 tags: ["Redis","分布式锁","FencingToken"]
 ---
@@ -122,7 +122,7 @@ public final class FencingTokenDemo {
 }
 ```
 
-2026-10-01 修订时，使用 JDK 25.0.2 的 `javac --release 17` 编译并运行，得到以下输出，代码中的检查均通过：
+使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；程序中的检查会核对这些结果。
 
 ```text
 without fencing: written-by-A-after-expiry

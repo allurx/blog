@@ -1,6 +1,7 @@
 ---
-title: UserDetailsServiceAutoConfiguration源码分析
+title: "UserDetailsServiceAutoConfiguration 源码分析"
 date: 2019-06-26
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 UserDetailsServiceAutoConfiguration 在没有自定义认证管理器、认证提供者或用户服务等条件下创建 InMemoryUserDetailsManager。默认用户属性来自 SecurityProperties，随机密码属于开发起步配置；提供自己的认证组件会使对应默认配置退让。
 
-## 问题与适用范围
+下面分析默认用户配置。默认用户不属于数据库用户管理方案，日志中的密码与生成时机也不是对生产认证流程的建议；实际退让条件应按所用 Boot 版本核对。
 
-本文回答：为什么没有配置用户的 Spring Boot 安全应用也能出现默认用户名和密码？
-
-本文分析历史默认用户配置。默认用户不属于数据库用户管理方案，日志中的密码与生成时机也不是对生产认证流程的建议；实际退让条件应按所用 Boot 版本核对。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/UserDetailsServiceAutoConfiguration.java)。
 
 ## 概述
 
 UserDetailsServiceAutoConfiguration的作用是在内存中配置一个用户信息管理者，通俗的讲就是自动为我们生成一个用户，就是平时我们直接启动一个spring-security项目，控制台会打印一串密码，这个密码就是自动生成的用户信息
 
-<!-- more -->
 
 ## UserDetailsServiceAutoConfiguration
 
@@ -196,4 +190,3 @@ UserDetailsServiceAutoConfiguration自动在当前内存中配置了一个用户
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

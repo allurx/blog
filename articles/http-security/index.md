@@ -1,6 +1,7 @@
 ---
-title: HttpSecurity源码分析
+title: "HttpSecurity 源码分析"
 date: 2019-06-30
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 HttpSecurity 是构建单条 SecurityFilterChain 的构建器。配置方法添加对应的 SecurityConfigurer，在构建阶段初始化并配置这些组件，把过滤器排序后组成 DefaultSecurityFilterChain；请求匹配器决定该链适用于哪些请求。
 
-## 问题与适用范围
+下面重点分析构建过程与 Configurer 的协作关系。过滤器的具体集合由配置产生，不能把构建器里的字段或方法清单理解为每个应用都会启用的功能。
 
-本文回答：HttpSecurity 怎样把安全配置变成一条可执行的过滤器链？
-
-本文重点是旧构建过程与 Configurer 协作关系。过滤器的具体集合由配置产生，不能把构建器里的字段或方法清单理解为每个应用都会启用的功能。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/builders/HttpSecurity.java)。
 
 ## 概述
 
 在上一篇WebSecurityConfigurerAdapter源码分析中我们知道了HttpSecurity是如何被添加到WebSecurity中的，并且也知道HttpSecurity是用来构建securityFilterChain的，在实际项目配置中我们也一直在配置HttpSecurity，接下来我们就探索一下它是如何构建securityFilterChain。
 
-<!-- more -->
 
 ## HttpSecurity
 
@@ -108,4 +102,3 @@ public final class HttpSecurity extends
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

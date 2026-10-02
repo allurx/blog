@@ -1,7 +1,7 @@
 ---
 title: Condition
 date: 2019-09-16
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Concurrent
@@ -10,15 +10,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `Condition` 把等待队列与锁的获取队列分开。调用 `await()` 时释放关联锁，结束等待后重新获取锁；`signal()` 只让等待者进入竞争，不把锁直接交给它。等待者必须在循环中重新检查条件，才能处理虚假唤醒、中断、超时和其他线程的竞争。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/locks/AbstractQueuedSynchronizer.java) 的 AQS ConditionObject 为例，分析等待节点在条件队列与同步队列间的转移。ReentrantLock 的通知顺序是该实现的契约；定时等待返回前仍需重新获得锁，不能把超时直接理解为方法已经返回。
 
-本文回答原文 AQS `ConditionObject` 如何迁移等待节点，保留未标注精确 JDK 修订的旧源码。`ReentrantLock` 的条件通知规则不能当作所有 `Condition` 实现的统一保证。定时方法的返回值需要按各自契约解释，等待超时也不等于已经重新取得锁并返回。
-
-<!-- more -->
 
 ## Condition
 
@@ -43,7 +38,7 @@ public interface Condition {
 }
 ```
 
-在文章开头处我们知道在使用Condition前必须得获取一个java.util.concurrent.locks.Lock才能调用Condition相关的方法，否则会抛出IllegalMonitorStateException，下面我们来看一下这个Lock
+对于本文的 ReentrantLock.ConditionObject，调用 await、signal 和 signalAll 时必须持有对应的锁，否则抛出 IllegalMonitorStateException。创建 Condition 对象本身不要求已经加锁。
 
 ## Lock
 
@@ -64,7 +59,7 @@ public interface Lock {
 }
 ```
 
-我们发现其中有一个newCondition方法定义，现在我们思考一下既然有锁，那我们获取锁之后是不是就能基于这个锁new一个Condition出来了呢？再联系wait/notify机制，现在是不是可以更好的理解Condition与锁之间的关系了呢。查看实现Lock接口的类发现了ReentrantLock等一些常用的锁，我们继续查看实现Condition接口的类，发现其是定义在AQS中的一个内部类ConditionObject，联系AQS中节点waitStatus，状态值可能为CONDITION，以及内部的CLH队列，一切似乎都和AQS关联起来了，下面我们就从ConditionObject开始逐步分析其原理。
+Lock.newCondition 用于创建与这把锁关联的条件对象。ReentrantLock 通过 AQS.ConditionObject 实现它，同一把锁可以拥有多个独立的条件队列。条件等待与重新获取锁使用不同队列，下面分别分析。
 
 ## 例子
 
@@ -181,7 +176,7 @@ public class BoundedBuffer {
 }
 ```
 
-上面的例子中，类比生产者和消费者模式往数组中存放和取出元素，通过在ReentrantLock上构造两个Condition分别表示当前数组已满条件和当前数组为空条件，存放和获取元素的线程只有满足以上条件才能运行，否则将会调用await方法，线程将会进入到条件队列中等待，直到在对应的Condition上调用signal方法通知等待线程开始运行。
+例子使用同一把 ReentrantLock 保护数组与计数，并创建 notFull 和 notEmpty 两个条件队列。生产者在数组满时等待，消费者在数组空时等待；await 释放锁，signal 使一个等待者转入锁竞争。等待者重新获取锁后仍在 while 中检查条件。
 
 ## ConditionObject
 
@@ -368,7 +363,7 @@ isOnSyncQueue前面两个if判断属于常规情况下的瞬时判断，判断�
 2. 节点的prev不为null
 3. 节点的next为null
 
-现在我们知道节点有以上三种属性，在最后一个判断的注释上面，作者解释条件队列的节点转在移到clh队列时可能会存在cas失败，这里就要涉及到是什么时候转移的了，回想wait/notify机制，转换其实是发生在signal或者是signalAll的时候（这两个方法都是通过AQS的enq方法将节点入队的）所以我不是特别明白什么情况下cas会失败，因为无论signal还是signalAll方法的调用都是保证当前拥有锁的线程才能调用，也就是说执行通知时操作条件队列转移到clh队列的只会有一个线程，将条件队列中的节点转移到clh队列中不会存在并发的情况，那cas失败指的是什么意思呢？什么情况下节点才会拥有以上三个属性然后进入到findNodeFromTail方法中判断呢？经过我的测试只有在clh队列中的最后一个节点才会进入以上判断。首先已经进入clh队列了说明状态已经变成0了，并且通过enq方法设置prev值为前一个tail了，但是注意因为是队列中的最后一个节点，所以next是为null的，所以就会出现这种情况然后进入到findNodeFromTail方法中再次找一下是不是在clh队列中，看一下enq方法
+节点已设置 prev 但尚未连接到尾部时，不能只凭局部字段确认入队。signal 需要持锁，并不意味着同步队列没有并发入队：其他竞争锁的线程，以及因中断或超时离开条件队列的线程，都可能执行 enq。CAS 设置 tail 可能失败；findNodeFromTail 沿已发布的 prev 链确认节点是否真正进入同步队列。
 
 ```java
 private Node enq(final Node node) {
@@ -426,28 +421,27 @@ private int checkInterruptWhileWaiting(Node node) {
 
 ```java
 final boolean transferAfterCancelledWait(Node node) {
-    // 此刻是有可能存在其它线程调用signal或者signalAll方法的，如果cas成功，说明此刻还没有调用
-    // 通知方法，因为调用过signal或者signalAll方法节点的状态值肯定会被修改成0，也就表明当前线程中断是发生在调
-    // 用过signal或者signalAll方法之前的
     if (compareAndSetWaitStatus(node, Node.CONDITION, 0)) {
-        // 即使中断了依旧将其转移到clh队列中
         enq(node);
         return true;
     }
-    // 走到这里说明上一步的cas失败了，也就是有线程正在调用signal或者signalAll方法转移节点到clh队列，
-    // 但是可能还没有转移好，那就调用yield方法稍微让一步，等其它线程将节点转移到clh队列后再退出，为
-    // 跳出整个while循环后的acquireQueued方法作准备
+    /*
+     * If we lost out to a signal(), then we can't proceed
+     * until it finishes its enq().  Cancelling during an
+     * incomplete transfer is both rare and transient, so just
+     * spin.
+     */
     while (!isOnSyncQueue(node))
         Thread.yield();
     return false;
 }
 ```
 
-transferAfterCancelledWait返回true说明线程发生中断是在调用signal或者signalAll方法之前，返回false则是调用之后。然后再回到checkInterruptWhileWaiting这个方法，我们对其返回值做一个总结
+`transferAfterCancelledWait` 的返回值取决于谁先成功把节点的 CONDITION 状态改为零。返回 true 表示取消等待的一方完成转换并负责入队；false 表示通知方先完成转换，此时需等它完成入队。这是对节点状态的竞争，不等同于两个方法调用开始的先后顺序。
 
-1. 返回0，说明线程是被调用signal或者signalAll方法正常唤醒的
-2. 返回THROW_IE，说明线程是被中断才得以运行的，并且中断是发生在调用signal或者signalAll方法之前
-3. 返回REINTERRUPT，说明线程是被中断才得以运行的，并且中断是发生在调用signal或者signalAll方法之后
+1. 返回 0，表示本次没有检测到中断；park 也可能虚假返回，不能据此判断已经得到通知。
+2. 返回 THROW_IE，表示中断取消先完成节点状态转换，重新获得锁后抛出 InterruptedException。
+3. 返回 REINTERRUPT，表示通知方先完成状态转换，重新获得锁并返回前恢复中断标记。
 
 并且从transferAfterCancelledWait方法中我们可以得知，如果线程是因为中断才得以运行的，那么其最终也能转移到clh队列中。继续回到await方法中来
 
@@ -458,7 +452,7 @@ transferAfterCancelledWait返回true说明线程发生中断是在调用signal�
 // 并且此刻当前线程所在的节点肯定已经转移到clh队列了。只需要去尝试获取锁，成功则继续运行，否则继续阻塞。
 if (acquireQueued(node, savedState) && interruptMode != THROW_IE)
     interruptMode = REINTERRUPT;
-// 这里不明白为什么要清除取消的节点
+// 取消等待的节点可能还留在条件链表上，清理这些失效链接。
 if (node.nextWaiter != null) // clean up if cancelled
     unlinkCancelledWaiters();
 // 还原或者是抛出中断异常
@@ -466,14 +460,14 @@ if (interruptMode != 0)
     reportInterruptAfterWait(interruptMode);
 ```
 
-在第一个if判断中调用AQS的acquireQueued方法使当前线程重新尝试获取锁，如果获取失败依旧会被阻塞，注意这个方法的返回值，true代表整个acquireQueued期间被中断过，false代表没有中断过。整个`acquireQueued(node, savedState) && interruptMode != THROW_IE`所表达的意思就是**线程被唤醒后尝试去获取锁只要在获取锁的期间被中断过并且这个线程在跳出之前的while循环时不是因为在调用signal或者signalAll方法之前被中断的，就将中断模型设置为重新设置中断标记，这和wait/notify机制保持一致，当一个线程阻塞在某个对象的monitor上时，如果此时直接在该线程上调用interrupt方法，那么该线程就会抛出InterruptedException，在这里线程已经不持有锁的Condition的了，所以不需要抛出异常，只需要在最后重新还原它的中断标记即可（因为Thread.interrupted()会改变中断标记）**。
+转入同步队列后，acquireQueued 使用 savedState 重新获取等待前的完整持锁状态。若条件等待阶段已经确定 THROW_IE，则在重新持锁后抛出异常；否则，重新获取期间检测到的中断会记为 REINTERRUPT，在返回前恢复中断标记。
 
 #### reportInterruptAfterWait(int interruptMode)
 
 ```java
 private void reportInterruptAfterWait(int interruptMode)
     throws InterruptedException {
-    // 如果是在调用signal或者signalAll方法之前中断的，则抛出InterruptedException，对应wait/notify机制
+    // 中断取消先赢得节点状态转换时，在重新持锁后抛出中断异常。
     if (interruptMode == THROW_IE)
         throw new InterruptedException();
     // 如果是唤醒之后才中断的则还原中断标记，对应wait/notify机制
@@ -482,7 +476,7 @@ private void reportInterruptAfterWait(int interruptMode)
 }
 ```
 
-reportInterruptAfterWait方法抛出中断异常的逻辑和Object的wait/notify机制保持一致，只有在线程阻塞期间中断才会抛出异常，正常运行期间被中断只需要还原中断标记就可以了。
+`reportInterruptAfterWait` 按已经确定的模式抛出 InterruptedException 或恢复中断标记。判断依据是取消与通知对节点状态的竞争，以及重新获取期间的中断；不能简化成“阻塞时中断就抛出，运行时中断就不抛出”。
 
 ### await总结
 
@@ -490,7 +484,7 @@ reportInterruptAfterWait方法抛出中断异常的逻辑和Object的wait/notify
 
 1. 调用该方法的线程如果处于中断状态，则会立马抛出InterruptedException，这和wait/notify保持一致
 2. await方法调用必须保证当前线程拥有该Condition的锁，否则会抛出IllegalMonitorStateException，详情见fullyRelease方法
-3. 当前线程调用该方法后会先释放自己拥有的锁，然后进入到一个条件队列中，除非其它线程调用signal、signalAll方法或者当前线程被中断得以被转移到AQS的clh队列中当前线程才能得以运行，否则的话会一直阻塞。最终方法结束时会根据线程在阻塞期间是否被阻塞过以及阻塞的时机来选择是否抛出InterruptedException还是重置中断标记。这和Object的wait/notify机制保持一致。
+3. 先将节点加入条件队列，再完整释放锁。通知、中断取消或定时方法中的超时可以把节点转入同步队列；只有重新获取锁后，等待操作才会正常返回或报告等待期间的中断。
 
 ### signal()
 
@@ -528,7 +522,7 @@ private void doSignal(Node first) {
 }
 ```
 
-其中while能够再次循环需要满足当前正在循环的第一个节点能够成功转移到clh队列中，如果不能就一直往后找直到找到一个不为null且能够转移到clh队列中的节点为止。主要的唤醒逻辑在transferForSignal方法中，
+`doSignal` 从条件队列头部移除候选节点。只有该节点已取消、无法转移时才继续检查下一个；找到能够转入同步队列的节点后停止。转移逻辑由 transferForSignal 完成。
 
 #### transferForSignal(Node node)
 
@@ -536,24 +530,21 @@ private void doSignal(Node first) {
 
 ```java
 final boolean transferForSignal(Node node) {
-    // 条件队列中的节点状态肯定为CONDITION，只要cas成功那么代表转移成功了。
-    // 不清楚什么情况下cas会失败（节点被取消了？）
+    /*
+     * If cannot change waitStatus, the node has been cancelled.
+     */
     if (!compareAndSetWaitStatus(node, Node.CONDITION, 0))
         return false;
 
-    // 节点状态改变成功后，就可以将其入队了，然后返回入队后的前一个节点
+    /*
+     * Splice onto queue and try to set waitStatus of predecessor to
+     * indicate that thread is (probably) waiting. If cancelled or
+     * attempt to set waitStatus fails, wake up to resync (in which
+     * case the waitStatus can be transiently and harmlessly wrong).
+     */
     Node p = enq(node);
-    // 前一个节点的状态
     int ws = p.waitStatus;
-    // 如果前一个节点被取消了，或者这个时候尝试将其状态修改为SIGNAL失败的话，就立马让该节点中的线程开始运行
-    // 至于为什么需要将前一个节点的状态修改为SIGNAL，在AQS独占模式中一个节点被唤醒是通过前驱节点唤醒的，
-    // 在release方法中有一个if判断
-    //	if (h != null && h.waitStatus != 0)
-    //            unparkSuccessor(h);
-    // clh头部节点状态不为0才会去唤醒下一个节点，而条件队列中的节点进入clh队列中，状态会被修改为0，同时节点状     // 态为SIGNAL也表明需要唤醒下一个节点
     if (ws > 0 || !compareAndSetWaitStatus(p, ws, Node.SIGNAL))
-        // 这一步直接让刚入队的线程直接运行，我猜测可能是一种尝试机制，因为即便线程开始运行，在await方法中
-        // 会调用acquireQueued方法再次尝试获取锁，如果获取失败依旧会被阻塞，所以是无害的
         LockSupport.unpark(node.thread);
     return true;
 }
@@ -627,36 +618,22 @@ awaitNanos方法的作用是提供定时等待的作用。等待指定时间过�
 
 ```java
 public final long awaitNanos(long nanosTimeout)
-    throws InterruptedException {
+        throws InterruptedException {
     if (Thread.interrupted())
         throw new InterruptedException();
     Node node = addConditionWaiter();
     int savedState = fullyRelease(node);
-    // 等待截止时间=当前时间+输入的纳秒时间。
-    // 可以理解为这个方法
     final long deadline = System.nanoTime() + nanosTimeout;
     int interruptMode = 0;
     while (!isOnSyncQueue(node)) {
-        // 能够执行到这一步判断，肯定是以下两种情况之一：
-        // 1、参数就是小于0（第一次循环），那么就不需要等待，直接进入clh队列然后跳出while循环
-        // 2、正常醒来（parkNanos时间过后，此刻还没有进入clh队列），由于执行parkNanos下面的代码需要时间，
-        // 所以nanosTimeout肯定也是负数，这个时候由于已经过了nanosTimeout时间，所以需要进入clh队列然后跳出	    // while循环
         if (nanosTimeout <= 0L) {
             transferAfterCancelledWait(node);
             break;
         }
-        // 这一步的判断我猜测可能是因为执行上面代码需要一些时间，虽然很短，姑且就认为是
-        // spinForTimeoutThreshold(1000L)纳秒，只有传参超过这个值，才会执行阻塞方法让线程
-        // 停车指定的纳秒时间，大概是为了提高性能吧。
         if (nanosTimeout >= spinForTimeoutThreshold)
             LockSupport.parkNanos(this, nanosTimeout);
         if ((interruptMode = checkInterruptWhileWaiting(node)) != 0)
             break;
-        // 执行到这一步线程肯定是被唤醒了，至于是正常醒来还是提前唤醒的就不得而知的，
-        // 如果是提前被唤醒（肯定已经在clh队列里面了，下次会跳出while循环）此刻nanosTimeout正负不确定，
-        // 如果是正常醒来（肯定不在clh队列里面）因为上面的中断判断会导致花费了一点时间
-        // 最终nanosTimeout肯定为负数，不过无关紧要下一次的while循环会判断是否在clh队列以及nanosTimeout
-        // 是否为负数来保证跳出循环的。
         nanosTimeout = deadline - System.nanoTime();
     }
     if (acquireQueued(node, savedState) && interruptMode != THROW_IE)
@@ -665,9 +642,6 @@ public final long awaitNanos(long nanosTimeout)
         unlinkCancelledWaiters();
     if (interruptMode != 0)
         reportInterruptAfterWait(interruptMode);
-    // deadline代表的是线程等待的截止时间，System.nanoTime()代表的是当前时间，两者相减其实没什么太大的意义，
-    // 只能说返回结果大于0说明线程从await到signal过程花费的时间没有超过nanosTimeout，
-    // 返回结果小于0说明线程从await到signal过程花费的时间超过nanosTimeout，
     return deadline - System.nanoTime();
 }
 ```
@@ -680,27 +654,16 @@ awaitUntil提供了定时等待的功能，等待到指定时间后，线程会�
 
 ```java
 public final boolean awaitUntil(Date deadline)
-    throws InterruptedException {
-    // 指定时间的毫秒数
+        throws InterruptedException {
     long abstime = deadline.getTime();
     if (Thread.interrupted())
         throw new InterruptedException();
     Node node = addConditionWaiter();
     int savedState = fullyRelease(node);
-    // timedout代表的是在到达deadline之后有没有被唤醒，换句话说就是线程有没有在
-    // deadline之前被其它线程调用signal或者signalAll方法
     boolean timedout = false;
     int interruptMode = 0;
     while (!isOnSyncQueue(node)) {
-        // 能够执行到这一步判断，肯定是以下两种情况之一：
-        // 1、当前时间大于入参本身（第一次循环），那么就不需要等待，直接进入clh队列然后跳出while循环。
-        // 2、正常醒来（parkUntil时间过后，此刻还没有进入clh队列），由于执行parkUntil下面的代码需要时间，
-        // 所以此刻当前时间肯定大于abstime，所以需要进入clh队列然后跳出while循环。
         if (System.currentTimeMillis() > abstime) {
-            // 回顾一下transferAfterCancelledWait方法，返回true代表线程进入clh队列是在
-            // signal之前，返回false是在signal之后，结合能够进入这个if判断的情况：
-            // timedout为true说明在到达deadline都还没有其它线程调用唤醒方法,
-            // timedout为false说明在到达deadline已经有其它线程调用唤醒方法。
             timedout = transferAfterCancelledWait(node);
             break;
         }
@@ -714,21 +677,20 @@ public final boolean awaitUntil(Date deadline)
         unlinkCancelledWaiters();
     if (interruptMode != 0)
         reportInterruptAfterWait(interruptMode);
-    // 有点绕，在下面做一个总结
     return !timedout;
 }
 ```
 
-awaitUntil提供了定时等待的功能，到达指定的时间点后，线程会自动唤醒，这里有一个混淆点，虽然线程会在LockSupport.parkUntil方法到达指定时间点后自动被唤醒，但是由于下方的acquireQueued方法依旧会去尝试获取锁，如果此刻其它线程还拥有锁，那么当前线程依旧会被阻塞在clh队列中。还有一个比较难理解的是这个方法的返回值。下面直接对其做一个总结，不明白的可以对照着上面注释理解。
+达到截止时间只意味着可以结束条件等待，方法还必须经过 acquireQueued 重新获得锁才能返回。超时与 signal 可能竞争同一节点的转换，返回值报告哪种等待结果获胜，业务条件仍需由调用者检查。
 
 * **方法返回true，表示等待未超时；仍需要重新检查业务条件。中断按方法契约抛出 InterruptedException，不能解释为返回 true**
-* **方法返回false，代表的意思是在达到deadline时间点之前没有其它线程调用signal或者signalAll方法**
+* **方法返回 false 表示超时取消赢得了节点转移；不能据此断言其他线程从未调用过 signal。**
 
 ### await(long time, TimeUnit unit)
 
 ```java
 public final boolean await(long time, TimeUnit unit)
-    throws InterruptedException {
+        throws InterruptedException {
     long nanosTimeout = unit.toNanos(time);
     if (Thread.interrupted())
         throw new InterruptedException();
@@ -762,7 +724,7 @@ public final boolean await(long time, TimeUnit unit)
 
 ## 总结
 
-Condition结合Lock模拟了Object中的wait/notify机制，并且提供了更为丰富的功能，例如提供了不响应中断的awaitUninterruptibly方法，提供了按入队顺序唤醒线程的signal方法等等。其中最重要的一个不同之处在于每一个Object只拥有一个monitor而Lock是可以构造多个不同的Condition的。
+Condition 将业务条件等待与锁关联起来，同一把锁可以拥有多个条件队列。本文的 ReentrantLock 实现按条件队列顺序选择通知对象，但重新获取锁仍遵守锁本身的规则；调用者始终需要用循环检查业务条件。
 
 ## 资料来源
 

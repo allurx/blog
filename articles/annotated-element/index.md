@@ -1,7 +1,7 @@
 ---
 title: AnnotatedElement
 date: 2019-11-04
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Reflect
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 读取注解前，需要明确是读取本元素、展开可重复注解，还是按 `@Inherited` 查找父类。`getDeclaredAnnotation()` 只读直接存在的单个注解；`getDeclaredAnnotationsByType()` 可以展开容器；`getAnnotationsByType()` 还按契约处理类继承。选择方法比笼统地“获取所有注解”更重要。
 
-## 问题与适用范围
+`@Inherited` 只作用于类的父类查找，不把接口、方法或字段的注解自动继承过来。单个可重复注解可能直接存在，多个则可能通过容器间接存在；后面的反编译例子用于说明这一差异。
 
-本文回答 `AnnotatedElement` 中四种存在关系如何对应反射方法。`@Inherited` 只作用于类的父类查找，不把接口、方法或字段的注解自动继承过来。单个可重复注解可能直接存在，多个则可能通过容器间接存在；原文的反编译例子用于说明这一差异。
-
-<!-- more -->
 
 ## 存在术语
 

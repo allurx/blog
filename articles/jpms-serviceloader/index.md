@@ -1,7 +1,7 @@
 ---
 title: "JPMS 下 ServiceLoader 为什么需要 uses 与 provides"
 date: 2026-09-18
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "JDK"
 tags: ["JPMS","ServiceLoader","SPI"]
 ---
@@ -128,7 +128,7 @@ javac --release 17 --module-source-path src -d mods \
 java --module-path mods -m io.allurx.greeting.app/io.allurx.greeting.app.Main
 ```
 
-以上续行语法用于 Bash；PowerShell 可将 `javac` 命令合并为一行。2026-10-01 修订时，在 JDK 25.0.2 上以 `--release 17` 编译六个源文件，运行输出：
+以上续行语法用于 Bash；PowerShell 可将 `javac` 命令合并为一行。使用 JDK 25.0.2，以 `--release 17` 编译六个源文件后运行，预期输出：
 
 ```text
 provider=io.allurx.greeting.provider.FriendlyGreeting
@@ -146,7 +146,7 @@ java.util.ServiceConfigurationError: ... module ... does not declare `uses`
 java.lang.IllegalStateException: expected one provider
 ```
 
-两组对照在同次修订中分别编译运行，均得到上述错误。第二组没有服务注册，枚举得到零个实现，由启动检查报错。自定义模块层还应留意 `Configuration.resolve` 与 `resolveAndBind` 的区别：仅解析普通依赖不等于执行服务绑定。[JDK 27 `Configuration.resolveAndBind`](https://docs.oracle.com/en/java/javase/27/docs/api/java.base/java/lang/module/Configuration.html#resolveAndBind(java.lang.module.ModuleFinder,java.lang.module.ModuleFinder,java.util.Collection))
+分别编译运行这两组对照，可以观察到上述错误。第二组没有服务注册，枚举得到零个实现，由启动检查报错。自定义模块层还应留意 `Configuration.resolve` 与 `resolveAndBind` 的区别：仅解析普通依赖不等于执行服务绑定。[JDK 27 `Configuration.resolveAndBind`](https://docs.oracle.com/en/java/javase/27/docs/api/java.base/java/lang/module/Configuration.html#resolveAndBind(java.lang.module.ModuleFinder,java.lang.module.ModuleFinder,java.util.Collection))
 
 ## 把发现规则变成可检查的部署契约
 

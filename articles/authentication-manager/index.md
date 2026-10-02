@@ -1,7 +1,7 @@
 ---
-title: AuthenticationManager源码分析
+title: "AuthenticationManager 源码分析"
 date: 2019-06-10
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -9,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 常见的 AuthenticationManager 实现是 ProviderManager。它按令牌类型委托支持该类型的 AuthenticationProvider；用户名密码路径中的 DaoAuthenticationProvider 通过 UserDetailsService 读取用户并由 PasswordEncoder 检查密码，成功后返回包含权限的认证结果。
-
-## 问题与适用范围
-
-本文回答：用户名和密码交给 AuthenticationManager 后，实际由谁验证？
 
 本文从用户名密码认证切入，分析 ProviderManager 和 DAO 提供者。其他认证方式可以使用不同提供者，提供者返回 null 表示未完成处理；某些异常会立即终止尝试，不能把整个过程简化为所有失败都会尝试下一个提供者。
 
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/authentication/ProviderManager.java)。
 
 ## 概述
 
-本文是接着上一篇的[UsernamePasswordAuthenticationFilter](/username-password-filter/)在匹配到需要认证的请求时，内部是如何进行认证的。如果对这个过滤器不太了解，可以回头看一下它的原理。现在我们知道它最终是委托给AuthenticationManager进行认证的。从AuthenticationManager的实现类来看，它的主要实现类是ProviderManager，接下来我们着重看一下它内部的实现原理。
+[UsernamePasswordAuthenticationFilter](/username-password-filter/) 匹配登录请求并提取凭据后，将认证交给 AuthenticationManager。ProviderManager 是常见实现：它把“选择提供者”和“验证具体凭据”分开，下面沿这个委托过程分析用户名密码认证。
 
-<!-- more -->
 
 ## ProviderManager
 
@@ -653,10 +646,9 @@ public class DaoAuthenticationProvider extends AbstractUserDetailsAuthentication
 ## 总结
 
 1. ProviderManager内部维护了一个AuthenticationProvider列表，每个provider只会对特定类型的Authentication令牌进行认证。
-2. ProviderManager在进行认证时是通过遍历AuthenticationProvider列表，只要有一个provider返回结果则认为认证成功，然后返回Authentication结果，否则抛出认证失败异常。
+2. ProviderManager 依次尝试支持当前令牌的提供者，遇到非 null 的认证结果即停止。普通 AuthenticationException 可以留给后续提供者继续尝试；AccountStatusException 和 InternalAuthenticationServiceException 会立即终止。没有结果时还可能委托父 AuthenticationManager，最终仍无结果才抛出相应认证异常。
 
 ## 资料来源
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

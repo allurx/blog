@@ -1,6 +1,7 @@
 ---
-title: WebSecurityConfigurerAdapter源码分析
+title: "WebSecurityConfigurerAdapter 源码分析"
 date: 2019-06-29
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,21 +9,15 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
+WebSecurityConfigurerAdapter 将认证构建器、共享对象与 HttpSecurity 的配置入口组织到一起，并在初始化时把 HttpSecurity 加入 WebSecurity。默认的 DefaultConfigurerAdapter 提供起步配置；自定义适配器可以替代它。
 
-WebSecurityConfigurerAdapter 将认证构建器、共享对象与 HttpSecurity 的配置入口组织到一起，并在初始化时把 HttpSecurity 加入 WebSecurity。历史默认 DefaultConfigurerAdapter 提供起步配置；自定义适配器可替代它，这解释了旧项目里继承配置类的工作方式。
+下面从默认适配器进入初始化流程，说明认证构建器如何成为共享对象，HttpSecurity 又在何时加入 WebSecurity。
 
-## 问题与适用范围
-
-本文回答：旧适配器怎样把 HttpSecurity 和认证配置接入 WebSecurity？
-
-本文专门解释旧适配器的实现，不把继承适配器当作新项目的配置方式。当前项目使用组件配置时，应按 SecurityFilterChain 等 Bean 的契约组织安全规则。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/configuration/WebSecurityConfigurerAdapter.java)。
 
 ## 概述
 
-在上一篇WebSecurity源码分析中我们知道了，HttpSecurity是通过WebSecurityConfigurerAdapter进行配置的，默认情况下如果我们没有编写WebSecurityConfigurerAdapter的子类，那它是如何完成配置的呢？其实在SpringBootWebSecurityConfiguration中有一个默认的WebSecurityConfigurerAdapter的子类
+WebSecurityConfigurerAdapter 配置 HttpSecurity，再将它交给 WebSecurity 参与构建。应用没有提供自己的适配器时，SpringBootWebSecurityConfiguration 会提供以下默认子类。
 
 ```java
 @Configuration
@@ -42,7 +37,6 @@ public class SpringBootWebSecurityConfiguration {
 
 这就是spring-security为我们默认添加的一个适配器，如果我们在项目中自己定义了一个类继承WebSecurityConfigurerAdapter的话，这个默认的类就不会被加载了。
 
-<!-- more -->
 
 ## WebSecurityConfigurerAdapter
 
@@ -280,4 +274,3 @@ WebSecurityConfigurerAdapter是一个很方便的整合各种安全配置的基�
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

@@ -1,7 +1,7 @@
 ---
-title: Spring-Security-OAuth2-Client
+title: "Spring Security OAuth 2.0 Client"
 date: 2020-03-29
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -11,25 +11,18 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 OAuth2 登录包含发起授权、接收回调、用授权码换取访问令牌、获取用户信息这几个阶段。Spring Security 用不同过滤器和认证提供者协作完成流程，ClientRegistration 保存第三方配置，OAuth2AuthorizedClient 则保存已经授权的客户端及令牌；它们承担不同职责。
 
-## 问题与适用范围
-
-本文回答：OAuth2 客户端如何完成第三方授权登录，并把授权结果变成本地认证？
-
-本文讨论 Servlet 应用的授权码登录流程。它延续以 Spring Boot 2.1.5.RELEASE 开始的历史系列，但原文没有独立锁定本篇的依赖版本；下面的自动配置和 WebSecurityConfigurerAdapter 示例按当时实现阅读。OAuth2 授权与应用内登录相关但并不等同，本文也没有完整讨论 OpenID Connect。
+下面分析 Servlet 应用的授权码登录流程，使用 Spring Boot 2.2.6.RELEASE 与其默认管理的 Spring Security 5.2.2.RELEASE，自动配置可对照 [OAuth2WebSecurityConfiguration](https://github.com/spring-projects/spring-boot/blob/v2.2.6.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/oauth2/client/servlet/OAuth2WebSecurityConfiguration.java)。OAuth2 授权与应用内登录相关但并不等同，OpenID Connect 则有额外的身份协议语义。
 
 ## 概述
 
 OAuth（开放授权）是一个开放标准，允许用户授权第三方网站访问他们存储在另外的服务提供者上的信息，而不需要将用户名和密码提供给第三方网站或分享他们数据的所有内容。网上有很多关于OAuth协议的讲解，这里就不在详细解释OAuth相关的概念了，请读者自行查阅相关资料，否则本文接下来的内容可能会很难理解。
 
-<!-- more -->
 
 ## Spring-Security对OAuth2.0的支持
 
-截止到本文撰写的日期为止，Spring已经提供了对OAuth提供的支持（[spring-security-oauth](https://github.com/spring-projects/spring-security-oauth)），但是该工程已经被废弃了，因为Spring-Security工程提供了最新的OAuth2.0支持。如果你的项目中使用了过期的Spring-Security-OAuth，请参考《[OAuth 2.0迁移指南》](https://github.com/spring-projects/spring-security/wiki/OAuth-2.0-Migration-Guide)，本文将对OAuth2.0中的客户端模式进行原理分析，结合Spring官方指南中提供了一个简单的基于spring-boot与oauth2.0集成第三方应用登录的案例（[spring-boot-oauth2](https://spring.io/guides/tutorials/spring-boot-oauth2/)），一步一步分析其内部实现的原理。
+Spring Security 的 OAuth2 Client 支持把授权码换成访问令牌，并用令牌读取第三方用户资料。下面以 GitHub 为提供者：应用根据取得的 GitHub 用户信息建立本地 Authentication，再由自己的授权规则决定可访问的资源。
 
 ### 创建GitHub OAuth Apps
 
@@ -39,7 +32,7 @@ OAuth（开放授权）是一个开放标准，允许用户授权第三方网站
 
 示例中的 GITHUB_CLIENT_ID 和 GITHUB_CLIENT_SECRET 由运行环境提供，分别对应自己的 OAuth App 凭据，不应写入文章或提交到仓库。
 
-这个应用相当于我们自己的应用（客户端），被注册在Github（授权服务器）中了，如果我们应用中的用户有github账号的话，则可以基于oauth2来登录我们的系统，替代原始的用户名密码方式。在官方指南的例子中，使用spring-security和oauth2进行社交登陆只需要在你的pom文件中加入以下几个依赖即可
+OAuth App 记录客户端身份与回调地址。使用 Spring Boot 2.2.6.RELEASE 的 parent 或 BOM 管理依赖版本，并在 POM 中添加以下依赖：
 
 ```xml
 <dependency>
@@ -95,7 +88,7 @@ public class SocialApplication extends WebSecurityConfigurerAdapter {
 }
 ```
 
-也就是说我们只需要添加maven依赖以及继承WebSecurityConfigurerAdapter进行一些简单的配置，一个oauth2客户端应用就构建完成了。接下来按照指南上的步骤点击页面的github登录链接我们的页面就会跳转到github授权登录页，等待用户授权完成之后浏览器重定向到我们的callback URL最终请求user信息端点即可访问到刚刚登入的github用户信息，整个应用的构建是如此的简单，背后的原理是什么呢？接下来我们开始分析。还是和以前一样，我们在配置文件中将security的日志级别设置为debug
+上面的片段展示安全规则，启动类与页面仍由 Spring Boot 应用提供。页面中的 GitHub 登录链接指向 `/oauth2/authorization/github`，默认回调地址为 `{baseUrl}/login/oauth2/code/github`，需要与 OAuth App 中登记的地址一致。用户授权后，服务端交换令牌并读取用户资料，再建立本地登录状态。要观察过滤器链，可启用下面的调试日志：
 
 ```yaml
 logging:
@@ -310,9 +303,8 @@ private void sendRedirectForAuthorization(HttpServletRequest request, HttpServle
                authenticationResult.getClientRegistration().getRegistrationId());
            oauth2Authentication.setDetails(authenticationDetails);
 
-           // 构造OAuth2AuthorizedClient，将所有经过授权的客户端信息保存起来，默认是通过
-           // AuthenticatedPrincipalOAuth2AuthorizedClientRepository来保存的，
-           // 然后就能通过其来获取之前所有已授权的client？暂时不能确定其合适的用途
+           // 将客户端注册信息、用户标识和令牌封装为已授权客户端。
+           // 认证完成后保存，供后续请求复用该用户的授权信息。
            OAuth2AuthorizedClient authorizedClient = new OAuth2AuthorizedClient(
                authenticationResult.getClientRegistration(),
                oauth2Authentication.getName(),
@@ -557,13 +549,7 @@ class OAuth2WebSecurityConfiguration {
 [集成GitHub和QQ社交登录](https://github.com/allurx/spring-security-oauth2-demo/tree/master/spring-security-oauth2-client)
 
 ## 资料来源
-[spring-security-oauth更新路线](https://spring.io/blog/2019/11/14/spring-security-oauth-2-0-roadmap-update)
 
-[spring-security对oauth2.0授权服务器的支持](https://github.com/spring-projects/spring-security/issues/6320)
-
-[使用spring-boot和oauth2.0构建社交登陆](https://spring.io/guides/tutorials/spring-boot-oauth2/)
-
-- [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)
+- [Spring Boot 2.2.6.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.2.6.RELEASE/reference/html/appendix-dependency-versions.html)
+- [Spring Security 5.2.2.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.2.2.RELEASE/reference/htmlsingle/)
 - [当前 OAuth2 参考文档](https://docs.spring.io/spring-security/reference/servlet/oauth2/login/core.html)

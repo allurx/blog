@@ -1,6 +1,7 @@
 ---
-title: Thread基本概念
+title: "Thread 基本概念"
 date: 2019-07-08
+updated: 2026-10-02
 tags:
   - Java
   - Thread
@@ -8,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 线程状态、优先级与守护属性解决不同问题。`start()` 启动独立的执行流程，直接调用 `run()` 仍在调用者线程中执行；优先级不保证调度顺序，守护线程也不能保证完成收尾工作。判断并发代码正确性应依赖同步契约，而不是线程何时被调度。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/Thread.java) 的 Thread 实现分析线程构造、启动与状态转换，讨论范围是平台线程。Java 线程状态描述 JVM 层面的执行情况，不与操作系统状态一一对应。
 
-本文回答原文 `Thread` 构造、启动和状态转换的含义，主要围绕传统平台线程。内部构造流程未注明精确 JDK 修订。当前虚拟线程由 JVM 调度，始终为守护线程，优先级固定；不能把正文关于平台线程与操作系统的关系直接外推到虚拟线程。
-
-<!-- more -->
 
 ## 线程优先级
 
@@ -37,7 +33,7 @@ domain: Java
     public final static int MAX_PRIORITY = 10;
 ```
 
-如果没有设置优先级的话，默认的优先级是5，可以调用线程提供的方法来手动设置优先级
+新建线程默认继承创建者的优先级，并受线程组最大优先级限制。NORM_PRIORITY 的值为 5，不代表任何创建环境下的新线程都固定使用 5。可以通过 setPriority 调整平台线程的优先级：
 
 ```java
 public final void setPriority(int newPriority) {
@@ -85,7 +81,7 @@ public enum State {
 
 1. NEW：线程的构造函数被调用后，线程就是NEW状态。
 
-2. RUNNABLE：调用`start()`方法后，线程的状态就是RUNNABLE，该状态指示表示线程可以运行，不表示线程当前一定在运行，线程是否运行由虚拟机所在操作系统调度决定。
+2. RUNNABLE：线程可以在 JVM 中运行，也可能正在等待操作系统分配 CPU。start 使新线程进入可调度状态，但调用后立即读取状态时，它也可能已经等待、阻塞或终止。
 
 3. BLOCKED：当线程尝试调用某个对象的`synchronized`方法或者`synchronized`代码块时会去尝试获取对象的monitor，如果当前对象的monitor被其他线程持有，当前线程就处于BLOCKED状态
 
@@ -100,7 +96,7 @@ public enum State {
      }
      ```
 
-     此时，该线程就处于WAITING状态，需要其它拥有object的monitor线程调用`notify(), notifyAll()`方法才能改变该线程的状态
+     等待期间线程通常处于 WAITING；通知、中断或虚假唤醒都可能结束等待，因此必须在循环中检查业务条件。
 
    * 当前线程执行另一个线程的`join()`方法后，当前线程处于WAITING状态
 
@@ -117,7 +113,7 @@ public enum State {
 
 
 
-在上面的6种状态中BLOCKED和WAITING这两种状态有点不是很好区别，只有当线程执行被synchronized修饰的代码块或者方法时，线程才会处于BLOCKED状态（无法获取目标对象的mointor），而当其它线程通过调用notify或者notifyAll方法唤醒此刻monitor上的线程时，被唤醒的线程是从之前阻塞的哪一行代码开始运行的，但是此刻也可能存在其它线程对这个mointor进行竞争，所以处于BLOCKED状态的线程被唤醒后，必定是立马转为BLOCKED状态，接着如果能够获取当前的mointor，那么线程状态则继续转换为RUNNABLE。
+BLOCKED 表示等待进入或重新进入监视器，WAITING 表示等待另一个动作。线程调用 Object.wait 后释放监视器并等待；得到通知后必须重新获取监视器，竞争期间可能表现为 BLOCKED，成功后才继续执行。notify 不释放通知者持有的监视器。
 
 参考以下线程状态转换的图片
 

@@ -1,6 +1,7 @@
 ---
-title: FilterChainProxy源码分析
+title: "FilterChainProxy 源码分析"
 date: 2019-07-01
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 FilterChainProxy 先通过 HttpFirewall 检查并包装请求，再按配置顺序选择第一条匹配的 SecurityFilterChain，只执行该链中的过滤器，最后衔接原 Servlet 过滤器链。多条匹配链不会自动叠加，所以链的匹配范围与顺序是实际安全行为的一部分。
-
-## 问题与适用范围
-
-本文回答：同一个请求匹配多条安全过滤器链时，哪些过滤器会执行？
 
 本文分析 Servlet 的链选择与 VirtualFilterChain 调用过程。链内过滤器各自负责认证、上下文或授权，FilterChainProxy 主要负责选择与调度；请求没有匹配链时也需要结合整体配置检查实际保护范围。
 
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/FilterChainProxy.java)。
 
 ## 概述
 
-从spring-security的**基本概念**到**核心过滤器**的源码分析再到**自动配置**的原理，我们已经知道了spring-security是如何为我们创建默认的配置，创建默认的过滤器链以及这些过滤器执行的原理，现在还差的一点是这些过滤器是如何执行的，现在我们已经知道最终的生成的过滤器是FilterChainProxy的一个实例，最终就是它来对所有请求进行过滤的。
+启动时构建出的 springSecurityFilterChain Bean 是 FilterChainProxy。请求进入 Servlet 容器后，代理需要先找到匹配的安全链，再逐个调用链上的过滤器；下面分析链选择与 VirtualFilterChain 的调用过程。
 
-<!-- more -->
 
 ## FilterChainProxy
 
@@ -230,4 +224,3 @@ public class FilterChainProxy extends GenericFilterBean {
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

@@ -1,7 +1,7 @@
 ---
-title: LockSupport源码分析
+title: "LockSupport 源码分析"
 date: 2019-07-25
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Concurrent
@@ -10,15 +10,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `LockSupport` 为每个线程维护至多一个许可：`unpark()` 提供许可，`park()` 消耗许可或等待。通知可以先于等待，但许可不能累加；`park()` 还可能因中断或虚假唤醒返回。因此等待必须围绕业务条件组织，不能把一次返回当作条件已满足的证明。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/locks/LockSupport.java) 分析许可交接与 parkBlocker 的诊断用途。blocker 只记录阻塞原因，不充当监视器锁；超时、中断和虚假唤醒都可能使 park 返回，之后仍需检查业务条件。
 
-本文回答许可如何避免部分先通知后等待的问题，及阻塞对象如何辅助诊断。原文 `Unsafe`、字段偏移和 `parkBlocker` 片段来自未标注精确修订的旧实现。`blocker` 不会被当作对象监视器自动加锁；定时等待也不能保证返回后立即获得 CPU。
-
-<!-- more -->
 
 ## Unsafe中的实现
 
@@ -32,9 +27,9 @@ public native void unpark(Object var1);
 public native void putObject(Object var1, long var2, Object var4);
 ```
 
-* park方法中的第一个布尔类型的参数代表是否是绝对时间，它是相对第二个long类型的时间参数，如果时间参数为0的话，线程就会一直被阻塞
+* Unsafe.park 的布尔参数区分绝对时间与相对时间；LockSupport.park 使用相对时间零表示不设置超时，但仍可因许可、中断或虚假唤醒返回。
 * unpark的参数是Thread实例，它的作用是用来唤醒这个被阻塞的线程
-* putObject方法中的第一个参数是线程实例，第二个参数是Thread类中的`volatile Object parkBlocker;`在内存的偏移，第三个参数是一个实例对象锁，调用该方法会将Thread中的parkBlocker设置为这个对象。
+* putObject 把 blocker 写入目标线程的 parkBlocker 字段，供诊断工具读取；这个对象不会因此成为监视器锁。
 
 ## 阻塞方法
 
@@ -48,7 +43,7 @@ public static void park() {
 }
 ```
 
-调用该方法的线程会一直被阻塞
+没有许可且未中断时，线程可以等待；许可、中断或虚假唤醒均可能使调用返回。
 
 ### public static void park(Object blocker)
 
@@ -61,7 +56,7 @@ public static void park(Object blocker) {
 }
 ```
 
-调用该方法的线程会被阻塞在blocker对象上，是通过内部的setBlocker方法来给当前线程设置parkBlocker的
+该重载在停车前记录 blocker，返回后清空它。blocker 用于说明等待原因，实际许可仍与线程关联：
 
 ```java
 private static void setBlocker(Thread t, Object arg) {
@@ -80,7 +75,7 @@ public static void parkNanos(long nanos) {
 }
 ```
 
-调用该方法的线程会被阻塞指定纳秒的时间，然后自动恢复运行
+以 nanos 指定相对等待上限；许可、中断或虚假唤醒可能让调用提前返回，超时也不保证马上获得 CPU。
 
 ### public static void parkNanos(Object blocker, long nanos)
 
@@ -95,7 +90,7 @@ public static void parkNanos(Object blocker, long nanos) {
 }
 ```
 
-调用该方法的线程会被阻塞在blocker对象上指定纳秒的时间，然后自动恢复运行
+与 parkNanos(nanos) 使用同一等待语义，同时记录用于诊断的 blocker。
 
 ### public static void parkUntil(long deadline)
 
@@ -105,7 +100,7 @@ public static void parkUntil(long deadline) {
 }
 ```
 
-调用该方法的线程会被阻塞直到指定的时间为止，随即会被自动唤醒，参数deadline是从纪元开始的绝对时间，单位是毫秒
+以从 Unix 纪元起算的毫秒时间戳 deadline 作为等待截止时间。调用仍可能提前返回，实际继续执行取决于调度。
 
 ### public static void parkUntil(Object blocker, long deadline)
 
@@ -118,7 +113,7 @@ public static void parkUntil(Object blocker, long deadline) {
 }
 ```
 
-调用该方法的线程会被阻塞在blocker对象上直到指定的时间为止，随即会被自动唤醒，参数deadline是从纪元开始的绝对时间，单位是毫秒
+与 parkUntil(deadline) 使用同一截止时间语义，同时记录 blocker，不获取 blocker 的监视器。
 
 ## 唤醒方法
 
@@ -135,14 +130,14 @@ public static void unpark(Thread thread) {
 
 ## 许可证
 
-LockSupport是用于创建锁和其他同步类的基本线程阻塞原语。该类与使用它的每个线程关联一个许可证。这有点类似生产者和消费者的设计理念。当调用park方法的时候（Consumer），当前线程会去获取一个和自身关联的许可证，如果拿不到这个许可证线程就会被阻塞。调用unpark方法的时候（Producer），会给当前线程设置一个许可证。值得注意的一点是unpark方法可以在park方法之前调用，也就是说如果执行顺序为
+LockSupport 为每个线程关联至多一个许可。unpark(thread) 向目标线程提供许可；park 消耗当前线程的许可，或在没有许可时等待。unpark 可以先于 park，连续多次 unpark 也不会积累多个许可。以下顺序用于说明许可，不应替代业务条件循环：
 
 ```java
 LockSupport.unpark(Thread.currentThread());
 LockSupport.park();
 ```
 
-这时线程并不会被阻塞，需要调用两次pack方法线程才会被阻塞
+第一个 park 可以消费已有许可并返回；如果没有新的许可，第二个 park 可能等待，但仍可能因中断或虚假唤醒返回。
 
 ```
 LockSupport.unpark(Thread.currentThread());
@@ -150,7 +145,7 @@ LockSupport.park();
 LockSupport.park();
 ```
 
-以上代码执行后当前线程会被阻塞，说明LockSupport是通过一个许可证来标记线程是否被阻塞的，当然了这个许可证是不能被叠加的，多次调用unpark方法，线程依旧只会拥有一个许可证
+第二次 park 没有前一次遗留的许可，因此可能等待。许可只记录零或一，不是可累加的计数器。
 
 ```java
 LockSupport.unpark(Thread.currentThread());
@@ -159,7 +154,7 @@ LockSupport.park();
 LockSupport.park();
 ```
 
-此时线程依旧会被阻塞。
+连续两次 unpark 也只保留一个许可，第二次 park 仍可能等待。
 
 ## 例子
 

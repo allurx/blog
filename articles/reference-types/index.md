@@ -1,264 +1,101 @@
 ---
-title: Java中的几种Reference
+title: "Java 中的几种 Reference"
 date: 2019-07-15
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Reference
 domain: Java
 ---
 
-## 核心结论
+对象能否被回收取决于它从 GC Roots 出发的可达性，而不是变量有没有写成 null。强引用、软引用、弱引用和虚引用分别参与不同的可达性规则；ReferenceQueue 则让程序观察引用对象的入队，不能把入队等同于业务清理已经完成。
 
-对象能否被回收取决于可达性。强引用、软引用、弱引用和虚引用参与不同的可达性判断；引用队列则用于观察相应引用对象的入队。`System.gc()`、内存压力或一次 `get()` 的结果都不能保证某个确定的回收时刻。
+本文使用 Java 引用 API，并以 OpenJDK 8u202-b08 解释软引用策略和虚引用实现。System.gc 只提出回收请求，不保证执行时间；需要确定性关闭的文件、连接等资源仍应按作用域显式关闭。
 
-## 问题与适用范围
 
-本文回答几种引用如何影响对象生命周期，保留原文实验和实现片段。软引用缓存的清理策略、GC 参数和实验时间依赖具体 JVM；它们不是 Java API 保证。示例用于观察引用行为，不能用一次运行结果证明对象一定会在某个时刻被回收，也不能把弱引用当作共享值自动清理的完整方案。
+## 强引用与对象可达性
 
-<!-- more -->
+Java 没有名为 StrongReference 的标准类。普通变量、对象字段和数组元素保存的对象引用都是强引用路径的一部分。只要对象仍从 GC Roots 强可达，就不能作为不可达对象回收。
 
-## StrongReference
+局部变量的词法作用域不等于对象一定存活到方法结束。JVM 可以在确认后续不再使用对象时缩短它的实际存活期；反过来，对象即使离开创建它的方法，也可能仍被静态集合或其他存活对象引用。检查内存滞留时，应沿引用路径找出谁还持有对象，而不是机械地给每个局部变量赋 null。
 
-StrongReference是强引用的意思，java中并没有定义这样一个类，它只是一个引用的概念。只要对象仍强可达，GC 就不能将其作为不可达对象回收，例如我们通过new出来的对象是存放在虚拟机的堆内存中的，此时定义的变量就是指向了堆内存中的这个对象，如果这个引用变量一直存活的话，那么gc就不会回收堆内存中的这个对象。
+例如 ArrayList.clear 保留内部数组供后续复用，因此要把有效槽位置为 null，解除数组到元素的引用。若整个集合已经不可达，则不需要先逐个清空元素才能回收；不可达对象之间存在循环引用也不会让它们永久存活。
 
-```java
-public void test(){
-	Object o = new Object();
-}
-```
+## 软引用：由内存需求决定保留时间
 
-假如我们程序中有以上一个方法，在该方法中定义了一个局部变量o指向了一个new Object()，这个Object被new出来后就会被存放在堆内存中，当该方法执行完毕后，局部变量o会被销毁，堆内存中的Object对象就没有引用指向它了，gc就会在适当的时候回收它，但如果这个o是我们定义的一个全局的变量，即便方法运行结束了，依旧指向了堆内存的Object对象，此时gc就不会回收它，一直占据着内存，随着项目越来越大，如果在业务上处理不当的话就会导致oom（OutOfMemoryError）。最典型的一个场景就是使用集合类当做对象的全局变量。随着集合对象包含的对象越来越多，很有可能会导致oom，因此，长期存活的容器或缓存应在不再需要元素时移除相应引用；不必机械地将所有局部变量设为 null。对象是否可回收取决于是否仍可达，回收时机由 GC 决定。例如在ArrayList的clear方法中就有这样的一段话
+SoftReference 的 referent 在不再强可达、但仍软可达时，可以由 GC 根据内存需求清除。API 保证虚拟机抛出 OutOfMemoryError 前已清除指向软可达对象的软引用，但这不是“SoftReference 包装对象本身必定被回收”，也不规定平时的清除时刻或顺序。注册了 ReferenceQueue 的已清除软引用，会在清除时或随后入队。
 
-```java
-public void clear() {
-    modCount++;
+调用 get 时有两种结果：返回对象，此次返回值本身形成强引用；或者返回 null，表示需要按缺值处理。缓存不能假定软引用至少保留多久，也不能依靠它提供严格的容量或延迟控制。
 
-    // clear to let GC do its work
-    for (int i = 0; i < size; i++)
-        elementData[i] = null;
+### OpenJDK 8u202-b08 的时间戳
 
-    size = 0;
-}
-```
-
-ArrayList中保存的对象最终都会存放在内部维护的名为elementData的Object[]数组中，clear 保留内部数组以便后续复用，因此需要把有效槽位设为 null，解除数组对原元素的引用。如果整个数组已经不可达，其元素不会仅因彼此仍有关联就永久存活；能否回收仍取决于是否存在其他可达路径。
-
-## SoftReference
-
-SoftReference是软引用的意思，具体的类定义为java.lang.ref.SoftReference，从类注释上我们可以知道如果一个对象只存在软引用并且当系统内存不够时，gc就会回收这个对象。软引用最常用于实现对内存敏感的缓存。软引用可以与引用队列（ReferenceQueue）联合使用，如果软引用所引用的对象被垃圾回收器回收，jvm就会把这个软引用加入到与之关联的引用队列中。
+该版本的 SoftReference 保存由 GC 更新的 clock，以及最近一次访问观察到的 timestamp。get 的核心逻辑如下：
 
 ```java
-package io.allurx;
-
-import java.lang.ref.SoftReference;
-
-/**
- * @author allurx
- */
-public class DemoApplication {
-
-    public static void main(String[] args) {
-        SoftReference<Integer> softReferences = new SoftReference<>(128);
-        new Thread(() -> {
-            String s = "test";
-            while (true) {
-                s += s;
-            }
-        }).start();
-        while (true) {
-            Integer value = softReferences.get();
-            if (value == null) {
-                System.out.println(value);
-                break;
-            }
-        }
-    }
-}
-```
-
-上面这个例子中SoftReference包含一个Integer类型的value（为128的原因是Integer类中缓存了-128-127的强引用的Integer对象，不会被gc回收），然后开启一个线程不断的拼接字符串，模拟oom的发生，接着主线程中不断的轮询SoftReference中的引用是否已经被回收，可以发现在运行几秒后子线程中发生OutOfMemoryError，随即SoftReference中的引用被gc清除，但是并不确定这个value是什么时候被gc的，只知道是发生OutOfMemoryError时被gc的，在网上查阅相关资料，SoftReference中的引用对象被清除的时机和**堆里的空闲内存大小**、**上次执行gc的时间**、**引用对象上次执行get方法的时间**、**jvm参数SoftRefLRUPolicyMSPerMB**这四个值有关。发生gc时是否清除SoftReference的公式如下：
-
-```
-clock - timestamp <= heap_free_at_last_gc * SoftRefLRUPolicyMSPerMB
-```
-
-* clock：上次执行gc的时间戳
-* timestamp：SoftReference对象上次执行get方法的时间戳
-* heap_free_at_last_gc：上次执行gc时剩余堆空间大小
-* SoftRefLRUPolicyMSPerMB：jvm参数
-
-此处是原文对历史 HotSpot 软引用策略的说明。按该不等式，成立表示引用年龄尚未超过估计保留窗口，不成立表示已超过窗口；它不能替代实际 GC 的完整决策。参数、计算公式与内存策略属于 JVM 实现细节，Java API 不保证跨版本使用该公式。
-
-clock和timestamp变量定义在SoftReference源码中，看一下它的源码
-
-```java
-package java.lang.ref;
-
-public class SoftReference<T> extends Reference<T> {
-
-    static private long clock;
-
-    private long timestamp;
-
-    public SoftReference(T referent) {
-        super(referent);
+public T get() {
+    T o = super.get();
+    if (o != null && this.timestamp != clock)
         this.timestamp = clock;
-    }
-
-    public SoftReference(T referent, ReferenceQueue<? super T> q) {
-        super(referent, q);
-        this.timestamp = clock;
-    }
-
-    public T get() {
-        T o = super.get();
-        if (o != null && this.timestamp != clock)
-            this.timestamp = clock;
-        return o;
-    }
+    return o;
 }
 ```
 
-源码很简单，一个全局变量clock记录上次gc发生的时间，成员变量timestamp记录该软引用的对象上次执行get方法的时间，这里我们主要关注一下get方法的逻辑，`if (o != null && this.timestamp != clock)`这个判断的作用是如果引用对象还存活的话，那么就将引用对象的空闲时间重置为0，配合理解上面清除SoftReference的公式中的`clock - timestamp`，gc执行时间减去get方法调用时间就是该引用对象一直的空闲时间，只有当这个空闲时间超过一定的阈值时gc才会清除这个对象。所以get方法只要调用一次，就要和gc时间同步一下，以便下次gc运行时判断引用对象的空闲时间。
+这里记录的是 GC 时钟快照，不是每次 get 调用的精确墙上时间。成功读取后更新 timestamp，会影响采用近期使用策略的后续清理决定。[SoftReference 源码](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/ref/SoftReference.java)
 
-讨论了这么多，发现这个SoftReference并不是那么的好用，虽然jdk设计这个类的目的就是为了更好的实现缓存，但是实际操作中SoftReference被gc回收会受到很多其他因素的影响。下面对SoftReference做一个总结：
+HotSpot 的 referencePolicy.cpp 定义了两种 LRU 保留窗口：LRUCurrentHeapPolicy 使用上次 GC 后的空闲堆大小，LRUMaxHeapPolicy 使用最大堆减去上次 GC 后已用堆大小。两者都先将容量换算为 MB，再乘 SoftRefLRUPolicyMSPerMB：
 
-1. 系统发生OutOfMemoryError 前，Java 虚拟机一定会回收SoftReference对象，当然啦前提是这个SoftReference内的引用对象没有其他强引用指向它。
-2. SoftReference中的引用对象被清除的时机和**堆里的空闲内存大小**、**上次执行gc的时间**、**引用对象上次执行get方法的时间**、**jvm参数SoftRefLRUPolicyMSPerMB**这四个值有关
-3. 设置vm参数-XX:SoftRefLRUPolicyMSPerMB=0可以保证gc运行时立即清除SoftReference中的引用对象。
-4.  Java提供SoftReference的期望是更好的实现缓存。
-
-## WeakReference
-
-WeakReference是弱引用的意思，具体的类定义为java.lang.ref.WeakReference，它和SoftReference的区别是当gc运行时，无论当前内存是否充足，只要WeakReference内的引用对象不存在其它强引用，它就会被gc被清除。看一下它的源码：
-
-```java
-package java.lang.ref;
-
-public class WeakReference<T> extends Reference<T> {
-
-    public WeakReference(T referent) {
-        super(referent);
-    }
-
-    public WeakReference(T referent, ReferenceQueue<? super T> q) {
-        super(referent, q);
-    }
-
-}
+```text
+保留窗口 = 可用容量的 MB 数 × SoftRefLRUPolicyMSPerMB
+引用年龄 = 当前 GC 时钟 - timestamp
 ```
 
-弱引用也可以与引用队列（ReferenceQueue）联合使用。GC 确定对象弱可达时会清除相应弱引用，并在同一时刻或随后把注册的弱引用对象入队；入队不是被引用对象的业务完成通知。下面看一个例子。
+在这些策略中，引用年龄不大于保留窗口时返回“不清除”，超过时才返回“清除”。这是具体策略的决定，不能替代所有回收阶段的处理。即使参数设为零，刚访问过的引用年龄也可能为零，因此不能承诺“每次 GC 立即清除全部软引用”。[HotSpot 引用策略源码](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/hotspot/src/share/vm/memory/referencePolicy.cpp)
+
+## 弱引用：不提供软引用的保留窗口
+
+WeakReference 不会像软引用那样根据内存需求保留对象。GC 判定对象已经弱可达时，会按弱引用契约清除相应引用，并在同一时刻或随后将已注册的引用对象入队。判定条件是弱可达；仅仅没有强引用并不够，对象还可能通过软引用保持软可达。
+
+清除弱引用也不等于清理围绕它建立的全部数据结构。例如 Map 的键是弱引用而值是强引用时，键被清除后，条目和 value 仍可能由 Map 持有；容器必须有自己的过期条目清理逻辑。
+
+下面用有界等待观察清除和入队。使用新建 Object 避免装箱缓存干扰，并保留 WeakReference 本身以便与队列结果比较。将代码保存为 WeakReferenceDemo.java，执行 javac WeakReferenceDemo.java 和 java WeakReferenceDemo：
 
 ```java
-package io.allurx;
-
+import java.lang.ref.Reference;
+import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 
 /**
  * @author allurx
  */
-public class DemoApplication {
-
-    static Integer i = 129;
-
-    public static void main(String[] args) throws Exception {
-        Integer a = 130;
-        WeakReference<Integer> weakReference1 = new WeakReference<>(128);
-        WeakReference<Integer> weakReference2 = new WeakReference<>(i);
-        WeakReference<Integer> weakReference3 = new WeakReference<>(a);
-        System.out.println(weakReference1.get());
-        System.out.println(weakReference2.get());
-        System.out.println(weakReference3.get());
-        System.gc();
-        System.out.println(weakReference1.get());
-        System.out.println(weakReference2.get());
-        System.out.println(weakReference3.get());
-    }
-
-}
-
-```
-
-控制台输出
-
-```java
-128
-129
-130
-null
-129
-130
-```
-
-当gc运行时WeakReference中不存在强引用的对象就被清除了
-
-## PhantomReference
-
-`PhantomReference` 用于跟踪对象进入虚可达状态后的处理，`get()` 始终返回 null，不能通过它重新取得对象。要观察入队，需要关联一个 `ReferenceQueue`；入队不提供确定的时间，也不是“已经完成任意外部资源清理”的保证。以下是原文展示的 Java 层接口片段，完整 GC 行为应按目标 JDK 的公共契约理解。
-
-```java
-package java.lang.ref;
-
-public class PhantomReference<T> extends Reference<T> {
-
-    public T get() {
-        return null;
-    }
-
-    public PhantomReference(T referent, ReferenceQueue<? super T> q) {
-        super(referent, q);
-    }
-
-}
-```
-
-`get()` 始终返回 null。构造器允许队列参数为 null，但这样的虚引用不会注册到引用队列；需要收到入队通知时应传入队列。下面保留原文的观察例子；装箱 Integer 的缓存范围、对象可达性和 GC 调度都会影响结果，不能保证一次 `System.gc()` 后必定出现同样输出。
-
-```java
-package io.allurx;
-
-import java.lang.ref.PhantomReference;
-import java.lang.ref.Reference;
-import java.lang.ref.ReferenceQueue;
-
-/**
- * @author allurx
- */
-public class DemoApplication {
-
+public class WeakReferenceDemo {
     public static void main(String[] args) throws InterruptedException {
-        ReferenceQueue<Integer> referenceQueue = new ReferenceQueue<>();
-        PhantomReference<Integer> phantomReference = new PhantomReference<>(128, referenceQueue);
-        new Thread(() -> {
-            Reference<?> reference;
-            while (true) {
-                if ((reference = referenceQueue.poll()) != null) {
-                    System.out.println(reference+":被gc回收了");
-                    break;
-                }
-            }
-        }).start();
-        Thread.sleep(2000);
+        ReferenceQueue<Object> queue = new ReferenceQueue<>();
+        WeakReference<Object> reference = new WeakReference<>(new Object(), queue);
+
         System.gc();
+        Reference<?> queued = queue.remove(1000);
+        System.out.println("已清除: " + (reference.get() == null));
+        System.out.println("本次观察到入队: " + (queued == reference));
     }
 }
 ```
 
-开启一个子线程不断的轮询PhantomReference中的ReferenceQueue查看引用对象是否被gc回收了，主线程睡眠2秒后，调用gc方法，控制台输出了PhantomReference被回收的信息
+两行输出分别回答“这次读取时是否已清除”和“等待期间是否拿到对应引用”。超时只说明本次没有观察到入队，不证明对象仍被强引用，更不证明 JVM 没有执行任何 GC。
 
-```java
-java.lang.ref.PhantomReference@9208cbf:被gc回收了
-```
+## 虚引用：无法重新取得对象
 
-## 参考
+PhantomReference.get 始终返回 null。程序通过关联的 ReferenceQueue 观察引用入队，再执行与 referent 分离的清理动作。构造器允许队列为 null，但此时无法收到入队通知。入队的是 PhantomReference 对象，不是 referent 本身。
 
-[Java软引用究竟什么时候被回收](https://www.jianshu.com/p/e46158238a77)
-[有关SoftReference的一些事实](https://in355hz.iteye.com/blog/1923393)
+OpenJDK 8u202-b08 的虚引用在入队时不会自动清除 referent，处理后应 clear 或让虚引用对象本身不可达。JDK 25 的契约则规定 GC 判定虚可达后原子地清除相应虚引用；应按实际运行版本理解生命周期，不能将 Java 8 的处理细节推广到所有版本。[Java 8 虚引用源码](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/ref/PhantomReference.java)、[JDK 25 PhantomReference 契约](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ref/PhantomReference.html)
+
+实现资源跟踪时，还需要保持 PhantomReference 自身可达，并确保清理状态不强引用 referent。否则，前者可能使通知丢失，后者则让对象一直无法进入虚可达状态。对于要求及时释放的资源，优先使用 try-with-resources 等明确的生命周期管理；引用队列适合辅助跟踪，不能提供确定的完成时间。
+
+## 如何选择
+
+普通对象关系使用强引用，需要解除业务持有时清理相应容器。软引用适合能容忍随时缺值的内存敏感缓存，但不能代替明确的缓存容量策略。弱引用适合不应由当前结构延长对象寿命的关联，仍要处理容器自身的残留条目。虚引用适合在不重新取得 referent 的前提下追踪回收阶段，其资源清理逻辑需要单独设计。
 
 ## 资料来源
 
-- [java.lang.ref：可达性与引用类型](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ref/package-summary.html)
-- [SoftReference：内存敏感引用](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ref/SoftReference.html)
-- [PhantomReference：虚引用与引用队列](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ref/PhantomReference.html)
+- [Java 8 java.lang.ref：可达性与引用类型](https://docs.oracle.com/javase/8/docs/api/java/lang/ref/package-summary.html)
+- [Java 8 SoftReference：清除与内存需求](https://docs.oracle.com/javase/8/docs/api/java/lang/ref/SoftReference.html)
+- [Java 8 WeakReference：弱可达性与入队](https://docs.oracle.com/javase/8/docs/api/java/lang/ref/WeakReference.html)

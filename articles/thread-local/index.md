@@ -1,7 +1,7 @@
 ---
 title: ThreadLocal
 date: 2019-07-19
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Thread
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
+`ThreadLocal` 提供按线程隔离的值访问，但隔离的是绑定关系，不会自动复制可变对象。下面分析的实现中键是弱引用、值仍被条目强引用；在线程池中，线程长期存活且被复用，未清理的值可能滞留或进入下一次业务执行，因此应在绑定的使用边界内调用 `remove()`。
 
-`ThreadLocal` 提供按线程隔离的值访问，但隔离的是绑定关系，不会自动复制可变对象。原文实现中键是弱引用、值仍被条目强引用；在线程池中，线程长期存活且被复用，未清理的值可能滞留或进入下一次业务执行，因此应在绑定的使用边界内调用 `remove()`。
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/ThreadLocal.java) 分析 ThreadLocalMap 的存储、线性探测与过期条目清理。线程池线程可以处理多个请求，绑定的生命周期应由业务边界控制；跨线程上下文必须显式安排。
 
-## 问题与适用范围
-
-本文回答线程局部值存在哪里、如何查找与清理，以及为什么弱引用键仍可能留下值。正文保留原文 `ThreadLocalMap` 旧实现，未标注精确 JDK 修订。HTTP 请求、异步任务与线程不一定一一对应；跨线程传递上下文需要另行安排，不能仅依赖当前线程中的值。
-
-<!-- more -->
 
 ## ThreadLocalMap
 
@@ -173,7 +168,7 @@ private void set(ThreadLocal<?> key, Object value) {
 
 如果当前线程已经初始化了ThreadLocalMap的话，则根据特定的hash算法计算出下一个Entry存放的数组下标。
 
-1. 从算出的下标开始，步长为1，查询直到下一个槽中的Entry不为null
+1. 从哈希下标开始按步长 1 检查连续的非空槽，遇到同一键、过期条目或空槽时分别处理。
 
 2. 将第一步中找出的Entry中的ThreadLocal与当前正在操作的ThreadLocal作比较，如果相等（指向同一个内存地址），则替换先前的旧值为现在的新值，立即结束循环。否则的话进入下面这个if判断
 
@@ -228,9 +223,9 @@ private void set(ThreadLocal<?> key, Object value) {
    ```
 在上面的例子中通过两个ThreadLocal给Worker线程设置值，这里通过反射重新设置了ThreadLocal的threadLocalHashCode来模拟hash冲突（这两个魔法数字会在下面讲解）
 
-1. 在执行到`System.gc()`，这行代码时Worker线程已经通过hashConflict方法设置了一个ThreadLocal到它的ThreadLocalMap中，gc运行后这个ThreadLocal就会被清除（因为此时已经没有强引用指向它了），所以接下来就会进入到if分支里面，执行replaceStaleEntry方法。这个replaceStaleEntry方法的作用是清除那些过期的槽位，即那些引用的ThreadLocal为null的Entry。最后在该槽位设置新的Entry。
+1. local2 失去其他强引用后可以被回收，但 System.gc 不保证本次就清除它。如果查找时遇到键已清除的 Entry，replaceStaleEntry 会清理并重新安排这一段探测链。
 
-2. 如果执行`System.gc()`没有ThreadLocal被清除，那么就将该位置上的槽位的值覆盖掉
+2. 如果 local2 尚未被清除，它与 local1 仍是两个不同的键，不能覆盖它的值。查找会沿探测链继续，直到找到同一键或可用的空槽，再执行下面的插入。
 
       ```java
       tab[i] = new Entry(key, value);
@@ -242,14 +237,14 @@ private void set(ThreadLocal<?> key, Object value) {
           rehash();
       ```
 
-如果没有过期的Entry被清除并且当前数组的长度大于等于扩容阈值的话，执行rehash方法，这个rehash方法主要的逻辑是先去清除一些过期的槽位，即那些引用的ThreadLocal为null的Entry，然后再重新判断一下是否需要将数组扩容
+如果启发式清理没有删除过期条目，并且当前有效条目计数 size 达到阈值，就调用 rehash。rehash 先清理全表，再根据剩余条目数量判断是否扩容，不是按数组长度与阈值比较。
 对set方法的逻辑做一个总结，当调用ThreadLocal的set方法时：
 1. 如果当前线程没有初始化ThreadLocalMap则构造一个新的ThreadLocalMap赋值给Thread的threadLocals变量，这个初始化的ThreadLocalMap是通过Entry数组来存储数据的，这个Entry是一个类似Map的数据结构，并且继承WeakReference持有ThreadLocal的弱引用，其中key为ThreadLocal，value为我们要设置给Thread的值。初始化大小为16。初始化扩容阈值为10
 2. 如果当前线程已经初始化过ThreadLocalMap则获取当前线程的ThreadLocalMap，将ThreadLocal以及value设置到它的Entry数组中去，此时心Entry的在数组的下标是通过ThreadLocal的threadLocalHashCode与数组长度减一作&运算出来的。在放入对应数组下标前会先判断在这个数组下标中有没有Entry存在：
    1. 如果不存在的话，new一个新的Entry放进去。
    2. 如果存在的话，判断这个Entry中的ThreadLocal是不是和当前调用的ThreadLocal相同，如果相同则替换这个Entry中的value为新的value（相当于覆盖了前面一个值），如果不是同一个ThreadLocal说明这两个ThreadLocal发生了hash冲突，此时从发生冲突的当前下标往下直到找到一个过期的Entry（Entry不为null但是Entry引用的ThreadLocal为null），将ThreadLocal与value设置到这个Entry中，然后立即返回。
    3. 如果在第二步一直找不到过期的Entry，处理方式和第一步一样，new一个新的Entry放进去。
-   4. 最后再从新Entry的位置开始调用cleanSomeSlots方法清除过期的Entry，如果没有过期的Entry被清除并且当前数组的长度大于等于扩容阈值的话，执行rehash方法。
+   4. 插入新条目后调用 cleanSomeSlots 做启发式清理；没有清理成果且条目计数 size 达到阈值时调用 rehash。
 
 set方法的主要逻辑已经分析完了，还有一些细枝末节的地方没有分析到，主要包括replaceStaleEntry，expungeStaleEntry，cleanSomeSlots这几个方法，下面我们就来分下一下这几个方法背后的原理
 #### expungeStaleEntry方法
@@ -296,7 +291,7 @@ private int expungeStaleEntry(int staleSlot) {
 1. 将给定过期槽位的Entry的value设置为null然后设置该槽位为null
 2. 从该槽位开始往下直到找到一个空槽位为止，
    1. 如果该槽位上的Entry已经过期，将该Entry的value设置为null，将该Entry设置为null
-   2. 否则如果该槽位上的Entry是由于hash冲突的原因被设置到这个槽位的话（h != i表明该Entry是在hash冲突时通过线性探测找到该槽位放进去的），设置该槽位的Entry为null，重新给这个判断这个由于hash冲突的Entry原本应该应该所处的槽位是否为空，如果不为空，依旧通过线性探测找到一个适合的位置。最后在这个适合的位置上放上这个Entry（这个冲突的Entry最终有可能放回它本应该在的槽位，也可能放回原位，也可能放在一个新的槽位，取决于此时hash表的槽位状态）这一步的做法我认为是为了尽可能的缩小hash冲突概率，避免hash表内存在过多这种由于hash冲突而通过线性探测找到下一个槽位放置的Entry。
+   2. 活条目的理想槽位可能在已清空的位置之前，因此需要重新计算哈希并插入剩余探测链。否则 get 遇到新产生的空槽就会提前终止，错误地认为键不存在；重新定位首先保证查找正确性。
 3. 返回过期Entry之后的第一个空槽位的索引
 
 **expungeStaleEntry方法的作用就是将给定位置的过期槽位清除掉然后再扫描清除这个位置之后的一些同样过期的槽位以及尽可能的重新设置那些由于hash冲突而导致放置在不属于自己槽位的Entry。**
@@ -374,12 +369,7 @@ private void replaceStaleEntry(ThreadLocal<?> key, Object value,
 }
 ```
 
-1. 从过期的Entry索引往前搜索，只要找到另一个过期的Entry，则将slotToExpunge值设置为这个Entry的索引
-2. 从过期的Entry索引往后搜索
-   1. 如果找到一个Entry引用的ThreadLocal和当前的ThreadLocal相同的话，（说明这个ThreadLocal之前就已经发生过hash冲突了，然后被设置到不属于自己槽位上。）然后将这个不属于它的槽位上的Entry和和此刻冲突的槽位进行替换，替换完成后，此刻冲突的槽位上放置的就是正确的Entry了。接着将在向前搜索过期Entry时搜索到的Entry索引与此刻冲突的槽位索引比较，如果相同的话（说明在向前搜索的过程中冲突索引前面第一个Entry就为null，不会存在将整个Entry数组扫描一遍最终回到冲突的索引位这种情况的），那么将slotToExpunge值设置为当前一致ThreadLocal的Entry索引（此时这个索引上由于已经替换过滤，肯定不是过期的Entry），然后调用cleanSomeSlots方法以及expungeStaleEntry方法清除一些过期的Entry。
-   2. 如果找到了一个过期的Entry并且在向前搜索过期Entry时搜索到的Entry索引就是此刻冲突的槽位索引的话，那么就将slotToExpunge值设置为向后扫描找到的过期Entry的索引。因为此刻找到的才是真正的过期Entry。
-3. 经过第一步和第二步的扫描后如果走到了这一步的话，代表没有找到适合当前冲突的ThreadLocal的槽位，那么只能将这个过期槽位上的值清除掉，new一个新的Entry放入其中。
-4. 经过第一步和第二步后，可以得到即将要开始清除过期Entry的索引，只要这个索引不是当前冲突的索引，就调用cleanSomeSlots方法以及expungeStaleEntry方法清除一些过期的Entry。
+replaceStaleEntry 先向前寻找这一段探测链中更早的过期条目，再向后寻找已有的同一键。如果找到了同一键，就更新 value，并将它与 staleSlot 交换；交换后的旧位置保存的是过期条目，随后从选定位置开始清理。若一直找到空槽也没有同一键，就用新 Entry 替换 staleSlot。清理过程同时重排后续活条目，以维持线性探测的可查找性。
 
 ### get方法
 
@@ -507,7 +497,7 @@ private void remove(ThreadLocal<?> key) {
 
 ## 内存泄漏
 
-现在我们知道ThreadLocalMap最终是通过一个Entry数组存储数据的，并且Entry是继承WeakReference的，在前几篇分析java引用的文章中我们知道WeakReference引用的对象在gc下次运行时如果没有其它强引用指向它的话，那么gc就会清除这个对象，并且这里Entry引用的是ThreadLocal对象，也就是说如果在我们代码中ThreadLocal被定义为全局变量那么这个ThreadLocal就一直不会被gc回收，但如果定义为局部变量的话那么这个方法运行结束ThreadLocal就会被回收。那么ThreadLocalMap究竟什么情况下会发生内存泄漏呢？这里直接给出答案当我们使用线程池时，线程会长期存活导致线程一直持有ThreadLocalMap的引用，进而导致ThreadLocalMap一直持有内部Entry数组的引用，如果Entry中保存的ThreadLocal和value都是强引用的话，这两个对象就一直不会被gc回收。所以Entry继承WeakReference的目的是尽可能的让gc回收那些没有其它强引用的ThreadLocal，然后再配合ThreadLocalMap的一系列set,get，remove方法（在上面分析这些方法时我们可以发现它们内部都会去清除过期的Entry即那些引用ThreadLocal为null的Entry）可以最大限度的清除掉过期的对象，避免oom。其实归根结底还是因为ThreadLocalMap的生命周期和Thread一致导致的，我们看一下线程的exit方法
+ThreadLocalMap 的 Entry 弱引用键 ThreadLocal，却强引用 value。键失去其他强引用后可能被清除，value 仍可通过存活线程、ThreadLocalMap 和 Entry 保持可达。set、get、remove 只在相应路径上清理遇到的过期条目，不保证任意一次调用都清理全部内容。线程池复用使这种滞留更明显，应在业务绑定结束时通过 finally 调用 remove。
 
 ```java
 private void exit() {
@@ -524,7 +514,7 @@ private void exit() {
 }
 ```
 
-在线程退出前，jvm会调用线程的exit方法清除资源，可以看到清除了线程拥有的threadLocals（ThreadLocalMap），下一次gc运行时就会清除这个ThreadLocalMap对象，不过由于ThreadLocalMap内部实际是存储的Entry数组，如果我们的ThreadLocal被定义为static的或者我们的value也是被定义为static这些Entry依旧不会被回收。所幸的是ThreadLocal的expungeStaleEntry方法只要发现有过期的Entry的话就会将Entry的key和value设置为null，这就是为什么Entry是继承WeakReference的原因，一切都是尽可能的让gc回收过期的ThreadLocal然后在调用get和set方法时清除掉这些过期的Entry。
+线程退出时会清空 threadLocals 和 inheritableThreadLocals。若这些 Map 不再由其他对象持有，Map 与 Entry 就可以被回收；键或值本身是 static 并不会反向保住已经不可达的 Entry。静态引用可能独立保留键或值，其可达性需要单独判断。
 
 ## 魔术0x61c88647
 
@@ -543,7 +533,7 @@ private static int nextHashCode() {
 }
 ```
 
-可以发现每个ThreadLocal实例的hashcode都是基于0x61c88647这个数字的，每次new一个ThreadLocal就会将0x61c88647增加一倍。然后通过这个hashcode和Entry数组的长度减一做&运算计算出槽位的索引。下面先看一个例子直观的感受一下这个数字的神奇之处
+每个 ThreadLocal 构造时通过 getAndAdd 将计数器增加固定步长 0x61c88647，再把获得的值保存为自己的哈希码；这是加上固定增量，不是每次翻倍。数组长度为 2 的幂时，以低位掩码计算起始槽位。
 
 ```java
 package io.allurx;

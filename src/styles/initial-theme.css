@@ -1,0 +1,35 @@
+/*
+ * Copyright 2026 allurx
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* 在外部样式加载前绘制正确的画布；由页面模板内联，主题色只在这里维护。 */
+:root {
+  color-scheme: light;
+  --canvas: #f2f5fb;
+  --color: #26314b;
+  background: var(--canvas);
+  color: var(--color);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #101727;
+  --color: #edf2ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --canvas: #101727;
+    --color: #edf2ff;
+  }
+}
+
+@media print {
+  :root, :root[data-theme], :root:not([data-theme="light"]) {
+    color-scheme: light;
+    --canvas: white;
+    --color: black;
+  }
+}

@@ -1,6 +1,7 @@
 ---
-title: SecurityAutoConfiguration源码分析
+title: "SecurityAutoConfiguration 源码分析"
 date: 2019-06-17
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 SecurityAutoConfiguration 通过条件装配引入安全属性、认证事件发布器和 Web 安全配置。满足 Servlet 应用及相关类、Bean 条件时，默认适配器和 @EnableWebSecurity 参与创建 springSecurityFilterChain；默认行为来自多个配置类协作，并非一个配置类完成所有工作。
 
-## 问题与适用范围
+本文分析没有自定义安全适配器的 Servlet 应用启动过程。下文逐步分析的装配条件以这个示例场景为前提，自定义 Bean 或不同 Web 栈可能使这些自动配置退让。
 
-本文回答：只引入安全 starter 时，Spring Boot 怎样启用默认安全配置？
-
-本文分析没有自定义安全适配器的 Servlet 应用启动过程。原文逐步写出的“满足条件”依赖这个示例场景，自定义 Bean 或不同 Web 栈可能使这些自动配置退让。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SecurityAutoConfiguration.java)。
 
 ## 概述
 
 SecurityAutoConfiguration主要负责在项目启动时为当前的web容器添加一些必要的配置类
 
-<!-- more -->
 
 ## SecurityAutoConfiguration
 
@@ -575,4 +569,3 @@ public class ObjectPostProcessorConfiguration {
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

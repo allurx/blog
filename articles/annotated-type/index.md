@@ -1,7 +1,7 @@
 ---
 title: AnnotatedType
 date: 2019-11-05
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Reflect
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `AnnotatedType` 描述一次类型使用及其注解，例如 `List<@Sensitive String>` 中的 `String`。它与声明上的注解不同，需要沿着带注解的类型参数、数组组件、通配符边界和类型变量边界读取；`getType()` 则返回相应的普通 `Type` 结构。
 
-## 问题与适用范围
+下面使用 Java 8 的类型注解 API，并结合 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/sun/reflect/annotation/AnnotatedTypeFactory.java) 的反射实现解释类型结构。运行时读取注解需要 RUNTIME 保留策略；业务代码按公开的 AnnotatedType 接口及其子接口处理类型，不依赖内部实现类名。
 
-本文回答如何读取嵌套类型位置上的注解，围绕 Java 8 引入的类型注解 API 展开。运行时可读取的注解需要相应保留策略。原文输出中的 `sun.reflect.annotation.*` 和 `AnnotatedTypeBaseImpl` 是旧实现类，未给出精确 JDK 修订；业务代码应依赖公开接口，不以内部类名判断类型。
-
-<!-- more -->
 
 ## AnnotatedType
 
@@ -33,11 +28,11 @@ public interface AnnotatedType extends AnnotatedElement {
 
 ```
 
-可以发现AnnotatedType继承了我们在上篇文章中介绍的AnnotatedElement，也就是说通过AnnotatedType我们就能获取该类型的元素上的所有注解。同时类中定义了一个getType方法，这个方法的返回值则代表了运行时的对象的Type，可能是Class、ParameterizedType、TypeVariable、WildcardType、GenericArrayType中的任何一种。所以我们可以把AnnotatedType当做的Type的一种加强类型，通过这种类型我们就能基于反射获取元素上的所有注解。下面我们来看一下它的子接口一共有几种：
+AnnotatedType 继承 AnnotatedElement，用于读取某次类型使用上的注解；getType 返回不含这些类型使用注解的 Type 表示。声明注解通过 Field 等声明对象读取，两者不能混同。特殊的嵌套结构由下面四个公开子接口继续展开。
 
 ![](./images/annotated-type.png)
 
-图中包含四个公开子接口和原文展示的基础实现类 AnnotatedTypeBaseImpl；实现类不属于公开分类契约，它们分别代表AnnotatedParameterizedType（被注解的参数化类型）、AnnotatedTypeVariable（被注解的类型变量）、AnnotatedWildcardType（被注解的通配符类型）、AnnotatedArrayType（被注解的数组类型）、AnnotatedTypeBaseImpl（被注解的基础类型（除了以上四种类型以外的其它类型）），下面我们一一介绍这五种类型的具体含义。
+图中四个公开子接口分别表示参数化类型、类型变量、通配符和数组上的类型使用。AnnotatedTypeBaseImpl 是 OpenJDK 内部的基础实现，不是第五个公开分类；业务代码直接按 AnnotatedType 处理没有上述特殊结构的类型。
 
 ### AnnotatedParameterizedType
 
@@ -375,7 +370,7 @@ class sun.reflect.annotation.AnnotatedTypeFactory$AnnotatedArrayTypeImpl
 class sun.reflect.annotation.AnnotatedTypeFactory$AnnotatedArrayTypeImpl
 ```
 
-可以看到，只要数据的Type不是ParameterizedType、TypeVariable、数组类型（包含普通数组和泛型数组）这三种类型，那么剩下的数据类型都会被规整为AnnotatedTypeBaseImpl。
+在本版本的工厂实现中，参数化类型、类型变量、通配符和数组分别产生专用实现，普通的非数组 Class 类型使用基础实现。示例只列出了部分类型，不能因为没有展示通配符就把它归入基础类型。
 
 ## 应用
 
@@ -385,7 +380,7 @@ class sun.reflect.annotation.AnnotatedTypeFactory$AnnotatedArrayTypeImpl
 
 ## 总结
 
-AnnotatedType是jdk1.8之后新增的**可能被注解的类型**，公开 API 通过 AnnotatedParameterizedType、AnnotatedTypeVariable、AnnotatedWildcardType 和 AnnotatedArrayType 描述特殊类型使用，其他类型使用可直接按 AnnotatedType 处理；AnnotatedTypeBaseImpl 是原文中的内部实现类。同时AnnotatedType继承了AnnotatedElement使得我们能够在运行时基于反射api去分析获取那些十分复杂的数据结构中的注解。
+AnnotatedType是jdk1.8之后新增的**可能被注解的类型**，公开 API 通过 AnnotatedParameterizedType、AnnotatedTypeVariable、AnnotatedWildcardType 和 AnnotatedArrayType 描述特殊类型使用，其他类型使用可直接按 AnnotatedType 处理；AnnotatedTypeBaseImpl 是所引 JDK 中的内部实现类。同时AnnotatedType继承了AnnotatedElement使得我们能够在运行时基于反射api去分析获取那些十分复杂的数据结构中的注解。
 
 ## 资料来源
 

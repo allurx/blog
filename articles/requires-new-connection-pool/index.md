@@ -1,7 +1,7 @@
 ---
 title: "REQUIRES_NEW 为什么会耗尽连接池"
 date: 2026-09-25
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "Spring"
 tags: ["Spring","Transaction","ConnectionPool"]
 ---
@@ -63,7 +63,7 @@ Spring 官方文档明确说明，`REQUIRES_NEW` 总是使用独立的物理事�
 java -ea RequiresNewPoolStarvationDemo.java
 ```
 
-2026-10-01 修订时，使用 JDK 25.0.2 执行附件并启用断言，输出：
+使用 JDK 25.0.2 执行附件并启用断言，预期输出：
 
 ```text
 Result[workers=4, poolSize=4, innerSuccess=0, innerTimeouts=4, maxInUse=4]

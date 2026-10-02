@@ -1,6 +1,7 @@
 ---
-title: AccessDecisionManager源码分析
+title: "AccessDecisionManager 源码分析"
 date: 2019-06-15
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,17 +9,11 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 AccessDecisionManager 汇总 AccessDecisionVoter 的赞成、反对和弃权结果。AffirmativeBased 有赞成票即可允许，ConsensusBased 比较赞成与反对票数，UnanimousBased 遇到反对票即拒绝；全部弃权时仍需依据单独的配置决定，不能把弃权当作赞成。
 
-## 问题与适用范围
+下面分析投票式授权体系，重点是三种内置决策策略及常见投票者。配置属性的表达方式会影响投票结果，本文的策略比较不意味着它们可不加分析地相互替换。
 
-本文回答：多个授权投票者意见不同时，访问决策管理器怎样做最终决定？
-
-本文分析旧的投票式授权体系，重点是三种内置决策策略及常见投票者。配置属性的表达方式会影响投票结果，本文的策略比较不意味着它们可不加分析地相互替换。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/vote/AbstractAccessDecisionManager.java)。
 
 ## 概述
 
@@ -28,7 +23,6 @@ AccessDecisionManager访问决策管理器，制定最终访问控制（授权�
 
 它们都继承了AbstractAccessDecisionManager，先来看一下它的源码
 
-<!-- more -->
 
 ## AbstractAccessDecisionManager
 
@@ -629,4 +623,3 @@ public class WebExpressionVoter implements AccessDecisionVoter<FilterInvocation>
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

@@ -1,6 +1,7 @@
 ---
-title: ThreadPoolExecutor概述
+title: "ThreadPoolExecutor 概述"
 date: 2020-01-07
+updated: 2026-10-02
 tags:
   - Java
   - Concurrent
@@ -9,15 +10,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `ThreadPoolExecutor` 提交任务时先尝试增加核心工作线程，再尝试入队，队列不能接纳任务时才尝试增加到最大线程数，仍不能接纳则执行拒绝策略。队列类型会直接改变扩容行为：无界队列通常使 `maximumPoolSize` 无法发挥限流作用，容量、线程数与拒绝策略需要一起选择。
 
-## 问题与适用范围
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/ThreadPoolExecutor.java) 分析线程池参数、运行状态及任务接纳规则。核心线程默认按需创建，也可能允许空闲超时；关闭请求不保证业务任务立即结束，线程数需要结合负载确定。
 
-本文回答线程池参数和运行状态如何影响任务接纳，保留原文 `ctl` 位编码说明，未标注精确 JDK 修订。核心线程并不必然在构造后就已创建，也不一定永久存活；停止请求不保证业务任务立即结束。本文不提供脱离实际负载的通用线程数公式。
-
-<!-- more -->
 
 ## 线程池的状态
 
@@ -85,7 +81,7 @@ private static int ctlOf(int rs, int wc) { return rs | wc; }
 
 * TIDYING
 
-  当workerCount（线程池中的线程数）为0时，线程池的状态就会变为TIDYING，此时**线程池即将调用钩子方法terminated**
+  已停止接收任务，并且满足终止条件时，最后一个 worker 退出才允许转为 TIDYING；SHUTDOWN 还要求队列为空。仅仅 workerCount 为零并不够，例如新建且尚未提交任务的线程池仍处于 RUNNING。随后调用 terminated 钩子。
 
   ```java
   0100 0000 0000 0000 0000 0000 0000 0000‬
@@ -109,7 +105,7 @@ private static int ctlOf(int rs, int wc) { return rs | wc; }
 
 ### maximumPoolSize
 
-线程池最大能够容纳的线程数量。当通过execute方法提交任务时只要线程池中的线程数量大于corePoolSize并且小于maximumPoolSize时，并且任务队列已满的情况下才会创建一个新线程来处理任务。
+线程池允许的最大工作线程数。任务不能入队时，会尝试在此上限内添加线程；当前线程数等于 corePoolSize 也可以扩容，不必先大于它。线程工厂无法创建线程时仍可能无法接纳任务。
 
 ### keepAliveTime
 
@@ -195,7 +191,7 @@ public static class DiscardOldestPolicy implements RejectedExecutionHandler {
 }
 ```
 
-舍弃最先提交的任务策略，只要此时线程池的状态是RUNNING状态，就通过队列的poll方法将队列头部的任务（最先提交的任务）删除，然后再尝试通过ThreadPoolExecutor执行这个任务
+丢弃队头任务后重新尝试 execute。队头是不是最早提交取决于队列顺序，优先级队列并不满足这个等同关系；线程池已关闭时不重试。
 
 #### DiscardPolicy
 

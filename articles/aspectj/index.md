@@ -1,26 +1,21 @@
 ---
-title: Aop概述
+title: "AOP 概述"
 date: 2019-12-22
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Aop概述
 domain: Java
 ---
 
-## 核心结论
-
 AOP 把日志、权限、事务等横切行为从业务代码中集中表达，再按连接点和切点规则执行增强。AspectJ 可以在编译期或类加载期织入字节码；Spring AOP 常用代理拦截方法调用。织入和代理的可拦截范围不同，不能把所有 AOP 都理解为运行时动态代理。
 
-## 问题与适用范围
+下面通过 AspectJ 语法和示例说明连接点、切点、通知与切面如何协作。构建与 IDE 集成方式需要按所用版本核对。将同样的切点表达式用于 Spring AOP 时，需要核对代理边界、自调用以及可见性限制；AspectJ 支持的连接点也不能直接当作 Spring AOP 的能力。
 
-本文回答 AspectJ 中连接点、切点、通知与切面如何协作，并保留原来的 AspectJ 语法和示例。它不是某一当前版本的构建配置教程。将同样的切点表达式用于 Spring AOP 时，需要核对代理边界、自调用以及可见性限制；AspectJ 支持的连接点也不能直接当作 Spring AOP 的能力。
-
-<!-- more -->
 
 ## AspectJ
 
-AspectJ是一个基于Java语言的AOP框架，包括编译器（`ajc`），调试器（`ajdb`），文档生成器（`ajdoc`），程序结构浏览器（`ajbrowser`）。AspectJ使用特定的编译器用来生成遵守Java字节编码规范的Class文件，达到给对象添加额外功能的目的。
+AspectJ 在 Java 语言基础上提供切面语法，并通过字节码织入把切面与目标类组合起来。主要工具包括编译器与织入器 `ajc`、文档生成器 `ajdoc`，以及加载时织入支持；`aspectjtools.jar` 提供工具，`aspectjrt.jar` 提供运行库。[AspectJ 工具介绍](https://eclipse.dev/aspectj/doc/latest/devguide/tools-intro.html)
 
 ### 术语
 
@@ -360,18 +355,18 @@ Aspect定义与java类的定义和很相似，java用`class`关键字申明一�
 
 ## 使用AspectJ
 
-下面保留原文使用 AspectJ 安装器与 IntelliJ IDEA 的集成方式。先在 [AspectJ 下载页](https://www.eclipse.org/aspectj/downloads.php#stable_release)选择与项目 JDK 兼容的版本，下载相应安装器 JAR，通过 `java -jar` 运行并完成安装。不同版本的安装方式及 IDE 菜单可能不同，应以所用版本的文档为准。
+下面以 AspectJ 安装器与 IntelliJ IDEA 的集成为例。先在 [AspectJ 下载页](https://www.eclipse.org/aspectj/downloads.php#stable_release)选择与项目 JDK 兼容的版本，下载相应安装器 JAR，通过 `java -jar` 运行并完成安装。不同版本的安装方式及 IDE 菜单可能不同，应以所用版本的文档为准。
 
 用 `ASPECTJ_HOME` 表示实际安装目录。例如 Windows 中可以是 `C:\Users\allurx\tools\aspectj`；这是示例路径，需要替换为自己的目录。安装后的配置有两个不同用途：
 
 - 将 `ASPECTJ_HOME/lib/aspectjrt.jar` 加入项目类路径，提供 AspectJ 运行库。
 - 需要从命令行调用 `ajc` 时，将 `ASPECTJ_HOME/bin` 加入 `PATH`。
 
-在原文使用的 IntelliJ IDEA 中，先检查 AspectJ 语法支持插件：
+在 IntelliJ IDEA 中使用切面语法需要安装 AspectJ 插件，安装入口见 [IntelliJ IDEA 的 AspectJ 支持说明](https://www.jetbrains.com/help/idea/aspectj.html)。
 
 ![](./images/intellij-aspectj-plugin.png)
 
-随后打开 Project Structure，在 Libraries 中加入实际的 `ASPECTJ_HOME/lib/aspectjrt.jar`。再进入 Settings → Build, Execution, Deployment → Compiler → Java Compiler，将编译器选择为 `Ajc`，并在 `Path to aspectjtools.jar` 中填写实际的 `ASPECTJ_HOME/lib/aspectjtools.jar`。
+项目类路径应包含实际的 `ASPECTJ_HOME/lib/aspectjrt.jar`；使用 IDE 编译时，将 AspectJ 编译器指向 `ASPECTJ_HOME/lib/aspectjtools.jar`。也可以直接使用安装目录中的 `ajc` 编译 `.java` 与 `.aj` 文件，参数见 [ajc 编译器文档](https://eclipse.dev/aspectj/doc/latest/devguide/ajc.html)。
 
 这两项 JAR 配置分别服务于项目运行库和编译器。目录必须指向本机实际安装位置；完成配置后，再编译下面的示例检查织入结果。
 
@@ -490,7 +485,7 @@ public privileged aspect HelloWorldAspect {
 }
 ```
 
-HelloWorldAspect 切面已经编写完成。调用 HelloWorld 的 main 方法，可以观察以下输出结构。示例包名统一为 `io.allurx`；编译器生成的织入方法后缀和堆栈行号取决于实际编译结果，下面省略该后缀。
+调用 HelloWorld 的 main 方法，可以观察以下输出结构。示例使用 `io.allurx` 包；编译器生成的织入方法后缀和堆栈行号取决于实际编译结果，下面省略该后缀。
 
 ```text
 I'm a private field on HelloWorld

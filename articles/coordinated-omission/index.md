@@ -1,7 +1,7 @@
 ---
 title: "协调遗漏为什么会低估压测尾延迟"
 date: 2026-09-23
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "性能"
 tags: ["LoadTesting","TailLatency","CoordinatedOmission"]
 ---
@@ -100,7 +100,7 @@ public final class CoordinatedOmissionDemo {
 }
 ```
 
-2026-10-01 修订时，使用 JDK 25.0.2 的 `javac --release 17` 编译并运行，得到以下输出，代码中的检查均通过：
+使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；程序中的检查会核对这些结果。
 
 ```text
 closed-loop: samples=301 p50=5ms p95=5ms p99=5ms max=500ms

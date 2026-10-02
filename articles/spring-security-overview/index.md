@@ -1,7 +1,7 @@
 ---
-title: Spring-Security总结
+title: "Spring Security 总结"
 date: 2019-07-04
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -9,23 +9,16 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 FilterChainProxy 选择安全过滤器链，链上的认证过滤器取得凭据并委托 AuthenticationManager，授权组件检查受保护操作。配置阶段由 SecurityConfigurer 配置 SecurityBuilder，HttpSecurity 构建单条链，WebSecurity 将多条链组合成 FilterChainProxy；配置过程与请求处理过程需要分开理解。
 
-## 问题与适用范围
+下面把 Servlet 请求处理与启动配置连接起来，说明 `authorizeRequests`、`FilterSecurityInterceptor`、`@EnableGlobalMethodSecurity` 和适配器分别参与哪一层。
 
-本文回答：过滤器链、认证提供者和安全配置构建器各自负责什么？
-
-本文汇总历史系列的 Servlet 请求链和配置链。正文的 authorizeRequests、FilterSecurityInterceptor、@EnableGlobalMethodSecurity 和适配器配置属于该时期的实现，示例仓库也需要结合自己的依赖版本使用。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/configuration/WebSecurityConfiguration.java)。
 
 ## 概述
 
-spring-security系列的文章总算是写完了，中途有太多的的感悟和细节还没有表达出来，还有很多东西没有涉及到，由于精力有限，手头上还有其它工作需要做，spring-security研究就暂告一段落了，但是整个主干部分目前已经理清了，现在已经可以借助spring-security保护我们的系统了，下面我们对spring-security的学习做一个总结。
+理解 Spring Security，需要把两条流程分开：启动阶段构建安全规则与过滤器链，请求阶段按这些规则认证和授权。下面分别说明两条流程，再连接构建器与配置器的职责。
 
-<!-- more -->
 
 ## 认证
 
@@ -33,7 +26,7 @@ spring-security通过一个名称为**springSecurityFilterChain**的过滤器来
 
 ## 授权
 
-spring-security有两种授权方式，一种是**基于表达式的授权**，另一种是**基于方法注解的授权**，**基于表达式的授权**是通过**HttpSecurity的authorizeRequests()方法**进行配置的，该方法最终会将一个**FilterSecurityInterceptor**过滤器添加到**SecurityFilterChain**内部维护的过滤器列表中。**基于方法注解的授权**是通过**@EnableGlobalMethodSecurity**注解开启的，该注解最终会添加一个**MethodSecurityInterceptor**拦截器，在方法调用前检查方法上配置的权限是否和当前认证信息中的权限匹配。
+授权可以发生在 HTTP 请求层或方法调用层。请求授权通过 HttpSecurity.authorizeRequests() 配置，由 FilterSecurityInterceptor 根据路径匹配与配置属性做出访问决定。方法授权通过 @EnableGlobalMethodSecurity 启用相应机制，由方法拦截器处理。表达式是规则的表达方式，两层都可以使用，不能把“表达式授权”和“方法注解授权”当成互斥分类。
 
 ## SecurityBuilder和SecurityConfigurer
 
@@ -43,7 +36,7 @@ spring-security有两种授权方式，一种是**基于表达式的授权**，�
 
 ## 总结
 
-文字是枯燥的，下面给出我写的一个spring-security参考示例。开始使用spring-security保护你的web系统吧！
+下面的示例工程可以配合源码阅读；运行时以工程 POM 中的依赖版本为准。
 
 [**spring-security-demo**](https://github.com/allurx/spring-security-demo)
 
@@ -51,4 +44,3 @@ spring-security有两种授权方式，一种是**基于表达式的授权**，�
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

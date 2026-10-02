@@ -1,7 +1,7 @@
 ---
 title: ThreadGroup
 date: 2019-07-12
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Thread
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
+`ThreadGroup` 将平台线程组织成组，并提供枚举、中断和未捕获异常处理的入口；统计结果只是估计值，不能代替任务完成协议。本文关注线程组树如何维护关系，以及这些关系如何参与操作。
 
-`ThreadGroup` 将平台线程组织成组，并提供枚举、中断和未捕获异常处理的入口；统计结果只是估计值，不能代替任务完成协议。原文的显式销毁与 `SecurityManager` 检查属于历史实现。JDK 25 的 `destroy()` 已弃用且不执行销毁，线程组由可达性决定是否可被回收。
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/ThreadGroup.java) 为源码基线，分析线程组树、枚举和未捕获异常处理。destroy 与安全检查按此版本解释；在 JDK 25 中 destroy 已弃用且为空操作。实际任务管理应采用明确的执行器与完成协议。
 
-## 问题与适用范围
-
-本文回答原文线程组树与旧源码的工作方式，未提供精确源码修订。阅读 `destroy()`、`destroyed`、安全检查等内容时，应与文末 JDK 25 API 对照。虚拟线程使用特殊线程组，不能用本文的组枚举方式管理它们；新业务的任务生命周期应由执行器或明确的任务协议管理。
-
-<!-- more -->
 
 ```java
 private void init(ThreadGroup g, Runnable target, String name,
@@ -86,7 +81,7 @@ public ThreadGroup(String name) {
 }
 ```
 
-指定线程组的名称，父线程组为当前正在执行的线程
+指定线程组名称，父线程组为当前执行线程所属的 ThreadGroup，不是线程对象本身。
 
 ### public ThreadGroup(ThreadGroup parent, String name)
 
@@ -155,7 +150,7 @@ public int activeCount() {
 }
 ```
 
-统计当前线程组内以及包含的子线程组内所有的线程数量
+返回当前组及其子组中活动线程数量的估计值；线程可以并发启动或退出，因此不能把它作为精确快照或任务完成条件。
 
 ### public int activeGroupCount()
 
@@ -182,11 +177,11 @@ public int activeGroupCount() {
 }
 ```
 
-统计当前线程组内以及包含的子线程组内所有的线程组数量
+返回当前组下活动子线程组数量的估计值，递归计算子组，不包含当前组本身。
 
 ### public final void destroy()
 
-以下是原文旧实现的显式销毁逻辑。JDK 25 中该方法已弃用且无操作；线程组没有存活线程且不再可达时可以被 GC 回收。不要用以下代码判断当前 JDK 的销毁行为。
+以下是 OpenJDK 8u202-b08 的显式销毁逻辑；它要求组内没有活动线程，并递归处理子组。JDK 25 的同名方法已弃用且为空操作，不能以该源码判断新版行为。
 
 ```java
 public final void destroy() {
@@ -331,7 +326,7 @@ public void uncaughtException(Thread t, Throwable e) {
 }
 ```
 
-该方法在**线程常用方法**一文中分析过，这里就不多做分析了。
+线程没有专门的 UncaughtExceptionHandler 时，会把未捕获异常交给所属线程组。默认实现向父组转发，到根组后使用全局默认处理器；不存在默认处理器且异常不是 ThreadDeath 时，才打印到标准错误流。
 
 ## 例子
 
@@ -409,7 +404,7 @@ CustomizedThreadGroup里面的CustomizedThreadGroup-0运行时出现了异常:ja
 
 ## 总结
 
-本文主要介绍了ThreadGroup相关的一些概念和基本方法的使用，原文中的平台线程默认继承创建者的线程组；当前虚拟线程则使用专门的线程组。了解线程和线程组之间的关系能够帮助我们更好的编写线程相关的代码。
+本文主要介绍了ThreadGroup相关的一些概念和基本方法的使用，示例中的平台线程默认继承创建者的线程组；当前虚拟线程则使用专门的线程组。了解线程和线程组之间的关系能够帮助我们更好的编写线程相关的代码。
 
 ## 资料来源
 

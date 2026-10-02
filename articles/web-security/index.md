@@ -1,6 +1,7 @@
 ---
-title: WebSecurity源码分析
+title: "WebSecurity 源码分析"
 date: 2019-06-28
+updated: 2026-10-02
 tags:
   - Spring
   - Spring-Security
@@ -8,17 +9,11 @@ tags:
 domain: Spring
 ---
 
-## 核心结论
-
 WebSecurity 维护用于构建 SecurityFilterChain 的构建器，完成构建后将多条链组合成 FilterChainProxy。SecurityConfigurer 负责配置构建器，SecurityBuilder 负责生成目标对象；最终的 springSecurityFilterChain Bean 是过滤器代理，不是一条单独的 SecurityFilterChain。
 
-## 问题与适用范围
+下面分析 WebSecurity、AbstractConfiguredSecurityBuilder 与适配器的协作。阅读构建过程时，应区分 Bean 名 springSecurityFilterChain、接口 SecurityFilterChain 和具体 FilterChainProxy。
 
-本文回答：多条 HttpSecurity 配置如何组合成统一的安全过滤入口？
-
-本文分析旧的 WebSecurity、AbstractConfiguredSecurityBuilder 与适配器协作。SpringSecurityFilterChain 在原文中有时用作统称，应区分 Bean 名 springSecurityFilterChain、接口 SecurityFilterChain 和具体 FilterChainProxy。
-
-本系列声明的基线为 Spring Boot 2.1.5.RELEASE，其默认管理 Spring Security 5.1.5.RELEASE。正文保留该时期的源码与配置方式，用于理解历史实现，不代表当前版本的全部行为。
+以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/builders/WebSecurity.java)。
 
 ## 概述
 
@@ -41,7 +36,6 @@ public Filter springSecurityFilterChain() throws Exception {
 
 本章主要分析WebSecurity构建FilterChainProxy的流程，围绕WebSecurity的build方法展开。
 
-<!-- more -->
 
 ## SecurityConfigurer和SecurityBuilder的关系
 
@@ -614,7 +608,7 @@ private void init() throws Exception {
 }
 ```
 
-既然是在这个地方配置的那么这个SecurityConfigurer和SecurityBuilder又是什么呢？这里直接给出结果：WebSecurity内维护的SecurityBuilder是通过调用WebSecurityConfigurerAdapter的init方法添加的，最终的添加的SecurityBuilder就是HttpSecurity。结果其实不意外，平常我们在配置spring-security的时候通常就是继承WebSecurityConfigurerAdapter类然后调用configure(HttpSecurity http)方法进行配置的。这里就又引出了WebSecurityConfigurerAdapter和HttpSecurity类，篇幅有限，下一章我们再继续分析它是如何配置这个HttpSecurity的。
+WebSecurityConfigurerAdapter 在 init 中把 HttpSecurity 加入 WebSecurity 的构建器列表；应用覆盖 configure(HttpSecurity) 时配置的就是这个构建器。适配器如何准备共享对象，见 [WebSecurityConfigurerAdapter](/web-security-configurer/)；单条过滤器链的生成过程，见 [HttpSecurity](/http-security/)。
 
 ## 总结
 
@@ -626,4 +620,3 @@ WebSecurity通过内部维护的构建器生成多条SecurityFilterChain，再�
 
 - [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
 - [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
-- [SecurityFilterChain 组件配置迁移指南](https://spring.io/blog/2022/02/21/spring-security-without-the-websecurityconfigureradapter)

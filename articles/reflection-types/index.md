@@ -1,7 +1,7 @@
 ---
 title: Type
 date: 2019-10-29
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Reflect
@@ -9,15 +9,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
-
 `Type` 描述反射中的类型结构：`Class`、`ParameterizedType`、`TypeVariable`、`WildcardType` 与 `GenericArrayType` 表达不同的信息。解析泛型时应按结构递归处理类型参数、边界、所有者与数组组件，不能把每个 `Type` 强转为 `Class`。
 
-## 问题与适用范围
+读取泛型信息需要从保留类型签名的声明入手。类型擦除意味着从普通对象的 `getClass()` 通常不能还原它创建时的所有泛型实参；带有泛型签名的字段、方法和父类声明才是本文示例的入口。普通数组可以由数组 `Class` 表达，泛型组件数组则可能由 `GenericArrayType` 表达。
 
-本文回答如何读取声明中保留的泛型信息。类型擦除意味着从普通对象的 `getClass()` 通常不能还原它创建时的所有泛型实参；带有泛型签名的字段、方法和父类声明才是本文示例的入口。普通数组可以由数组 `Class` 表达，泛型组件数组则可能由 `GenericArrayType` 表达。
-
-<!-- more -->
 
 ## 具体实现
 
@@ -171,7 +166,7 @@ public interface TypeVariable<D extends GenericDeclaration> extends Type, Annota
     // 类型变量在源代码中的名称，例如T、O，返回的就是T、O
     String getName();
 
-    // 这是jdk1.8之后新加的方法，与AnnotatedType有关，将在下一篇文章分析
+    // Java 8 引入，通过 AnnotatedType 读取类型使用位置上的注解
     AnnotatedType[] getAnnotatedBounds();
 }
 

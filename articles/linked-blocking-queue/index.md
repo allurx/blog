@@ -1,7 +1,7 @@
 ---
 title: LinkedBlockingQueue
 date: 2020-01-04
-updated: 2026-10-01
+updated: 2026-10-02
 tags:
   - Java
   - Collection
@@ -11,15 +11,10 @@ tags:
 domain: Java
 ---
 
-## 核心结论
+`LinkedBlockingQueue` 是可指定容量的 FIFO 阻塞队列。下面分析的实现通过分别保护入队和出队的锁、共享计数与条件通知协调生产者和消费者，因此部分入队与出队可以并行。未指定容量时上限为 `Integer.MAX_VALUE`，并不意味着实际内存足够。
 
-`LinkedBlockingQueue` 是可指定容量的 FIFO 阻塞队列。原文实现通过分别保护入队和出队的锁、共享计数与条件通知协调生产者和消费者，因此部分入队与出队可以并行。未指定容量时上限为 `Integer.MAX_VALUE`，并不意味着实际内存足够。
+下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/LinkedBlockingQueue.java) 为源码基线，分析链表、哨兵节点、容量计数与条件通知的协作。用于任务积压时应明确容量，迭代与批量转移也需要遵守各自的并发契约。
 
-## 问题与适用范围
-
-本文回答链表、哨兵节点、容量计数和通知如何协作，保留未标注精确 JDK 修订的旧源码。具体节点和锁布局属于实现细节。用于任务积压时应明确容量与生产速度；迭代及批量转移也不能被当作脱离并发变化的固定快照。
-
-<!-- more -->
 
 ## 链表节点
 
@@ -221,19 +216,15 @@ if (c + 1 < capacity)
     notFull.signal();
 ```
 
-为什么在元素入队成功之后且当前队列还未满的情况下要去通知另一个阻塞线程呢？我不是很明白这段代码会在什么情况下发生，因为无论是put锁还是take锁都是独占锁，而LinkedBlockingQueue中往队列中新增元素并且会阻塞（即调用notFull的await或者awaitNanos方法）的方法只有`put(E e)`和`offer(E e, long timeout, TimeUnit unit)`这两个方法，而由于独占锁的特性这两个方法是不可能被两个线程同时调用的。百思不得其解，后来在我阅读到作者在LinkedBlockingQueue源码开始的设计摘要上的一段话
+Condition.await 会释放 putLock，所以同一时刻可以有多个生产者已经进入 put，并在 notFull 条件队列中等待；独占锁只限制同时执行受保护代码的线程数，不限制等待者数量。消费者把队列从满变为未满时先通知一个生产者，醒来的生产者成功插入后若仍有容量，再通知下一个，形成级联通知。
 
 ```java
 Also, to minimize need for puts to get takeLock and vice-versa, cascading notifies are used.
 ```
 
-翻译成中文的意思是**为了最小化获取putLock和takeLock的需求，在相应的put和take方法内使用了级联通知。**重点在于**最小化获取锁**这段话，由于使用的是独占锁，所以无论是put还是take操作都是被一个线程独占调用的，所以上面那段代码只会发生在多线程的场景下多个线程执行put或take操作时频繁达到队列容量阈值的时候：
+级联通知减少了两把锁之间的交叉获取。消费线程只在计数从 capacity 降到 capacity - 1 时调用 signalNotFull；之后生产者在 putLock 内逐个传递 notFull 信号。take 侧同理：第一次从空变为非空时跨锁通知，消费者在仍有元素时继续通知下一个。
 
-1. 假设存在一个队列Q，容量为100
-2. A线程执行put操作将Q塞满了，然后A线程继续put走到`notFull.await();`这一行代码处被阻塞了（此刻没有任何其它线程从队列中take元素）
-3. B线程开始从Q中take元素，当take到第50个元素的时候另一个C线程又继续往Q中put元素，成功入队后此时队列中的数量为51，队列未满，然后调用`notFull.signal();`这行代码唤醒上一个被阻塞的线程，这个线程就是A线程，A线程被唤醒后继续put第52个元素，直到队列容量满之后A和C两个线程都被阻塞，然后其它take线程take一个之后唤醒上一个被阻塞的线程，循环往复。
-
-LinkedBlockingQueue中和put方法语义相同的方法还有带超时的offer和不带超时的offer方法，这两个方法与put方法在实现的流程上基本一致，这里就不再分析了。
+offer、带超时的 offer 和 put 共用相近的入队结构，但等待契约不同：无超时的 offer 无法接纳时立即返回 false，带超时版本最多等待给定时间，put 则等待容量或响应中断。
 
 ## take方法
 
@@ -267,8 +258,8 @@ public E take() throws InterruptedException {
 2. 如果队列是空的则阻塞
 3. 调用出队方法dequeue
 4. 如果此时队列中至少还有一个元素则调用 `notEmpty.signal();`唤醒其它执行take方法阻塞的线程。注意getAndDecrement方法是先get再递减，返回的是递减前的值
-5. take锁释放锁，唤醒阻塞线程其实是在这一步发生的，不懂的可以看我之前写的Condiotion文章。
-6. c == capacity为true代表`c = count.getAndDecrement();`这行代码执行成功了，这里需要注意getAndDecrement方法是先获取再递减，所以返回值是这次take成功前队列中元素的数量。那为什么是take前队列已满的情况下再通知put线程呢？难道take前队列还未满就不用通知了吗？这是因为独占锁的原因，同一时刻只会有一个线程去put，而put线程被阻塞的条件是队列已满，如果这次take前队列未满就不会有put线程被阻塞了，所以只会在take前队列已满的情况下再去唤醒上一个被阻塞的put线程。
+5. 释放 takeLock。signal 已把候选等待者转入锁竞争；它必须重新取得 takeLock 并检查队列状态后才能消费。
+6. c 是取出前的计数。只有本次取出完成“满到未满”的转换时才跨锁通知生产者；此前未满时也可能仍有等待者，但通知由 put 侧的级联规则继续传播，不能说它们必然不存在。
 
 take方法的大体流程如上所示，与put方法没有什么太大的区别。我们只需要关注一下元素是如何出队的就可以了
 
@@ -312,7 +303,7 @@ private E dequeue() {
 这里有一个需要注意的点是head节点在LinkedBlockingQueue中扮演的是一个哨兵的角色，它本身是不持有任何元素的。
 所以出队本质上拿的是head节点next节点中的item。
 
-LinkedBlockingQueue中和take方法语义相同的方法还有带超时的poll和不带超时的poll方法，这两个方法与take方法在实现的流程上基本一致，这里就不再分析了。
+poll、带超时的 poll 和 take 共用相近的出队结构。空队列上，poll 立即返回 null，带超时的 poll 可以等待后返回 null，take 则等待元素或响应中断。
 
 ## remove方法
 
@@ -336,7 +327,7 @@ public boolean remove(Object o) {
 }
 ```
 
-remove方法的作用是将队列中第一个通过equals方法与指定Object匹配的对象从此队列中移除。与take方法不同，take方法允许在take期间有其它线程在进行put操作，而remove方法则不允许，进行remove时需要保证put锁和take锁都被当前执行remove方法的线程独占，因为如果remove方法只是独占一个take锁的话，原本队列中可能没有对象与Object匹配，而某一时刻如果有一个线程put进来一个Object满足条件，这就不符合预期的结果了，所以remove方法需要通过fullyLock方法来独占put和take锁。
+remove 从队列中删除首个与参数 equals 相等的元素。它需要遍历并修改中间节点链接，删除尾节点时还要更新 last，因此同时持有 putLock 与 takeLock，以免与入队、出队并发改动结构。
 
 ### fullyLock
 
@@ -436,10 +427,10 @@ public int drainTo(Collection<? super E> c, int maxElements) {
 }
 ```
 
-1. 待转移的集合不能为null，待转移的集合不能为本身，maxElements不能为0
+1. 目标集合不能为 null 或队列本身；maxElements 小于或等于零时直接返回零，不抛出参数异常。
 2. 计算出maxElements与当前队列中元素数量这两者间较小的值作为即将转移的元素数量
 3. take锁加锁
-4. 通过一个while循环从head节点的下一个真正持有元素的节点开始将该节点中的item通过Collection的add方法转移到该集合中。注意因为add方法是可能抛出异常的，所以在while循环外层通过一个局部变量来记录在发生异常前的上一个节点，然后在finally块中确保将队列的head节点设置为正确的节点，i即为成功转移元素的数量，如果大于0则通过AtomicInteger的getAndAdd方法将队列中的元素数量设置为减去i的数量，需要注意的是getAndAdd方法是先获取再做减法，所以返回值队列转移元素前拥有的元素数量。将这个值与容量作比较含义为**只要转移前队列中的元素数量已经满了就通知被阻塞的put线程开始往队列中新增元素。**这里有一点疑问，如果转移前队列本身还未满，就不需要通知阻塞的put线程了吗？划重点**通知阻塞的put线程**，因为只有队列已满的情况下才有可能存在阻塞的put线程，如果转移前队列都未满的话那么就不会有put线程被阻塞了，所以`count.getAndAdd(-i)`是与容量作比较的。
+4. 逐个向目标集合 add 元素，i 只统计成功转移的数量；即使 add 抛出异常，finally 也按已转移的元素更新 head 和计数。计数从满变为未满时跨锁通知生产者，之后由 put 侧继续级联通知。此操作不为目标集合提供额外的事务或线程安全保证。
 
 ## 例子
 

@@ -1,7 +1,7 @@
 ---
 title: "try-with-resources 为什么不会让 close 异常覆盖主异常"
 date: 2026-09-28
-updated: 2026-10-01
+updated: 2026-10-02
 domain: "Java"
 tags: ["Java","TryWithResources","SuppressedExceptions"]
 ---
@@ -70,7 +70,7 @@ public final class SuppressedExceptionDemo {
 }
 ```
 
-第一组应先打印 `closing second`、再打印 `closing first`，主异常消息为 `body`，suppressed 为 `[close-second, close-first]`。第二组关闭次序不变，主异常消息变为 `close-second`，suppressed 为 `[close-first]`。断言直接检查这两组异常归属。2026-10-01 修订时，使用 JDK 25.0.2 的 `javac --release 17` 编译并运行，两组检查均通过。
+第一组应先打印 `closing second`、再打印 `closing first`，主异常消息为 `body`，suppressed 为 `[close-second, close-first]`。第二组关闭次序不变，主异常消息变为 `close-second`，suppressed 为 `[close-first]`。断言直接检查这两组异常归属。可使用 JDK 25.0.2，以 `javac --release 17` 编译后运行这两组检查。
 
 ## 保留完整异常图，而不只保存消息
 
