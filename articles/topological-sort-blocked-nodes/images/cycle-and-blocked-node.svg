@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="300" viewBox="0 0 760 300" role="img" aria-labelledby="title description">
+  <title id="title">循环依赖与被阻塞的下游节点</title>
+  <desc id="description">A 指向 B，B 和 C 相互依赖，C 指向 D；独立的 E 指向 F。B、C 在环上，D 不在环上但被阻塞。A、E、F 可以被拓扑排序输出。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#475569"/></marker>
+    <marker id="cycle-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#b91c1c"/></marker>
+  </defs>
+  <rect width="760" height="300" rx="16" fill="#f8fafc"/>
+  <g fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)">
+    <path d="M130 100H270"/><path d="M490 100H630"/><path d="M130 215H270"/>
+  </g>
+  <g fill="none" stroke="#b91c1c" stroke-width="2.5" marker-end="url(#cycle-arrow)">
+    <path d="M328 89Q380 35 432 89"/><path d="M432 112Q380 164 328 112"/>
+  </g>
+  <g stroke-width="2">
+    <g fill="#dcfce7" stroke="#15803d"><circle cx="100" cy="100" r="30"/><circle cx="100" cy="215" r="30"/><circle cx="300" cy="215" r="30"/></g>
+    <g fill="#fee2e2" stroke="#b91c1c"><circle cx="300" cy="100" r="30"/><circle cx="460" cy="100" r="30"/></g>
+    <circle cx="660" cy="100" r="30" fill="#fef3c7" stroke="#a16207"/>
+  </g>
+  <g fill="#0f172a" font-family="sans-serif" font-size="23" text-anchor="middle" dominant-baseline="central">
+    <text x="100" y="100">A</text><text x="300" y="100">B</text><text x="460" y="100">C</text><text x="660" y="100">D</text><text x="100" y="215">E</text><text x="300" y="215">F</text>
+  </g>
+  <g font-family="sans-serif" font-size="17" text-anchor="middle">
+    <text x="380" y="27" fill="#991b1b">cycle: B, C</text>
+    <text x="660" y="159" fill="#854d0e">blocked only: D</text>
+    <text x="200" y="276" fill="#166534">emitted: A, E, F</text>
+    <text x="545" y="258" fill="#475569">edge: prerequisite → dependent</text>
+  </g>
+</svg>
