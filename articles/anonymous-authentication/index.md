@@ -1,7 +1,7 @@
 ---
 title: "AnonymousAuthenticationFilter 源码分析"
 date: 2019-06-12
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -9,114 +9,70 @@ tags:
 domain: Spring
 ---
 
-AnonymousAuthenticationFilter 仅在上下文没有 Authentication 时补入匿名令牌，使后续授权组件能够统一处理请求。匿名令牌的 authenticated 状态是框架内部的令牌状态，不能据此认定访问者已通过用户名、密码或其他真实凭据认证。
+授权代码需要处理未登录访问，但不必在每个位置都把 null 当作一种额外用户类型。AnonymousAuthenticationFilter 在安全上下文还没有 Authentication 时补入匿名令牌，让后续组件能够通过统一接口判断身份与权限。
 
-本文分析 Servlet 过滤器链中的匿名认证支持。该过滤器不会覆盖已经存在的认证信息；是否允许匿名访问由授权规则决定。
+本文分析 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的 Servlet 过滤链，属于历史源码研究。前置背景是 [Authentication 与 SecurityContext](/spring-security-basics/)；原始实现见 [AnonymousAuthenticationFilter 5.1.5](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/authentication/AnonymousAuthenticationFilter.java)。
 
-以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/authentication/AnonymousAuthenticationFilter.java)。
+文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
-## 概述
+## 先看它进入链时可能遇到的状态
 
-spring-security为了使整个认证流程中的SecurityContext中始终存在一个Authentication信息，在过滤器链的认证阶段尾部填充了一个名为AnonymousAuthenticationFilter的过滤器，该过滤的主要作用是当认证阶段结束后，检测SecurityContextHolder中是否存在Authentication对象，如果不存在则用一个匿名的认证令牌填充进去。
+| 上下文状态 | 当前过滤器的动作 |
+| --- | --- |
+| 前面的认证过滤器已设置 Authentication | 保留已有认证信息 |
+| 尚无 Authentication | 创建并设置匿名令牌 |
+| 已有对象但 authenticated 为 false | 仍保留对象；这里检查的是 null，不重新认证它 |
 
+这说明它不负责用户名密码或令牌校验，也不保证经过它的所有请求都拥有真实用户身份。实际顺序由配置产生，通常在普通认证过滤器之后、请求授权之前。
 
-## AnonymousAuthenticationFilter
+## doFilter 的唯一补全条件
 
 ```java
-public class AnonymousAuthenticationFilter extends GenericFilterBean implements
-      InitializingBean {
+public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
+        throws IOException, ServletException {
 
-   // 认证请求详情，默认是WebAuthenticationDetailsSource，主要是获取ip地址和session id
-   private AuthenticationDetailsSource<HttpServletRequest, ?> authenticationDetailsSource = new WebAuthenticationDetailsSource();
+    if (SecurityContextHolder.getContext().getAuthentication() == null) {
+        SecurityContextHolder.getContext().setAuthentication(
+                createAuthentication((HttpServletRequest) req));
 
-
-   private String key;
-
-   // 用户名
-   private Object principal;
-
-   // 权限
-   private List<GrantedAuthority> authorities;
-
-   // 默认的匿名用户信息
-   public AnonymousAuthenticationFilter(String key) {
-      this(key, "anonymousUser", AuthorityUtils.createAuthorityList("ROLE_ANONYMOUS"));
-   }
-
-   // 自定义匿名用户信息
-   public AnonymousAuthenticationFilter(String key, Object principal,
-         List<GrantedAuthority> authorities) {
-      Assert.hasLength(key, "key cannot be null or empty");
-      Assert.notNull(principal, "Anonymous authentication principal must be set");
-      Assert.notNull(authorities, "Anonymous authorities must be set");
-      this.key = key;
-      this.principal = principal;
-      this.authorities = authorities;
-   }
-
-
-   @Override
-   public void afterPropertiesSet() {
-      Assert.hasLength(key, "key must have length");
-      Assert.notNull(principal, "Anonymous authentication principal must be set");
-      Assert.notNull(authorities, "Anonymous authorities must be set");
-   }
-
-   public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
-         throws IOException, ServletException {
-	  // 如果当前请求上下文中没有认证信息，则填充一个匿名的令牌
-      if (SecurityContextHolder.getContext().getAuthentication() == null) {
-         SecurityContextHolder.getContext().setAuthentication(
-               // 创建匿名令牌
-               createAuthentication((HttpServletRequest) req));
-
-         if (logger.isDebugEnabled()) {
+        if (logger.isDebugEnabled()) {
             logger.debug("Populated SecurityContextHolder with anonymous token: '"
-                  + SecurityContextHolder.getContext().getAuthentication() + "'");
-         }
-      }
-      else {
-         if (logger.isDebugEnabled()) {
+                    + SecurityContextHolder.getContext().getAuthentication() + "'");
+        }
+    }
+    else {
+        if (logger.isDebugEnabled()) {
             logger.debug("SecurityContextHolder not populated with anonymous token, as it already contained: '"
-                  + SecurityContextHolder.getContext().getAuthentication() + "'");
-         }
-      }
+                    + SecurityContextHolder.getContext().getAuthentication() + "'");
+        }
+    }
 
-      chain.doFilter(req, res);
-   }
-
-   protected Authentication createAuthentication(HttpServletRequest request) {
-
-      // 构造匿名令牌
-      AnonymousAuthenticationToken auth = new AnonymousAuthenticationToken(key,
-            principal, authorities);
-      auth.setDetails(authenticationDetailsSource.buildDetails(request));
-
-      return auth;
-   }
-
-   public void setAuthenticationDetailsSource(
-         AuthenticationDetailsSource<HttpServletRequest, ?> authenticationDetailsSource) {
-      Assert.notNull(authenticationDetailsSource,
-            "AuthenticationDetailsSource required");
-      this.authenticationDetailsSource = authenticationDetailsSource;
-   }
-
-   public Object getPrincipal() {
-      return principal;
-   }
-
-   public List<GrantedAuthority> getAuthorities() {
-      return authorities;
-   }
+    chain.doFilter(req, res);
 }
 ```
 
-## 总结
+两个分支之后都会调用下游链。匿名令牌本身不会让请求提前成功，也不会覆盖已经登录的用户；后续授权规则仍可能允许或拒绝访问。
 
-AnonymousAuthenticationFilter的源码很简单，当请求走到这个过滤器的时候，如果之前的一些认证过滤器没有往SecurityContext中填充认证令牌，就会填充一个匿名令牌到其中。此时当前请求的用户就是匿名用户。
+## 匿名主体、权限与请求详情从哪里来
 
-## 资料来源
+默认构造器把 principal 设为 `anonymousUser`，权限设为 `ROLE_ANONYMOUS`；应用可以在配置时替换它们。创建令牌的实现如下：
 
-- [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
+```java
+protected Authentication createAuthentication(HttpServletRequest request) {
+    AnonymousAuthenticationToken auth = new AnonymousAuthenticationToken(key,
+            principal, authorities);
+    auth.setDetails(authenticationDetailsSource.buildDetails(request));
+
+    return auth;
+}
+```
+
+WebAuthenticationDetailsSource 默认加入客户端地址和已有会话的标识等请求详情。这些信息用于描述请求，不是额外身份凭据。
+
+构造器还接收一个 key，与相应 AnonymousAuthenticationProvider 的配置配合使用；它不应该被当作对外访问令牌或用户密码。匿名令牌的 authenticated 状态属于框架内部信任模型，与“用户已输入并通过真实凭据”不是一回事。
+
+## 怎样判断匿名访问是否会被允许
+
+应该看授权规则及 AuthenticationTrustResolver 对身份的解释，而不是只看 `isAuthenticated()`。例如允许匿名访问的资源可以继续执行，要求完整认证的资源则可能由授权组件拒绝，并交给 [ExceptionTranslationFilter](/exception-translation-filter/) 发起登录。
+
+本篇的可观察结果是上下文是否被补全、原有认证是否被保留，以及下游授权的最终响应。检查时至少覆盖无认证、已有真实认证和禁用匿名支持这三种配置；仅看到 `anonymousUser` 日志不能证明接口已公开，也不能证明用户已登录。

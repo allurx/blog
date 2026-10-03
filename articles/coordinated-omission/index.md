@@ -1,7 +1,7 @@
 ---
 title: "协调遗漏为什么会低估压测尾延迟"
 date: 2026-09-23
-updated: 2026-10-02
+updated: 2026-10-03
 domain: "性能"
 tags: ["LoadTesting","TailLatency","CoordinatedOmission"]
 ---
@@ -30,7 +30,15 @@ throughput ≈ concurrency / response_time
 
 若按每 10 ms 的固定到达率发压，一次 500 ms 停顿会形成队列。停顿期间到达的请求会得到一串逐步下降的端到端延迟，许多高延迟样本进入分布，P95、P99 才能反映随机到达请求在坏时段的实际体验。
 
-关键计时边界是：
+先把停顿期间的几个请求展开，就能看见缺掉的是哪些样本。下面沿用“正常服务 5 ms、在 500 ms 开始的一次请求服务 500 ms”的模型：
+
+| 开放模型的计划到达时刻 | 开始处理 | 完成时刻 | 端到端延迟 | 闭环在此时是否发新请求 |
+| ---: | ---: | ---: | ---: | --- |
+| 500 ms | 500 ms | 1000 ms | 500 ms | 是，随后等待这次响应 |
+| 510 ms | 1000 ms | 1005 ms | 495 ms | 否，仍在等待 |
+| 520 ms | 1005 ms | 1010 ms | 490 ms | 否，仍在等待 |
+
+闭环不是把后两个请求测成了 5 ms，而是根本没有生成它们。关键计时边界是：
 
 ```text
 端到端延迟 = 完成时刻 - 计划到达时刻
@@ -53,7 +61,7 @@ wrk2 的说明给出了这种实现思路：以恒定吞吐发压，使用 HdrHi
 
 ## 离散事件模拟同一次停顿
 
-保存为 `CoordinatedOmissionDemo.java`，使用 Java 17+ 执行 `java CoordinatedOmissionDemo.java`。程序用整数毫秒做离散事件模拟：正常处理耗时 5 ms，开始时刻首次到达 500 ms 时，把那一次请求的服务时间设为 500 ms。闭环客户端收到响应后才继续；开放客户端每 10 ms 安排一个请求，两者都不受真实机器速度影响。
+保存为 `CoordinatedOmissionDemo.java`，使用 JDK 25 LTS 执行 `java CoordinatedOmissionDemo.java`，无需第三方依赖。程序用整数毫秒做离散事件模拟：正常处理耗时 5 ms，开始时刻首次到达 500 ms 时，把那一次请求的服务时间设为 500 ms。闭环客户端收到响应后才继续；开放客户端每 10 ms 安排一个请求，两者都不受真实机器速度影响。
 
 ```java
 import java.util.ArrayList;
@@ -100,7 +108,7 @@ public final class CoordinatedOmissionDemo {
 }
 ```
 
-使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；程序中的检查会核对这些结果。
+在 Windows、Oracle JDK 25.0.2 LTS 下执行上述源文件，得到以下输出；程序中的检查会核对这些结果。
 
 ```text
 closed-loop: samples=301 p50=5ms p95=5ms p99=5ms max=500ms

@@ -1,7 +1,7 @@
 ---
 title: "REQUIRES_NEW 为什么会耗尽连接池"
 date: 2026-09-25
-updated: 2026-10-02
+updated: 2026-10-03
 domain: "Spring"
 tags: ["Spring","Transaction","ConnectionPool"]
 ---
@@ -16,7 +16,7 @@ tags: ["Spring","Transaction","ConnectionPool"]
 
 Spring 官方文档明确说明，`REQUIRES_NEW` 总是使用独立的物理事务；外层事务的资源保持绑定，内部事务需要获取自己的连接。多个线程同时处于这种状态时，可能耗尽连接池甚至形成潜在死锁，官方给出的最低经验规则是：连接池容量至少比并发线程数多 1。[Spring Framework 7.0.9：事务传播](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/tx-propagation.html)
 
-这里的“挂起”是事务管理器暂停当前事务上下文，让内部调用暂时看不到它；它不等于提交或回滚外层事务，也不等于释放外层事务已经借出的连接。以 JDBC 的 `DataSourceTransactionManager` 为例，一个 `DataSource` 的连接会绑定到当前线程，事务完成后才释放。[DataSourceTransactionManager 7.0.9 API](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/jdbc/datasource/DataSourceTransactionManager.html)
+这里的“挂起”是事务管理器暂停当前事务上下文，让内部调用暂时看不到它；它不等于提交或回滚外层事务，也不等于释放外层事务已经借出的连接。以 JDBC 的 `DataSourceTransactionManager` 为例，一个 `DataSource` 的连接会绑定到当前线程，事务完成后才释放。[DataSourceTransactionManager 7.0.9 API](https://docs.spring.io/spring-framework/docs/7.0.9/javadoc-api/org/springframework/jdbc/datasource/DataSourceTransactionManager.html)
 
 内部事务必须有独立连接，是因为它要独立提交或回滚：内部提交后，即使外层随后回滚，内部结果仍然保留；内部的隔离级别、超时和只读属性也可以独立设置。这些语义不能复用一个尚未结束的 JDBC 物理事务来实现。
 
@@ -29,7 +29,7 @@ Spring 官方文档明确说明，`REQUIRES_NEW` 总是使用独立的物理事�
 3. 每个线程都同步申请第 2 个连接；没有任何申请能成功。
 4. 线程只有在内部调用返回后才能结束外层事务并归还第 1 个连接，但内部调用正在等待第 2 个连接。
 
-这不是数据库行锁死锁，而是应用侧的资源分配死锁形态。HikariCP 达到 `maximumPoolSize` 且无空闲连接时，`getConnection()` 最多阻塞到 `connectionTimeout`，随后抛出 `SQLException`。[HikariCP 7.1.0 配置](https://github.com/brettwooldridge/HikariCP#configuration-knobs-baby) 因而常见表象是请求集中等待约 30 秒后失败，而不是永久挂住；超时打破了等待，却没有让业务成功。
+这不是数据库行锁死锁，而是应用侧的资源分配死锁形态。HikariCP 达到 `maximumPoolSize` 且无空闲连接时，`getConnection()` 最多阻塞到 `connectionTimeout`，随后抛出 `SQLException`。[HikariCP 7.1.0 配置](https://github.com/brettwooldridge/HikariCP#gear-configuration-knobs-baby) 因而常见表象是请求集中等待约 30 秒后失败，而不是永久挂住；超时打破了等待，却没有让业务成功。
 
 ## 沿调用链计算同时占用量
 
@@ -53,7 +53,7 @@ Spring 官方文档明确说明，`REQUIRES_NEW` 总是使用独立的物理事�
 
 ## 四条连接与五条连接的对照
 
-下面的 Java 17 实验用公平 `Semaphore` 模拟连接池。每个工作线程先持有“外层连接”，栅栏确保所有外层事务同时占满池，再申请“内部连接”。它不模拟 Spring 全部行为，只隔离验证连接分配这一条因果链。
+下面的实验以 JDK 25 LTS 为基线，只依赖标准库，用公平 `Semaphore` 模拟连接池。每个工作线程先持有“外层连接”，栅栏确保所有外层事务同时占满池，再申请“内部连接”。它不模拟 Spring 全部行为，只隔离验证连接分配这一条因果链。
 
 完整源码：[RequiresNewPoolStarvationDemo.java](./RequiresNewPoolStarvationDemo.java)
 
@@ -63,7 +63,7 @@ Spring 官方文档明确说明，`REQUIRES_NEW` 总是使用独立的物理事�
 java -ea RequiresNewPoolStarvationDemo.java
 ```
 
-使用 JDK 25.0.2 执行附件并启用断言，预期输出：
+在 Windows、Oracle JDK 25.0.2 LTS 下执行附件并启用断言，输出为：
 
 ```text
 Result[workers=4, poolSize=4, innerSuccess=0, innerTimeouts=4, maxInUse=4]

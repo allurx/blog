@@ -1,7 +1,7 @@
 ---
 title: "Java 中的几种 Reference"
 date: 2019-07-15
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Reference
@@ -12,6 +12,10 @@ domain: Java
 
 本文使用 Java 引用 API，并以 OpenJDK 8u202-b08 解释软引用策略和虚引用实现。System.gc 只提出回收请求，不保证执行时间；需要确定性关闭的文件、连接等资源仍应按作用域显式关闭。
 
+
+弱引用用法示例以 Java 25 为目标，只依赖标准库。源码讨论另行标明 Java 8 与 Java 25 的不同契约；实验只能观察本次 GC 行为，不能把一次结果提升为回收时间保证。
+
+本文完整用法示例已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译并运行。
 
 ## 强引用与对象可达性
 
@@ -57,9 +61,11 @@ WeakReference 不会像软引用那样根据内存需求保留对象。GC 判定
 
 清除弱引用也不等于清理围绕它建立的全部数据结构。例如 Map 的键是弱引用而值是强引用时，键被清除后，条目和 value 仍可能由 Map 持有；容器必须有自己的过期条目清理逻辑。
 
-下面用有界等待观察清除和入队。使用新建 Object 避免装箱缓存干扰，并保留 WeakReference 本身以便与队列结果比较。将代码保存为 WeakReferenceDemo.java，执行 javac WeakReferenceDemo.java 和 java WeakReferenceDemo：
+下面用有界等待观察清除和入队。使用新建 Object 避免装箱缓存干扰，并保留 WeakReference 本身以便与队列结果比较。将代码保存为 WeakReferenceDemo.java，执行 `javac -encoding UTF-8 -d out WeakReferenceDemo.java` 和 `java -cp out io.allurx.WeakReferenceDemo`：
 
 ```java
+package io.allurx;
+
 import java.lang.ref.Reference;
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
@@ -89,6 +95,17 @@ PhantomReference.get 始终返回 null。程序通过关联的 ReferenceQueue �
 OpenJDK 8u202-b08 的虚引用在入队时不会自动清除 referent，处理后应 clear 或让虚引用对象本身不可达。JDK 25 的契约则规定 GC 判定虚可达后原子地清除相应虚引用；应按实际运行版本理解生命周期，不能将 Java 8 的处理细节推广到所有版本。[Java 8 虚引用源码](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/ref/PhantomReference.java)、[JDK 25 PhantomReference 契约](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ref/PhantomReference.html)
 
 实现资源跟踪时，还需要保持 PhantomReference 自身可达，并确保清理状态不强引用 referent。否则，前者可能使通知丢失，后者则让对象一直无法进入虚可达状态。对于要求及时释放的资源，优先使用 try-with-resources 等明确的生命周期管理；引用队列适合辅助跟踪，不能提供确定的完成时间。
+
+## 引用强度与通知是两个维度
+
+| 形式 | 对 referent 的影响 | 调用方仍需承担的职责 |
+| --- | --- | --- |
+| 强引用 | 保持强可达路径 | 在业务生命周期结束后解除不需要的持有 |
+| 软引用 | 可按内存需求清除 | 缓存必须能处理随时缺值 |
+| 弱引用 | 弱可达时不提供软引用保留窗口 | 清理容器中的残留条目和 value |
+| 虚引用 | get 永远取不到 referent | 保持引用对象自身可达，并单独执行清理动作 |
+
+ReferenceQueue 观察的是引用对象入队，不是“业务资源已释放”。引用强度、入队通知和文件/连接的确定性关闭应分别设计。
 
 ## 如何选择
 

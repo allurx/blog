@@ -1,28 +1,30 @@
 ---
 title: 用 Hexo 与 NexT 建立可维护的博客
 date: 2018-10-02
-updated: 2026-10-02
+updated: 2026-10-03
 tags: [Hexo, NexT, 静态网站]
 domain: Hexo
 ---
 
 Hexo 把 Markdown 文章、站点配置和主题模板生成静态网页。写作时维护源文件，发布时交付生成目录；这两个目录承担不同职责，不能只保存生成后的 HTML。
 
-下面以 Hexo 8 和 NexT 8 为例，从创建项目走到文章、分类导航和本地预览。Hexo 8 要求 Node.js 不低于 20.19.0，这里使用 Node.js 24，并准备好 Git。[Hexo 安装要求](https://hexo.io/zh-cn/docs/#Node-js-版本限制)
+下面从创建项目走到文章、分类导航和本地预览。固定版本组合为 **Node.js 24.19.0 LTS、npm 12.2.0、hexo-cli 4.3.2、Hexo 8.1.2、NexT 8.29.0**，还需安装 Git 以取得起始模板。Node.js 20.19.0 是 Hexo 8 的最低能力要求，本文实际选择 24 LTS；CLI、生成器和主题则使用稳定版本，不把它们称为 LTS。[Hexo 版本要求](https://hexo.io/zh-cn/docs/#Node-js-版本限制)
 
 ## 创建项目并固定依赖
 
-先安装命令行入口，再创建站点。`hexo-cli` 提供命令入口，项目中的 `hexo` 包负责实际生成页面：
+`hexo-cli` 提供创建项目的入口，项目中的 `hexo` 包负责实际生成页面。下面临时调用固定 CLI 版本，跳过自动依赖安装，再明确用 npm 安装，避免 CLI 根据本机工具选择另一种包管理器：
 
 ```sh
-npm install -g hexo-cli
-hexo init my-blog
+node --version
+npm --version
+npm exec --yes --package=hexo-cli@4.3.2 -- hexo init --no-install my-blog
 cd my-blog
-npm install
 npm install --save-exact hexo@8.1.2 hexo-theme-next@8.29.0
 ```
 
-以下命令均在 `my-blog` 根目录执行。把 `package.json` 和 `package-lock.json` 一起纳入版本控制，其他环境通过 `npm ci` 安装同一组依赖。升级时明确修改版本并检查页面，不让不同机器各自选择不同的主题版本。
+以下命令均在 `my-blog` 根目录执行。用 `npm ls hexo hexo-theme-next` 核对实际版本，把 `package.json` 和 `package-lock.json` 一起纳入版本控制，其他环境通过 `npm ci` 安装同一组依赖。初始化模板中的其他依赖也由这份锁文件固定；升级时明确修改版本并检查页面，不让不同机器各自选择不同的主题版本。
+
+**适用限制**：这个版本组合用于可信源码与配置的本地构建。其传递依赖 `braces 3.0.3` 存在深层嵌套匹配模式导致进程栈耗尽的问题；截至 2026-10-03，[上游安全公告](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)尚未列出修补版本。不要把不可信的路径匹配表达式交给共享构建服务。发布后的静态页面不运行这个 Node.js 依赖；升级构建工具时仍需重新核对依赖状态，不能把生成成功视为依赖安全的证明。
 
 Hexo 的 `_config.yml` 保存站点设置，将其中已有的 `theme` 改为 `next`。通过 npm 安装主题时，不需要再向 `themes/next` 克隆第二份主题。[NexT 安装](https://theme-next.js.org/docs/getting-started/)
 

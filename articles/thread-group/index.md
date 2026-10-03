@@ -1,7 +1,7 @@
 ---
 title: ThreadGroup
 date: 2019-07-12
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Thread
@@ -9,326 +9,37 @@ tags:
 domain: Java
 ---
 
-`ThreadGroup` 将平台线程组织成组，并提供枚举、中断和未捕获异常处理的入口；统计结果只是估计值，不能代替任务完成协议。本文关注线程组树如何维护关系，以及这些关系如何参与操作。
+ThreadGroup 把平台线程组织成树，提供枚举、中断和未捕获异常处理等入口。它不是任务完成框架：activeCount 只是估计值，枚举也不是稳定快照，不能靠“组里看起来没有线程”判断全部业务任务已完成。
 
-下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/ThreadGroup.java) 为源码基线，分析线程组树、枚举和未捕获异常处理。destroy 与安全检查按此版本解释；在 JDK 25 中 destroy 已弃用且为空操作。实际任务管理应采用明确的执行器与完成协议。
+本文先解释组树和公开操作，再用自定义异常处理器观察线程与组的关系。示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。历史内部实现固定为 [OpenJDK 8u202-b08 ThreadGroup](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/ThreadGroup.java)；特别是 destroy 在 Java 8 与当前 JDK 的行为不同。
 
+## 线程组树如何建立
 
-```java
-private void init(ThreadGroup g, Runnable target, String name,
-                      long stackSize, AccessControlContext acc,
-                      boolean inheritThreadLocals) {
-        ...省略部分代码
-        Thread parent = currentThread();
-        SecurityManager security = System.getSecurityManager();
-        if (g == null) {
+ThreadGroup(String name) 使用当前线程所属组作为父组；另一个公开构造器允许明确传入父组。父组是 ThreadGroup，不是创建者线程对象。创建 Thread 时未显式指定组，平台线程通常继承创建者所属组。
 
-            if (security != null) {
-                g = security.getThreadGroup();
-            }
+Java 8 内部维护父组、子组数组、活动线程数组以及相关计数，并在 Thread 初始化、启动失败和终止路径上更新关系。当前虚拟线程有专门的线程组，本文示例使用 new Thread 创建的平台线程，不能用它推断虚拟线程的组管理细节。
 
-            if (g == null) {
-                g = parent.getThreadGroup();
-            }
-        }
-        g.checkAccess();
-        if (security != null) {
-            if (isCCLOverridden(getClass())) {
-                security.checkPermission(SUBCLASS_IMPLEMENTATION_PERMISSION);
-            }
-        }
-        g.addUnstarted();
-        this.group = g;
-        ...省略部分代码
-    }
-```
+## 枚举结果为什么只能用于观察
 
-## ThreadGroup的成员变量
+| 方法 | 结果与边界 |
+| --- | --- |
+| activeCount | 当前组及子组活动线程数量的估计值 |
+| activeGroupCount | 活动子组数量的估计值，不包含当前组 |
+| enumerate(Thread[]) | 将活动线程引用写入给定数组，数组不足会截断 |
+| enumerate(ThreadGroup[]) | 写入活动子组，是否递归由重载参数决定 |
+| parentOf(group) | 当前组是否为给定组本身或其祖先 |
 
-```java
-// 所属父线程组
-private final ThreadGroup parent;
-// 线程组的名称
-String name;
-// 线程组中的线程允许的最大优先级
-int maxPriority;
-// 线程组是否已被销毁
-boolean destroyed;
-// 线程组是否是守护线程组
-boolean daemon;
-boolean vmAllowSuspension;
-// 线程组内未启动的线程数
-int nUnstartedThreads = 0;
-// 线程组内的线程数
-int nthreads;
-// 线程组内的线程
-Thread threads[];
-// 线程组内包括的线程组数
-int ngroups;
-// 线程组内包括的所有线程组
-ThreadGroup groups[];
-```
+线程可以在估算数量与枚举之间启动或退出。即使用 activeCount 分配了数组，也不能保证没有截断；数组中剩余位置还可能为 null。监控和诊断可以接受这种近似，但等待已知线程结束应使用 join，等待执行器关闭应使用 awaitTermination。
 
-## ThreadGroup的构造函数
+interrupt 递归请求组内线程中断，不保证业务代码立即退出。中断语义见 [Thread 常用方法](/thread-methods/)，不能把“调用组中断”当作“已销毁组内任务”的证据。
 
-ThreadGroup中一共定义了四个构造函数，其中两个为私有的两个为公共的
+## 未捕获异常怎样找到处理器
 
-### public ThreadGroup(String name)
+线程实例设置了 UncaughtExceptionHandler 时优先交给它；没有专用处理器时，所属线程组承担该入口。默认组实现向父组转发，到根组后使用全局默认处理器；不存在默认处理器时才按实现规则打印到标准错误流。
 
-```java
-public ThreadGroup(String name) {
-	this(Thread.currentThread().getThreadGroup(), name);
-}
-```
+自定义 ThreadGroup 可以覆盖 uncaughtException。下面同时实现 ThreadFactory，让创建的线程明确加入这个组，避免依赖调用者当前所在组。
 
-指定线程组名称，父线程组为当前执行线程所属的 ThreadGroup，不是线程对象本身。
-
-### public ThreadGroup(ThreadGroup parent, String name)
-
-```java
-public ThreadGroup(ThreadGroup parent, String name) {
-	this(checkParentAccess(parent), parent, name);
-}
-```
-
-指定线程组的父线程组和线程组的名称，并检查父线程的访问许可
-
-### private ThreadGroup(Void unused, ThreadGroup parent, String name)
-
-```java
-private ThreadGroup(Void unused, ThreadGroup parent, String name) {
-    this.name = name;
-    this.maxPriority = parent.maxPriority;
-    this.daemon = parent.daemon;
-    this.vmAllowSuspension = parent.vmAllowSuspension;
-    this.parent = parent;
-    parent.add(this);
-}
-```
-
-两个公共的构造函数最终都是调用这个构造函数初始化的，指定了线程组的一些属性，都保持和父线程组一致，最后将该线程组添加到父线程组中。
-
-### private ThreadGroup()
-
-```java
-private ThreadGroup() {     // called from C code
-    this.name = "system";
-    this.maxPriority = Thread.MAX_PRIORITY;
-    this.parent = null;
-}
-```
-
-创建一个不在任何Thread组中的空Thread组。 此方法用于创建系统线程组。
-
-## ThreadGroup常用方法
-
-### public int activeCount()
-
-```java
-public int activeCount() {
-    int result;
-    // Snapshot sub-group data so we don't hold this lock
-    // while our children are computing.
-    int ngroupsSnapshot;
-    ThreadGroup[] groupsSnapshot;
-    synchronized (this) {
-        if (destroyed) {
-            return 0;
-        }
-        result = nthreads;
-        ngroupsSnapshot = ngroups;
-        if (groups != null) {
-            groupsSnapshot = Arrays.copyOf(groups, ngroupsSnapshot);
-        } else {
-            groupsSnapshot = null;
-        }
-    }
-    for (int i = 0 ; i < ngroupsSnapshot ; i++) {
-        result += groupsSnapshot[i].activeCount();
-    }
-    return result;
-}
-```
-
-返回当前组及其子组中活动线程数量的估计值；线程可以并发启动或退出，因此不能把它作为精确快照或任务完成条件。
-
-### public int activeGroupCount()
-
-```java
-public int activeGroupCount() {
-    int ngroupsSnapshot;
-    ThreadGroup[] groupsSnapshot;
-    synchronized (this) {
-        if (destroyed) {
-            return 0;
-        }
-        ngroupsSnapshot = ngroups;
-        if (groups != null) {
-            groupsSnapshot = Arrays.copyOf(groups, ngroupsSnapshot);
-        } else {
-            groupsSnapshot = null;
-        }
-    }
-    int n = ngroupsSnapshot;
-    for (int i = 0 ; i < ngroupsSnapshot ; i++) {
-        n += groupsSnapshot[i].activeGroupCount();
-    }
-    return n;
-}
-```
-
-返回当前组下活动子线程组数量的估计值，递归计算子组，不包含当前组本身。
-
-### public final void destroy()
-
-以下是 OpenJDK 8u202-b08 的显式销毁逻辑；它要求组内没有活动线程，并递归处理子组。JDK 25 的同名方法已弃用且为空操作，不能以该源码判断新版行为。
-
-```java
-public final void destroy() {
-    int ngroupsSnapshot;
-    ThreadGroup[] groupsSnapshot;
-    synchronized (this) {
-        checkAccess();
-        if (destroyed || (nthreads > 0)) {
-            throw new IllegalThreadStateException();
-        }
-        ngroupsSnapshot = ngroups;
-        if (groups != null) {
-            groupsSnapshot = Arrays.copyOf(groups, ngroupsSnapshot);
-        } else {
-            groupsSnapshot = null;
-        }
-        if (parent != null) {
-            destroyed = true;
-            ngroups = 0;
-            groups = null;
-            nthreads = 0;
-            threads = null;
-        }
-    }
-    for (int i = 0 ; i < ngroupsSnapshot ; i += 1) {
-        groupsSnapshot[i].destroy();
-    }
-    if (parent != null) {
-        parent.remove(this);
-    }
-}
-```
-
-销毁此线程组及其所有子线程组。 此线程组内的线程必须全部执行完毕了，否则会抛出IllegalThreadStateException异常，最终将所有的成员变量初始化为null并且将此线程组从它的父线程组中删除。
-
-### public int enumerate(Thread list[])
-
-```java
-public int enumerate(Thread list[]) {
-	checkAccess();
-	return enumerate(list, 0, true);
-}
-```
-
-将此线程组及其子组中的每个活动线程复制到指定的数组中。注意如果数组长度不够大，只会复制数组长度大小这么多的线程到该数组中
-
-### public int enumerate(Thread list[], boolean recurse)
-
-```java
-public int enumerate(Thread list[], boolean recurse) {
-	checkAccess();
-	return enumerate(list, 0, recurse);
-}
-```
-
-将此线程组中的每个活动线程复制到指定的数组中。如果recurse为true代表递归的复制子线程组中所有的活动线程引用。注意如果数组长度不够大，只会复制数组长度大小这么多的线程到该数组中
-
-这两个复制线程的方法都调用了一个私有的`enumerate(Thread list[], int n, boolean recurse)`方法，有兴趣的可以自己去研究一下源码，这里就不多做分析了。
-
-### public int enumerate(ThreadGroup list[])
-
-```java
-public int enumerate(ThreadGroup list[]) {
-	checkAccess();
-	return enumerate(list, 0, true);
-}
-```
-
-复制到此线程组及其子组中每个活动子组的指定数组引用。注意如果数组长度不够大，只会复制数组长度大小这么多的线程组到该数组中
-
-### public int enumerate(ThreadGroup list[], boolean recurse)
-
-```java
-public int enumerate(ThreadGroup list[], boolean recurse) {
-	checkAccess();
-	return enumerate(list, 0, recurse);
-}
-```
-
-将此线程组中的每个活动线程组复制到指定的数组中。 如果recurse为true，代表递归的复制子线程组中所有的活动线程组引用。注意如果数组长度不够大，只会复制数组长度大小这么多的线程组到该数组中
-
-这两个复制线程组的方法都调用了一个私有的`enumerate(ThreadGroup list[], int n, boolean recurse)`方法，有兴趣的可以自己去研究一下源码，这里就不多做分析了。
-
-### public final void interrupt()
-
-```java
-public final void interrupt() {
-    int ngroupsSnapshot;
-    ThreadGroup[] groupsSnapshot;
-    synchronized (this) {
-        checkAccess();
-        for (int i = 0 ; i < nthreads ; i++) {
-            threads[i].interrupt();
-        }
-        ngroupsSnapshot = ngroups;
-        if (groups != null) {
-            groupsSnapshot = Arrays.copyOf(groups, ngroupsSnapshot);
-        } else {
-            groupsSnapshot = null;
-        }
-    }
-    for (int i = 0 ; i < ngroupsSnapshot ; i++) {
-        groupsSnapshot[i].interrupt();
-    }
-}
-```
-
-中断此线程组中的所有线程。此方法会在此线程组及其所有子组中的所有线程上调用interrupt方法。有关interrupt方法的用法可以查看之前**Thread常用方法**一文
-
-### public final boolean parentOf(ThreadGroup g)
-
-```java
-public final boolean parentOf(ThreadGroup g) {
-    for (; g != null ; g = g.parent) {
-        if (g == this) {
-            return true;
-        }
-    }
-    return false;
-}
-```
-
-判断此线程组是线程组参数还是其祖先线程组之一
-
-### public void uncaughtException(Thread t, Throwable e)
-
-```java
-public void uncaughtException(Thread t, Throwable e) {
-    if (parent != null) {
-        parent.uncaughtException(t, e);
-    } else {
-        Thread.UncaughtExceptionHandler ueh =
-            Thread.getDefaultUncaughtExceptionHandler();
-        if (ueh != null) {
-            ueh.uncaughtException(t, e);
-        } else if (!(e instanceof ThreadDeath)) {
-            System.err.print("Exception in thread \""
-                             + t.getName() + "\" ");
-            e.printStackTrace(System.err);
-        }
-    }
-}
-```
-
-线程没有专门的 UncaughtExceptionHandler 时，会把未捕获异常交给所属线程组。默认实现向父组转发，到根组后使用全局默认处理器；不存在默认处理器且异常不是 ThreadDeath 时，才打印到标准错误流。
-
-## 例子
+保存为 DemoApplication.java，执行 `javac -encoding UTF-8 -d out DemoApplication.java`、`java -cp out io.allurx.DemoApplication`。
 
 ```java
 package io.allurx;
@@ -386,27 +97,15 @@ public class DemoApplication {
 }
 ```
 
-输出
+程序依次输出线程名、组、最大优先级、父组、活动数量、祖先判断和枚举数组。最后故意执行 1 / 0，自定义处理器输出 ArithmeticException。这是验证处理器入口的预期异常；Thread.toString 的编号、堆栈行号和标准输出/错误输出的交错不是稳定结果。
 
-```
-CustomizedThreadGroup-0
-io.allurx.DemoApplication$CustomizedThreadGroup[name=CustomizedThreadGroup,maxpri=10]
-10
-java.lang.ThreadGroup[name=main,maxpri=10]
-1
-0
-true
-[Thread[CustomizedThreadGroup-0,5,CustomizedThreadGroup]]
-CustomizedThreadGroup里面的CustomizedThreadGroup-0运行时出现了异常:java.lang.ArithmeticException: / by zero
-	at io.allurx.DemoApplication.lambda$main$0(DemoApplication.java:26)
-	at java.lang.Thread.run(Thread.java:748)
-```
+## destroy 必须按版本理解
 
-## 总结
+OpenJDK 8u202-b08 的 destroy 要求没有活动线程，递归销毁子组并从父组移除，违反条件会抛异常。Java SE 25 的同名方法已弃用且为空操作，不能拿旧源码给当前应用设计资源回收协议。
 
-本文主要介绍了ThreadGroup相关的一些概念和基本方法的使用，示例中的平台线程默认继承创建者的线程组；当前虚拟线程则使用专门的线程组。了解线程和线程组之间的关系能够帮助我们更好的编写线程相关的代码。
+线程组适合理解历史 JVM 线程组织和异常分发。新业务中的任务接纳、取消、结果收集和关闭，应采用明确的执行器和完成协议；组树不会自动承担这些职责。
 
 ## 资料来源
 
-- [JDK 25 ThreadGroup：现行行为与弃用 API](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ThreadGroup.html)
-- [JDK 25 Thread：虚拟线程的线程组](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/Thread.html)
+- [Java SE 25 ThreadGroup：当前行为、估计值与弃用 API](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ThreadGroup.html)
+- [OpenJDK 8u202-b08 ThreadGroup：历史数组维护和 destroy](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/ThreadGroup.java)

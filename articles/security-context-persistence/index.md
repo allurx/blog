@@ -1,7 +1,7 @@
 ---
 title: "SecurityContextPersistenceFilter 源码分析"
 date: 2019-06-05
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -9,344 +9,90 @@ tags:
 domain: Spring
 ---
 
-SecurityContextPersistenceFilter 在请求开始时从 SecurityContextRepository 加载上下文并放入 SecurityContextHolder，在请求结束时保存上下文并清理当前线程的持有状态。默认的会话仓库可以复用已有会话中的认证信息；没有上下文时创建空上下文，创建空上下文本身不等于必须创建会话。
+认证结果需要在一次请求中被过滤器访问，有状态登录还可能需要在下一次请求中继续使用。SecurityContextPersistenceFilter 连接这两个生命周期：从仓库加载上下文，把它绑定到当前线程，执行下游链，再保存需要保留的结果并清理线程绑定。
 
-下面分析 Servlet 链中的 SecurityContextPersistenceFilter 与默认 HttpSessionSecurityContextRepository。上下文保存、会话创建和线程持有策略承担不同职责；选择无状态配置时，还要明确是否跨请求保存认证结果。
+本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的历史 Servlet 实现，不把其默认保存机制外推到新版本。前置知识是[上下文与认证令牌](/spring-security-basics/)。源码分别见 [SecurityContextPersistenceFilter](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/context/SecurityContextPersistenceFilter.java) 和 [HttpSessionSecurityContextRepository](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/context/HttpSessionSecurityContextRepository.java)。
 
-以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/context/SecurityContextPersistenceFilter.java)。
+文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
-## 概述
+## 先区分仓库、Holder 和上下文对象
 
-SecurityContextPersistenceFilter 在认证与授权过滤器之前建立请求的安全上下文，并在请求结束时保存结果和清理线程中的绑定。它在链中的具体序号取决于配置，关键是让下游过滤器在正确的生命周期内访问上下文。
+| 对象 | 负责的生命周期 |
+| --- | --- |
+| SecurityContext | 保存本次使用的 Authentication |
+| SecurityContextHolder | 给当前执行上下文提供访问入口，委托内部策略保存绑定 |
+| SecurityContextRepository | 跨请求加载或保存上下文 |
+| SecurityContextPersistenceFilter | 把仓库与请求执行过程连接起来 |
 
+清理 Holder 只是解除当前线程对上下文的绑定，不意味着删除会话里的对象；创建一个空 SecurityContext，也不意味着已经创建 HttpSession。
 
-## SecurityContextRepository
+## 请求进入时，先加载已有上下文
 
-既然要将SecurityContext保存起来，那么就需要一个保存的地方，那这个保存的地方是什么呢？我们先来看一下SecurityContextPersistenceFilter类：
-``` java
-public class SecurityContextPersistenceFilter extends GenericFilterBean {
+过滤器的默认构造器使用 HttpSessionSecurityContextRepository。仓库先调用 `request.getSession(false)`，按 `SPRING_SECURITY_CONTEXT` 属性名读取已有上下文；没有会话、没有属性或属性类型不正确时，返回新的空上下文。
 
-    // 是否执行过该过滤器的标记
-	static final String FILTER_APPLIED = "__spring_security_scpf_applied";
+[![Spring Security 5.1.5 中会话仓库与空仓库对 SecurityContextRepository 的实现](./images/security-context-repository.png)](./images/security-context-repository.png)
 
-    // 安全上下文保存仓库
-	private SecurityContextRepository repo;
+NullSecurityContextRepository 每次提供空上下文且不保存，适合不需要仓库存储的配置。它改变的是仓库存取，并不会自动替应用设计好所有无状态认证行为。
 
-    // 是否需要优先创建session
-	private boolean forceEagerSessionCreation = false;
+`forceEagerSessionCreation` 是过滤器自己的提前创建会话选项，默认 false；仓库的 `allowSessionCreation` 默认 true。一个决定是否提前创建，另一个决定保存时是否允许新建，不能混用。
 
-	...省略内部其它方法
+## 将上下文绑定到线程后执行下游
+
+过滤器用 HttpRequestResponseHolder 把请求和响应交给仓库，因为仓库可能替换为包装对象。主生命周期如下，省略了日志和请求重入标记：
+
+```java
+HttpRequestResponseHolder holder = new HttpRequestResponseHolder(request, response);
+SecurityContext contextBeforeChainExecution = repo.loadContext(holder);
+try {
+    SecurityContextHolder.setContext(contextBeforeChainExecution);
+    chain.doFilter(holder.getRequest(), holder.getResponse());
+}
+finally {
+    SecurityContext contextAfterChainExecution = SecurityContextHolder.getContext();
+    SecurityContextHolder.clearContext();
+    repo.saveContext(contextAfterChainExecution, holder.getRequest(), holder.getResponse());
+    request.removeAttribute(FILTER_APPLIED);
 }
 ```
-从上面可以看出SecurityContextPersistenceFilter内部维护了一个SecurityContextRepository，这个类就是初始化SecurityContext的地方：
-![](./images/security-context-repository.png)
-该版本提供 HttpSessionSecurityContextRepository 和 NullSecurityContextRepository。前者通过 HttpSession 跨请求保存上下文；后者每次返回空上下文且不保存，适合不需要仓库存储的配置。下面分析默认构造器使用的 HttpSessionSecurityContextRepository。
 
-``` java
-public class SecurityContextPersistenceFilter extends GenericFilterBean {
+注意三个顺序关系：必须把仓库返回的包装请求和响应传给下游；保存的是下游执行后 Holder 当前持有的上下文；先清理线程绑定，再执行最终仓库保存。这样仓库保存失败时，也不会让后续复用该线程的请求继续拿到旧绑定。
 
-    public SecurityContextPersistenceFilter() {
-        this(new HttpSessionSecurityContextRepository());
-    }
+请求属性 `FILTER_APPLIED` 使同一请求的嵌套调用不会重复进入整个加载与清理流程。这不是“所有 Servlet 分派都会无条件只调用一次”的抽象保证，实际入口仍要结合代理注册的 dispatcher types 理解。
 
-	public SecurityContextPersistenceFilter(SecurityContextRepository repo) {
-		this.repo = repo;
-	}
-    ...省略部分代码
-}
-```
-SecurityContextPersistenceFilter的默认的构造函数使用的就是HttpSessionSecurityContextRepository。接下来我们继续查看HttpSessionSecurityContextRepository这个类：
-``` java
-public class HttpSessionSecurityContextRepository implements SecurityContextRepository {
+## 保存可能早于过滤链最终返回
 
-    // 存放在HttpSession中的key
-	public static final String SPRING_SECURITY_CONTEXT_KEY = "SPRING_SECURITY_CONTEXT";
+HttpSessionSecurityContextRepository 在 loadContext 时安装响应包装器。下游调用 sendRedirect、sendError 或提交响应时，包装器可能提前保存，避免等响应提交后才尝试创建会话。最后的 saveContext 会检查是否已经保存，避免同一请求重复执行这一步。
 
-	// 是否允许创建session
-	private boolean allowSessionCreation = true;
+因此，观察登录跳转时，不能只在过滤器 finally 处寻找首次写会话的位置，也不能丢弃仓库提供的响应包装对象。
 
-	private String springSecurityContextKey = SPRING_SECURITY_CONTEXT_KEY;
+### 哪些上下文会进入会话
 
-    // 从当前请求中获取SecurityContext，HttpRequestResponseHolder这个类只是简单的对
-    // HttpServletRequest和HttpServletResponse进行了一层包装
-	public SecurityContext loadContext(HttpRequestResponseHolder requestResponseHolder) {
-		HttpServletRequest request = requestResponseHolder.getRequest();
-		HttpServletResponse response = requestResponseHolder.getResponse();
-		HttpSession httpSession = request.getSession(false);
+| 情况 | 该版本的处理边界 |
+| --- | --- |
+| Authentication 为 null 或匿名 | 不把它作为已登录上下文存入会话，必要时清除此前的会话属性 |
+| 已有会话且上下文或认证引用改变，或属性缺失 | 写入当前上下文 |
+| 没有会话 | 只有允许新建、上下文不是默认空值且没有其他禁止条件时才创建 |
+| 会话在本次请求中被失效处理 | 不为了保存上下文立即重建 |
+| Authentication 标记为 Transient | 不为它新建保存用会话 |
 
-        // 从HttpSession中读取SecurityContext
-		SecurityContext context = readSecurityContextFromSession(httpSession);
+这里的“改变”包含对象引用比较，不是对整个认证对象做深度变化检测。完整条件应以固定版本的 SaveToSessionResponseWrapper 为准。
 
-        // 如果session中不存在就生成一个空的安全上下文
-		if (context == null) {
-			if (logger.isDebugEnabled()) {
-				logger.debug("No SecurityContext was available from the HttpSession: "
-						+ httpSession + ". " + "A new one will be created.");
-			}
-			context = generateNewContext();
+## Holder 策略决定绑定放在哪里
 
-		}
+[![Spring Security 5.1.5 的线程局部、可继承线程局部与全局上下文策略](./images/security-context-holder-strategy.png)](./images/security-context-holder-strategy.png)
 
-        ...省略部分代码
+| 策略 | 适用边界 |
+| --- | --- |
+| ThreadLocalSecurityContextHolderStrategy | 默认策略，每个线程持有自己的绑定 |
+| InheritableThreadLocalSecurityContextHolderStrategy | 创建子线程时继承；不等于线程池每次提交任务都重新传递 |
+| GlobalSecurityContextHolderStrategy | JVM 范围共享，不适合作为多用户 Web 请求隔离方式 |
 
-        // 返回安全上下文信息
-		return context;
-	}
+Holder 的策略可由系统属性或配置入口选择，但不应在活跃请求中反复改变全局策略。跨线程任务需要相应传播和清理机制，单纯切到可继承策略不能覆盖线程池复用场景。
 
-	// 持久化SecurityContext
-	public void saveContext(SecurityContext context, HttpServletRequest request,
-			HttpServletResponse response) {
-		SaveContextOnUpdateOrErrorResponseWrapper responseWrapper = WebUtils
-				.getNativeResponse(response,
-						SaveContextOnUpdateOrErrorResponseWrapper.class);
-		if (responseWrapper == null) {
-			throw new IllegalStateException(
-					"Cannot invoke saveContext on response "
-							+ response
-							+ ". You must use the HttpRequestResponseHolder.response after invoking loadContext");
-		}
-		// saveContext() might already be called by the response wrapper
-		// if something in the chain called sendError() or sendRedirect(). This ensures we
-		// only call it
-		// once per request.
-		if (!responseWrapper.isContextSaved()) {
-			responseWrapper.saveContext(context);
-		}
-	}
+还有一个不同层次的边界：线程绑定彼此独立，不等于绑定的 SecurityContext 对象一定是副本。默认会话仓库可以把同一个会话对象交给并发请求；临时改身份时不应假定修改共享对象完全只影响当前线程。[该版本的上下文说明](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/#technical-overview)
 
-    // 根据SPRING_SECURITY_CONTEXT_KEY从HttpSession获取SecurityContext
-	private SecurityContext readSecurityContextFromSession(HttpSession httpSession) {
-		final boolean debug = logger.isDebugEnabled();
+## 按两个连续请求验证生命周期
 
-		if (httpSession == null) {
-			if (debug) {
-				logger.debug("No HttpSession currently exists");
-			}
+第一次请求完成登录后，观察认证对象与会话属性；第二次带同一会话访问受保护资源，观察仓库是否复用认证。再比较不带会话、退出登录和无状态配置的行为，并检查线程复用后不会持有上一请求的绑定。
 
-			return null;
-		}
-
-
-        // 获取存储在HttpSession中对应key的值
-		Object contextFromSession = httpSession.getAttribute(springSecurityContextKey);
-
-		if (contextFromSession == null) {
-			if (debug) {
-				logger.debug("HttpSession returned null object for SPRING_SECURITY_CONTEXT");
-			}
-
-			return null;
-		}
-
-		// We now have the security context object from the session.
-		if (!(contextFromSession instanceof SecurityContext)) {
-			if (logger.isWarnEnabled()) {
-				logger.warn(springSecurityContextKey
-						+ " did not contain a SecurityContext but contained: '"
-						+ contextFromSession
-						+ "'; are you improperly modifying the HttpSession directly "
-						+ "(you should always use SecurityContextHolder) or using the HttpSession attribute "
-						+ "reserved for this class?");
-			}
-
-			return null;
-		}
-
-		if (debug) {
-			logger.debug("Obtained a valid SecurityContext from "
-					+ springSecurityContextKey + ": '" + contextFromSession + "'");
-		}
-
-		// Everything OK. The only non-null return from this method.
-
-		return (SecurityContext) contextFromSession;
-	}
-}
-```
-从HttpSessionSecurityContextRepository的loadContext方法可以看出，本质上是根据SPRING_SECURITY_CONTEXT_KEY获取到存放在HttpSession中的SecurityContext然后返回，接下来我们再回到SecurityContextPersistenceFilter中，看一下它内部的过滤方法：
-``` java
-public void doFilter(ServletRequest req, ServletResponse res, FilterChain chain)
-			throws IOException, ServletException {
-		HttpServletRequest request = (HttpServletRequest) req;
-		HttpServletResponse response = (HttpServletResponse) res;
-
-        // 如果当前过滤器已经执行过了就不执行下面的逻辑，保证只执行一次
-		if (request.getAttribute(FILTER_APPLIED) != null) {
-			// ensure that filter is only applied once per request
-			chain.doFilter(request, response);
-			return;
-		}
-
-		final boolean debug = logger.isDebugEnabled();
-        // 执行到这一步表明这是第一次执行该过滤器，设置已经执行过的标记
-		request.setAttribute(FILTER_APPLIED, Boolean.TRUE);
-
-        // 是否需要优先创建session
-		if (forceEagerSessionCreation) {
-			HttpSession session = request.getSession();
-
-			if (debug && session.isNew()) {
-				logger.debug("Eagerly created session: " + session.getId());
-			}
-		}
-
-        // 包装HttpServletRequest和HttpServletResponse
-		HttpRequestResponseHolder holder = new HttpRequestResponseHolder(request,
-				response);
-
-		// 从HttpRequestResponseHolder中获取安全上下文信息
-		SecurityContext contextBeforeChainExecution = repo.loadContext(holder);
-
-		try {
-		    // 将SecurityContext保存起来，下游过滤器就可以使用这个SecurityContext
-		    // 注意此时的SecurityContext属于初始化状态，它内部的Authentication是会
-		    // 被下游其它过滤器改变的
-			SecurityContextHolder.setContext(contextBeforeChainExecution);
-
-            // 过滤链继续往下走
-			chain.doFilter(holder.getRequest(), holder.getResponse());
-
-		}
-		finally {
-		    // 取出SecurityContext，此时的SecurityContext里面的内容已经被下游的过滤器改变了
-			SecurityContext contextAfterChainExecution = SecurityContextHolder
-					.getContext();
-			// Crucial removal of SecurityContextHolder contents - do this before anything
-			// else.
-			// 清空SecurityContext
-			SecurityContextHolder.clearContext();
-
-			// 在下游过滤器执行完毕后，持久化最终的SecurityContext
-			repo.saveContext(contextAfterChainExecution, holder.getRequest(),
-					holder.getResponse());
-			// 移除已经执行过该过滤器的标记
-			request.removeAttribute(FILTER_APPLIED);
-
-			if (debug) {
-				logger.debug("SecurityContextHolder now cleared, as request processing completed");
-			}
-		}
-	}
-```
-SecurityContextRepository 负责跨请求加载和保存，SecurityContextHolder 负责让当前执行上下文访问认证信息。请求结束时，过滤器清理 Holder 的线程绑定，并将需要保留的上下文交回仓库；清理线程绑定不等于销毁会话中保存的对象。这样线程被下一次请求复用时，才不会继续持有上一次请求的认证信息。
-
-## SecurityContextHolder
-
-在整个请求过程中SecurityContext就保存在这个类中
-``` java
-public class SecurityContextHolder {
-
-    // 线程保存模式
-	public static final String MODE_THREADLOCAL = "MODE_THREADLOCAL";
-
-	// 能够继承的线程（子线程传递）保存模式
-	public static final String MODE_INHERITABLETHREADLOCAL = "MODE_INHERITABLETHREADLOCAL";
-
-	// 全局保存模式（通过类的静态变量来传递）
-	public static final String MODE_GLOBAL = "MODE_GLOBAL";
-	public static final String SYSTEM_PROPERTY = "spring.security.strategy";
-	private static String strategyName = System.getProperty(SYSTEM_PROPERTY);
-
-	// 当前保存SecurityContext的策略
-	private static SecurityContextHolderStrategy strategy;
-	private static int initializeCount = 0;
-
-    // 调用初始化方法
-	static {
-		initialize();
-	}
-
-    // 清空保存的SecurityContext
-	public static void clearContext() {
-		strategy.clearContext();
-	}
-
-    // 获取保存的SecurityContext
-	public static SecurityContext getContext() {
-		return strategy.getContext();
-	}
-
-    // 主要用于故障排除，此方法显示该类重新初始化其SecurityContextHolder策略的次数。
-	public static int getInitializeCount() {
-		return initializeCount;
-	}
-
-    // 初始化SecurityContextHolderStrategy
-	private static void initialize() {
-		if (!StringUtils.hasText(strategyName)) {
-			// 默认是通过线程局部变量来保存SecurityContext
-			strategyName = MODE_THREADLOCAL;
-		}
-
-		if (strategyName.equals(MODE_THREADLOCAL)) {
-		    // 线程局部变量保存策略
-			strategy = new ThreadLocalSecurityContextHolderStrategy();
-		}
-		else if (strategyName.equals(MODE_INHERITABLETHREADLOCAL)) {
-		    // 子线程局部变量保存策略
-			strategy = new InheritableThreadLocalSecurityContextHolderStrategy();
-		}
-		else if (strategyName.equals(MODE_GLOBAL)) {
-		    // 静态field保存策略
-			strategy = new GlobalSecurityContextHolderStrategy();
-		}
-		else {
-			// 自定义保存策略
-			try {
-				Class<?> clazz = Class.forName(strategyName);
-				Constructor<?> customStrategy = clazz.getConstructor();
-				strategy = (SecurityContextHolderStrategy) customStrategy.newInstance();
-			}
-			catch (Exception ex) {
-				ReflectionUtils.handleReflectionException(ex);
-			}
-		}
-        // 初始化保存策略次数加一
-		initializeCount++;
-	}
-
-    // 保存SecurityContext
-	public static void setContext(SecurityContext context) {
-		strategy.setContext(context);
-	}
-
-    // 更改首选策略。不要为给定的JVM多次调用此方法，因为它将重新初始化策略并对使用旧策略的任何现有
-    // 线程产生负面影响。
-	public static void setStrategyName(String strategyName) {
-		SecurityContextHolder.strategyName = strategyName;
-		initialize();
-	}
-
-    // 获取当前保存策略
-	public static SecurityContextHolderStrategy getContextHolderStrategy() {
-		return strategy;
-	}
-
-    // 委派给配置的策略创建新的空上下文。
-	public static SecurityContext createEmptyContext() {
-		return strategy.createEmptyContext();
-	}
-
-	@Override
-	public String toString() {
-		return "SecurityContextHolder[strategy='" + strategyName + "'; initializeCount="
-				+ initializeCount + "]";
-	}
-}
-```
-## SecurityContextHolderStrategy
-
-![](./images/security-context-holder-strategy.png)
-
-SecurityContext就保存在这三个实现类中。
-
-## 总结
-
-* SecurityContextPersistenceFilter在请求初始化时通过默认的HttpSessionSecurityContextRepository创建一个新的SecurityContext，首先是从当前session中获取SecurityContext，如果没有则通过SecurityContextHolder的createEmptyContext方法生成一个空的SecurityContext，然后将这个SecurityContext保存到SecurityContextHolder中
-* SecurityContextHolder本身不保存SecurityContext，它是通过内部维护的一个SecurityContextHolderStrategy来保存SecurityContext的，Spring Security自带了ThreadLocalSecurityContextHolderStrategy（默认的保存策略），InheritableThreadLocalSecurityContextHolderStrategy和GlobalSecurityContextHolderStrategy这三种策略，当然也可以自定义策略
-* SecurityContextHolder将SecurityContext保存到内部的SecurityContextHolderStrategy中后，下游的其它过滤器就可以取这个SecurityContext了进行认证或者授权了
-
-## 资料来源
-
-- [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
+这组观察把跨请求保存与单线程清理分开。仅在一次请求里取得 Authentication，不足以证明下次请求可以继续登录；仅看到 Holder 已清空，也不能证明会话认证已被删除。

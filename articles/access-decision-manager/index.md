@@ -1,7 +1,7 @@
 ---
 title: "AccessDecisionManager 源码分析"
 date: 2019-06-15
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -9,617 +9,119 @@ tags:
 domain: Spring
 ---
 
-AccessDecisionManager 汇总 AccessDecisionVoter 的赞成、反对和弃权结果。AffirmativeBased 有赞成票即可允许，ConsensusBased 比较赞成与反对票数，UnanimousBased 遇到反对票即拒绝；全部弃权时仍需依据单独的配置决定，不能把弃权当作赞成。
+一次授权决定需要同时回答两个问题：每个投票者怎样解释规则，以及多张票怎样汇总。把这两层混在一起，会误以为“有一个拒绝就一定拒绝”，或把全部弃权当作允许。
 
-下面分析投票式授权体系，重点是三种内置决策策略及常见投票者。配置属性的表达方式会影响投票结果，本文的策略比较不意味着它们可不加分析地相互替换。
+本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的投票式授权体系。它是历史实现分析，当前项目应按所用版本选择授权 API；这里不把 AccessDecisionManager 当作新项目的默认架构。前置知识是 Authentication、GrantedAuthority 和配置属性 ConfigAttribute，可先看[请求授权入口](/filter-security-interceptor/)。
 
-以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/vote/AbstractAccessDecisionManager.java)。
+文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
-## 概述
+## 先分清规则、投票者与决策器
 
-AccessDecisionManager访问决策管理器，制定最终访问控制（授权）决策。它的实现类有以下三种
+调用关系是：拦截器从元数据源取得配置属性，再把认证信息、安全对象和属性集合交给 AccessDecisionManager；决策器逐个调用 AccessDecisionVoter，最后正常返回或抛出 AccessDeniedException。
 
-![](./images/access-decision-manager.png)
+| 对象 | 本次调用中的职责 |
+| --- | --- |
+| Authentication | 当前主体及其 GrantedAuthority |
+| ConfigAttribute | 受保护操作所需的规则，例如独立角色属性或一个完整表达式 |
+| AccessDecisionVoter | 对规则给出赞成 `1`、反对 `-1` 或弃权 `0` |
+| AccessDecisionManager | 按策略汇总票数，决定是否允许继续调用 |
 
-它们都继承了AbstractAccessDecisionManager，先来看一下它的源码
+[![Spring Security 5.1.5 中三种访问决策管理器的继承关系](./images/access-decision-manager.png)](./images/access-decision-manager.png)
 
+三种内置决策器继承 AbstractAccessDecisionManager，共用投票者列表和 `allowIfAllAbstainDecisions`。它默认是 false：**全部弃权时拒绝访问**，并不是禁止投票者弃权。单个投票者不理解某类规则时，弃权是正常结果。
 
-## AbstractAccessDecisionManager
+## 三种策略怎样处理同一组票
 
-```java
-public abstract class AbstractAccessDecisionManager implements AccessDecisionManager,
-      InitializingBean, MessageSourceAware {
+| 票数或条件 | AffirmativeBased | ConsensusBased | UnanimousBased |
+| --- | --- | --- | --- |
+| 至少一张赞成，同时存在反对 | 允许 | 比较两类票数 | 拒绝 |
+| 没有赞成，至少一张反对 | 拒绝 | 拒绝 | 拒绝 |
+| 有赞成、没有反对，允许其他票弃权 | 允许 | 允许 | 允许 |
+| 赞成和反对数量相同且都大于零 | 允许 | 由 `allowIfEqualGrantedDeniedDecisions` 决定，默认允许 | 拒绝 |
+| 全部弃权 | 由共同配置决定，默认拒绝 | 同左；不走平票放行逻辑 | 同左 |
 
-   protected final Log logger = LogFactory.getLog(getClass());
+这张表描述汇总规则。UnanimousBased 还有另一项差异：它逐个属性调用投票者，不能无条件把另外两种策略的一组票原样套过来。
 
-   // 访问决策投票者，实际上是由这些投票者投票，然后不同的AccessDecisionManager根据投票者返回的
-   // 结果授予是否允许访问
-   private List<AccessDecisionVoter<? extends Object>> decisionVoters;
+### AffirmativeBased：一张赞成票即可放行
 
-   protected MessageSourceAccessor messages = SpringSecurityMessageSource.getAccessor();
+它遍历投票者，遇到赞成立即返回，同时累计反对数。遍历结束仍没有赞成时，存在反对就拒绝，否则执行全部弃权的检查。换句话说，反对票在这个策略中没有否决权。
 
-   // 是否允许AccessDecisionManager弃权决定，因为有可能存在投票者返回的结果不满足它们的策略。默认是
-   // 不允许弃权的
-   private boolean allowIfAllAbstainDecisions = false;
+例如一个投票者检查角色并赞成，另一个检查其他条件并反对，最终仍允许访问。如果业务要求两个条件同时满足，不能仅把两个检查分别装进该决策器，就期望得到“与”关系。[AffirmativeBased 5.1.5 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/vote/AffirmativeBased.java)
 
-   protected AbstractAccessDecisionManager(
-         List<AccessDecisionVoter<? extends Object>> decisionVoters) {
-      Assert.notEmpty(decisionVoters, "A list of AccessDecisionVoters is required");
-      this.decisionVoters = decisionVoters;
-   }
+### ConsensusBased：比较赞成与反对数
 
-   public void afterPropertiesSet() throws Exception {
-      Assert.notEmpty(this.decisionVoters, "A list of AccessDecisionVoters is required");
-      Assert.notNull(this.messages, "A message source must be set");
-   }
+这个策略完成全部投票，再比较 `grant` 和 `deny`。赞成多则允许，反对多则拒绝；两者相同且非零时才读取平票选项。零比零表示全部弃权，必须交给另一个开关。
 
-   // 检查当前的AccessDecisionManager是否允许弃权，如果不允许弃权，则抛出AccessDeniedException
-   protected final void checkAllowIfAllAbstainDecisions() {
-      if (!this.isAllowIfAllAbstainDecisions()) {
-         throw new AccessDeniedException(messages.getMessage(
-               "AbstractAccessDecisionManager.accessDenied", "Access is denied"));
-      }
-   }
+因此，一赞成、一反对、一弃权默认允许；把 `allowIfEqualGrantedDeniedDecisions` 改为 false 才会拒绝。这个选择属于业务授权契约，不是无影响的实现替换。[ConsensusBased 5.1.5 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/vote/ConsensusBased.java)
 
-   // 返回所有投票者
-   public List<AccessDecisionVoter<? extends Object>> getDecisionVoters() {
-      return this.decisionVoters;
-   }
+### UnanimousBased：每个属性都不能得到反对票
 
-   public boolean isAllowIfAllAbstainDecisions() {
-      return allowIfAllAbstainDecisions;
-   }
+它为每个 ConfigAttribute 构造单元素集合，再调用所有投票者。任何一次调用返回反对就抛异常；循环结束后只要至少有一张赞成即可允许，其余调用可以弃权。[UnanimousBased 5.1.5 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/vote/UnanimousBased.java)
 
-   public void setAllowIfAllAbstainDecisions(boolean allowIfAllAbstainDecisions) {
-      this.allowIfAllAbstainDecisions = allowIfAllAbstainDecisions;
-   }
+下面的输入能同时观察“汇总策略”和“属性拆分”的区别：
 
-   public void setMessageSource(MessageSource messageSource) {
-      this.messages = new MessageSourceAccessor(messageSource);
-   }
+| 输入 | 值 |
+| --- | --- |
+| 用户权限 | 只有 `ROLE_ADMIN` |
+| 配置属性 | 两个独立属性 `ROLE_ADMIN`、`ROLE_DBA` |
+| 投票者 | 一个 RoleVoter |
 
-   public boolean supports(ConfigAttribute attribute) {
-      for (AccessDecisionVoter voter : this.decisionVoters) {
-         if (voter.supports(attribute)) {
-            return true;
-         }
-      }
+RoleVoter 面对整个集合，只要匹配其中一个角色就返回赞成，因此 AffirmativeBased 允许；UnanimousBased 分别传入两项，在 DBA 这一项得到反对而拒绝。若配置属性只有一个 `hasAnyRole('ADMIN', 'DBA')` 表达式，内部“或”关系由表达式求值完成，不能把它拆成上述两个角色属性来推断。
 
-      return false;
-   }
+## 投票者决定规则如何解释
 
-   public boolean supports(Class<?> clazz) {
-      for (AccessDecisionVoter voter : this.decisionVoters) {
-         if (!voter.supports(clazz)) {
-            return false;
-         }
-      }
+[![Spring Security 5.1.5 中四种常见 AccessDecisionVoter 实现](./images/access-decision-voter-implementations.png)](./images/access-decision-voter-implementations.png)
 
-      return true;
-   }
-}
-```
+### RoleVoter：匹配权限字符串，不决定数据库结构
 
-源码比较简单，主要是维护了一个AccessDecisionVoter列表，AccessDecisionVoter的作用是为AccessDecisionManager做出决定时提供依据
-
-### <a name="AffirmativeBased决定策略">AffirmativeBased</a>
+默认只识别以 `ROLE_` 开头的配置属性，再与 Authentication 中的 GrantedAuthority 字符串精确比较。没有可识别属性则弃权；有可识别属性但没有任何匹配则反对；有一个匹配就赞成。
 
 ```java
-public class AffirmativeBased extends AbstractAccessDecisionManager {
-
-   public AffirmativeBased(List<AccessDecisionVoter<? extends Object>> decisionVoters) {
-      super(decisionVoters);
-   }
-
-   // 决定策略
-   public void decide(Authentication authentication, Object object,
-         Collection<ConfigAttribute> configAttributes) throws AccessDeniedException {
-      // 初始化投拒绝访问的票数为0
-      int deny = 0;
-	  // 遍历投票者开始投票
-      for (AccessDecisionVoter voter : getDecisionVoters()) {
-         // 投票
-         int result = voter.vote(authentication, object, configAttributes);
-
-         if (logger.isDebugEnabled()) {
-            logger.debug("Voter: " + voter + ", returned: " + result);
-         }
-		 // 判断投票结果
-         switch (result) {
-         // 只要有一个投票者投了授权访问则停止遍历，认为允许访问
-         case AccessDecisionVoter.ACCESS_GRANTED:
-            return;
-
-         case AccessDecisionVoter.ACCESS_DENIED:
-            deny++;
-
-            break;
-
-         default:
-            break;
-         }
-      }
-	  // 只要有一个投了拒绝访问则抛出拒绝访问异常，拒绝访问
-      if (deny > 0) {
-         throw new AccessDeniedException(messages.getMessage(
-               "AbstractAccessDecisionManager.accessDenied", "Access is denied"));
-      }
-
-      // 判断该访问决策者是否允许弃权
-      checkAllowIfAllAbstainDecisions();
-   }
-}
-```
-* 只要有一个投票者投了授权访问，则授予访问权限
-* 没有赞成票且至少有一个反对票时才拒绝访问；全部弃权时按 allowIfAllAbstainDecisions 决定，默认拒绝。
-
-### <a name="ConsensusBased决定策略">ConsensusBased</a>
-
-```java
-public class ConsensusBased extends AbstractAccessDecisionManager {
-
-   // 是否允许投授权访问和投拒绝访问的票数一致
-   private boolean allowIfEqualGrantedDeniedDecisions = true;
-
-   public ConsensusBased(List<AccessDecisionVoter<? extends Object>> decisionVoters) {
-      super(decisionVoters);
-   }
-
-
-   // 决定策略
-   public void decide(Authentication authentication, Object object,
-         Collection<ConfigAttribute> configAttributes) throws AccessDeniedException {
-      // 初始化投授权访问的票数为0
-      int grant = 0;
-      // 初始化投拒绝访问的票数为0
-      int deny = 0;
-	  // 遍历投票者开始投票
-      for (AccessDecisionVoter voter : getDecisionVoters()) {
-         // 投票
-         int result = voter.vote(authentication, object, configAttributes);
-
-         if (logger.isDebugEnabled()) {
-            logger.debug("Voter: " + voter + ", returned: " + result);
-         }
-		 // 判断投票结果
-         switch (result) {
-         // 授权访问票数加一
-         case AccessDecisionVoter.ACCESS_GRANTED:
-            grant++;
-
-            break;
-		 // 拒绝访问票数加一
-         case AccessDecisionVoter.ACCESS_DENIED:
-            deny++;
-
-            break;
-
-         default:
-            break;
-         }
-      }
-	  // 如果授权访问票数多于拒绝访问票数则认为允许访问
-      if (grant > deny) {
-         return;
-      }
-	  // 如果拒绝访问票数多于授权访问票数则认为拒绝访问，抛出AccessDeniedException
-      if (deny > grant) {
-         throw new AccessDeniedException(messages.getMessage(
-               "AbstractAccessDecisionManager.accessDenied", "Access is denied"));
-      }
-	  // 如果两种票数相等并且不为0并且允许票数相等则认为允许访问，否则认为拒绝访问，抛出
-      // AccessDeniedException
-      if ((grant == deny) && (grant != 0)) {
-         if (this.allowIfEqualGrantedDeniedDecisions) {
-            return;
-         }
-         else {
-            throw new AccessDeniedException(messages.getMessage(
-                  "AbstractAccessDecisionManager.accessDenied", "Access is denied"));
-         }
-      }
-
-      // To get this far, every AccessDecisionVoter abstained
-      checkAllowIfAllAbstainDecisions();
-   }
-
-   public boolean isAllowIfEqualGrantedDeniedDecisions() {
-      return allowIfEqualGrantedDeniedDecisions;
-   }
-
-   public void setAllowIfEqualGrantedDeniedDecisions(
-         boolean allowIfEqualGrantedDeniedDecisions) {
-      this.allowIfEqualGrantedDeniedDecisions = allowIfEqualGrantedDeniedDecisions;
-   }
-}
-```
-
-* 授权访问票数多于拒绝访问票数则允许访问
-* 拒绝访问票数多于授权访问票数则拒绝访问
-* 授权访问票数和拒绝访问票数一致的情况并且不为0
-  * 允许票数一致则允许访问
-  * 不允许票数一致则拒绝访问
-
-### <a name="UnanimousBased决定策略">UnanimousBased</a>
-
-```java
-public class UnanimousBased extends AbstractAccessDecisionManager {
-
-   public UnanimousBased(List<AccessDecisionVoter<? extends Object>> decisionVoters) {
-      super(decisionVoters);
-   }
-
-
-   // 决定策略
-   public void decide(Authentication authentication, Object object,
-         Collection<ConfigAttribute> attributes) throws AccessDeniedException {
-	  // 初始化投授权访问的票数为0
-      int grant = 0;
-
-      List<ConfigAttribute> singleAttributeList = new ArrayList<>(1);
-      singleAttributeList.add(null);
-      // 遍历所有已配置的属性
-      for (ConfigAttribute attribute : attributes) {
-         singleAttributeList.set(0, attribute);
-         // 遍历所有投票者，让每个投票者单独去给每个配置的属性投票
-         for (AccessDecisionVoter voter : getDecisionVoters()) {
-            int result = voter.vote(authentication, object, singleAttributeList);
-
-            if (logger.isDebugEnabled()) {
-               logger.debug("Voter: " + voter + ", returned: " + result);
-            }
-
-            switch (result) {
-            // 授权访问的票数加一
-            case AccessDecisionVoter.ACCESS_GRANTED:
-               grant++;
-
-               break;
-            // 只要有一个投票者给其中配置的属性投了拒绝访问则认为不允许访问
-            case AccessDecisionVoter.ACCESS_DENIED:
-               throw new AccessDeniedException(messages.getMessage(
-                     "AbstractAccessDecisionManager.accessDenied",
-                     "Access is denied"));
-
-            default:
-               break;
-            }
-         }
-      }
-
-      // 所有投票者给所有配置的属性都投了授权访问
-      if (grant > 0) {
-         return;
-      }
-
-      // To get this far, every AccessDecisionVoter abstained
-      checkAllowIfAllAbstainDecisions();
-   }
-}
-```
-
-UnanimousBased与另外两种策略的区别，还包括逐个配置属性调用投票者。假设配置属性列表直接包含ROLE_ADMIN和ROLE_DBA，而用户只有ROLE_ADMIN：RoleVoter面对整个列表时可因匹配一个角色返回赞成，AffirmativeBased于是允许访问；UnanimousBased分别对两个属性投票时，会在ROLE_DBA上得到反对票并拒绝。这个例子指的是两个独立的角色属性，不能套用于hasAnyRole这样的单个表达式属性；表达式的“或”语义由表达式自身计算。
-
-* 把配置好的属性逐个让投票者进行投票
-* 只要有一个投票者对其中的一个配置属性投了反对票则拒绝访问
-* 没有反对票且至少有一张赞成票时允许访问；全部弃权时按 allowIfAllAbstainDecisions 决定。
-
-## AccessDecisionVoter
-
-```java
-public interface AccessDecisionVoter<S> {
-
-   // 授权访问
-   int ACCESS_GRANTED = 1;
-   // 弃权访问
-   int ACCESS_ABSTAIN = 0;
-   // 拒绝访问
-   int ACCESS_DENIED = -1;
-
-   // 判断该投票者是否能够对该安全对象配置的属性进行投票
-   boolean supports(ConfigAttribute attribute);
-
-   // 判断该投票者是否能够对该安全对象进行投票
-   boolean supports(Class<?> clazz);
-
-   // 投票
-   int vote(Authentication authentication, S object,
-         Collection<ConfigAttribute> attributes);
-}
-```
-
-由上面的访问决策者我们可以得知，它们做出决定其实是通过投票者的投票来做出相应的决策的，在投票者内部维护的三个常量1，0，-1分别代表授权访问，弃权访问，拒绝访问，在它们投票之后会返回这些值，最终AccessDecisionManager根据这些投票者的返回这做出相应的访问策略
-
-![](./images/access-decision-voter-implementations.png)
-
-常用的投票者主要有以上几种，接下来我们逐一分析它们的工作原理
-
-### <a name="AuthenticatedVoter">AuthenticatedVoter</a>
-
-```java
-public class AuthenticatedVoter implements AccessDecisionVoter<Object> {
-
-   // 全部已认证配置属性
-   public static final String IS_AUTHENTICATED_FULLY = "IS_AUTHENTICATED_FULLY";
-   // 记住我已认证配置属性
-   public static final String IS_AUTHENTICATED_REMEMBERED = "IS_AUTHENTICATED_REMEMBERED";
-   // 匿名已认证配置属性
-   public static final String IS_AUTHENTICATED_ANONYMOUSLY = "IS_AUTHENTICATED_ANONYMOUSLY";
-
-   // 判断当前的认证信息是那种类型或者是否已认证等等，内部逻辑很简单就不做分析了
-   private AuthenticationTrustResolver authenticationTrustResolver = new AuthenticationTrustResolverImpl();
-
-   // 是否已经全部认证的逻辑是当前认证信息不是你们用户并且不是记住我用户
-   private boolean isFullyAuthenticated(Authentication authentication) {
-      return (!authenticationTrustResolver.isAnonymous(authentication) && !authenticationTrustResolver
-            .isRememberMe(authentication));
-   }
-
-   public void setAuthenticationTrustResolver(
-         AuthenticationTrustResolver authenticationTrustResolver) {
-      Assert.notNull(authenticationTrustResolver,
-            "AuthenticationTrustResolver cannot be set to null");
-      this.authenticationTrustResolver = authenticationTrustResolver;
-   }
-   // 判断是否支持该类型的配置属性，默认只支持IS_AUTHENTICATED_FULLY，
-   // IS_AUTHENTICATED_REMEMBERED，IS_AUTHENTICATED_ANONYMOUSLY这三种
-   public boolean supports(ConfigAttribute attribute) {
-      if ((attribute.getAttribute() != null)
-            && (IS_AUTHENTICATED_FULLY.equals(attribute.getAttribute())
-                  || IS_AUTHENTICATED_REMEMBERED.equals(attribute.getAttribute()) || IS_AUTHENTICATED_ANONYMOUSLY
-                     .equals(attribute.getAttribute()))) {
-         return true;
-      }
-      else {
-         return false;
-      }
-   }
-
-   public boolean supports(Class<?> clazz) {
-      return true;
-   }
-   // 投票逻辑
-   public int vote(Authentication authentication, Object object,
-         Collection<ConfigAttribute> attributes) {
-
-      // 初始化投弃权票
-      int result = ACCESS_ABSTAIN;
-      // 便利所有已配置的属性
-      for (ConfigAttribute attribute : attributes) {
-         // 判断是否支持该配置属性
-         if (this.supports(attribute)) {
-            // 如果支持初始化拒绝访问
-            result = ACCESS_DENIED;
-            // 配置的属性是已认证，只有当前认证信息不是匿名用户和记住我用户才投授权访问
-            if (IS_AUTHENTICATED_FULLY.equals(attribute.getAttribute())) {
-               if (isFullyAuthenticated(authentication)) {
-                  return ACCESS_GRANTED;
-               }
-            }
-            // 配置的属性是记住我，只有当前认证信息是记住我或者是全部认证才投授权访问
-            if (IS_AUTHENTICATED_REMEMBERED.equals(attribute.getAttribute())) {
-               if (authenticationTrustResolver.isRememberMe(authentication)
-                     || isFullyAuthenticated(authentication)) {
-                  return ACCESS_GRANTED;
-               }
-            }
-            // 配置的属性是匿名，只有当前认证信息是匿名或者是全部认证或者是记住我才投授权访问
-            if (IS_AUTHENTICATED_ANONYMOUSLY.equals(attribute.getAttribute())) {
-               if (authenticationTrustResolver.isAnonymous(authentication)
-                     || isFullyAuthenticated(authentication)
-                     || authenticationTrustResolver.isRememberMe(authentication)) {
-                  return ACCESS_GRANTED;
-               }
-            }
-         }
-      }
-
-      return result;
-   }
-}
-```
-* 配置属性是IS_AUTHENTICATED_FULLY，IS_AUTHENTICATED_REMEMBERED，IS_AUTHENTICATED_ANONYMOUSLY三者之一时才进行投票，否则投弃权票
-* 配置的属性是已认证，只有当前认证信息不是匿名用户和记住我用户才投授权访问
-* 配置的属性是记住我，只有当前认证信息是记住我或者是全部认证才投授权访问
-* 配置的属性是匿名，只有当前认证信息是匿名或者是全部认证或者是记住我才投授权访问
-
-### <a name="PreInvocationAuthorizationAdviceVoter">PreInvocationAuthorizationAdviceVoter</a>
-
-```java
-public class PreInvocationAuthorizationAdviceVoter implements
-      AccessDecisionVoter<MethodInvocation> {
-   protected final Log logger = LogFactory.getLog(getClass());
-   // 在调用方法之前执行参数过滤和授权逻辑，实现类是ExpressionBasedPreInvocationAdvice，从名字可以
-   // 看出这是aop的应用场景
-   private final PreInvocationAuthorizationAdvice preAdvice;
-
-   public PreInvocationAuthorizationAdviceVoter(PreInvocationAuthorizationAdvice pre) {
-      this.preAdvice = pre;
-   }
-   // 只支持配置属性是PreInvocationAttribute类型
-   public boolean supports(ConfigAttribute attribute) {
-      return attribute instanceof PreInvocationAttribute;
-   }
-   // 支持的安全对象是方法调用
-   public boolean supports(Class<?> clazz) {
-      return MethodInvocation.class.isAssignableFrom(clazz);
-   }
-
-   public int vote(Authentication authentication, MethodInvocation method,
-         Collection<ConfigAttribute> attributes) {
-      // 从所有配置属性中找出PreInvocationAttribute类型的配置信息
-      PreInvocationAttribute preAttr = findPreInvocationAttribute(attributes);
-      // 如果没有PreInvocationAttribute类型的配置信息则投弃权票
-      if (preAttr == null) {
-         return ACCESS_ABSTAIN;
-      }
-      // 调用aop前置通知，具体实现在ExpressionBasedPreInvocationAdvice#before这个方法中
-      boolean allowed = preAdvice.before(authentication, method, preAttr);
-      // true则投授权访问，false则投拒绝访问
-      return allowed ? ACCESS_GRANTED : ACCESS_DENIED;
-   }
-
-   private PreInvocationAttribute findPreInvocationAttribute(
-         Collection<ConfigAttribute> config) {
-      for (ConfigAttribute attribute : config) {
-         if (attribute instanceof PreInvocationAttribute) {
-            return (PreInvocationAttribute) attribute;
-         }
-      }
-
-      return null;
-   }
-}
-```
-
-* 配置属性是PreInvocationAttribute类型的才进行投票，否则投弃权票
-* 根据aop前置通知返回的结果进行投票
-  * true投授权访问
-  * false投拒绝访问
-
-### <a name="RoleVoter">RoleVoter</a>
-
-```java
-public class RoleVoter implements AccessDecisionVoter<Object> {
-   // 角色前缀
-   private String rolePrefix = "ROLE_";
-
-
-   public String getRolePrefix() {
-      return rolePrefix;
-   }
-
-   public void setRolePrefix(String rolePrefix) {
-      this.rolePrefix = rolePrefix;
-   }
-   // 默认只支持配置属性是以ROLE_开头，所以我们数据库中的角色设计要以ROLE_开头
-   // 或者自己调用setRolePrefix改变角色前缀
-   public boolean supports(ConfigAttribute attribute) {
-      if ((attribute.getAttribute() != null)
-            && attribute.getAttribute().startsWith(getRolePrefix())) {
-         return true;
-      }
-      else {
-         return false;
-      }
-   }
-
-   public boolean supports(Class<?> clazz) {
-      return true;
-   }
-   // 投票
-   public int vote(Authentication authentication, Object object,
-         Collection<ConfigAttribute> attributes) {
-      if (authentication == null) {
-         return ACCESS_DENIED;
-      }
-      // 初始化投弃权票
-      int result = ACCESS_ABSTAIN;
-      // 从认证信息中获取角色信息
-      Collection<? extends GrantedAuthority> authorities = extractAuthorities(authentication);
-      // 遍历配置的属性
-      for (ConfigAttribute attribute : attributes) {
-         // 判断是否支持该配置属性
-         if (this.supports(attribute)) {
-            // 如果支持初始化投决绝访问
+public int vote(Authentication authentication, Object object,
+        Collection<ConfigAttribute> attributes) {
+    if (authentication == null) {
+        return ACCESS_DENIED;
+    }
+    int result = ACCESS_ABSTAIN;
+    Collection<? extends GrantedAuthority> authorities = extractAuthorities(authentication);
+
+    for (ConfigAttribute attribute : attributes) {
+        if (this.supports(attribute)) {
             result = ACCESS_DENIED;
 
-            // 遍历已有的角色信息
+            // Attempt to find a matching granted authority
             for (GrantedAuthority authority : authorities) {
-               // 只要有一项和配置的属性配置则投授权访问
-               if (attribute.getAttribute().equals(authority.getAuthority())) {
-                  return ACCESS_GRANTED;
-               }
+                if (attribute.getAttribute().equals(authority.getAuthority())) {
+                    return ACCESS_GRANTED;
+                }
             }
-         }
-      }
+        }
+    }
 
-      return result;
-   }
-
-   Collection<? extends GrantedAuthority> extractAuthorities(
-         Authentication authentication) {
-      return authentication.getAuthorities();
-   }
+    return result;
 }
 ```
 
-* 配置属性是以ROLE_开头才进行投票，否则投弃权票
-* 只要认证信息中有一个角色和已配置的属性匹配则投授权访问，否则投拒绝访问
+上面的 `authentication == null` 是直接反对的边界，不应被“只对支持的属性投票”这句简化描述遗漏。角色前缀属于进入授权组件后的字符串契约，数据库可以保存其他业务标识，再由应用转换成 `ROLE_...`；不能从默认前缀反推数据库必须按同样格式设计。[RoleVoter 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/vote/RoleVoter.java)
 
-### <a name="WebExpressionVoter">WebExpressionVoter</a>
+### AuthenticatedVoter：区分认证强度
 
-```java
-public class WebExpressionVoter implements AccessDecisionVoter<FilterInvocation> {
-   // 表达式处理者
-   private SecurityExpressionHandler<FilterInvocation> expressionHandler = new DefaultWebSecurityExpressionHandler();
-   // 投票
-   public int vote(Authentication authentication, FilterInvocation fi,
-         Collection<ConfigAttribute> attributes) {
-      assert authentication != null;
-      assert fi != null;
-      assert attributes != null;
-      // 找出WebExpressionConfigAttribute类型的配置
-      WebExpressionConfigAttribute weca = findConfigAttribute(attributes);
-      // 如果没有，投弃权票
-      if (weca == null) {
-         return ACCESS_ABSTAIN;
-      }
+| 配置属性 | 可以获得赞成的身份 |
+| --- | --- |
+| `IS_AUTHENTICATED_FULLY` | 非匿名且非 Remember-Me |
+| `IS_AUTHENTICATED_REMEMBERED` | Remember-Me 或完整认证 |
+| `IS_AUTHENTICATED_ANONYMOUSLY` | 匿名、Remember-Me 或完整认证 |
 
-      // 下面这两行代码和spring表达式相关就不做分析了
-      EvaluationContext ctx = expressionHandler.createEvaluationContext(authentication,
-            fi);
-      ctx = weca.postProcess(ctx, fi);
+这些条件依赖 AuthenticationTrustResolver 对令牌类型的判断，不能直接等同于 `authentication.isAuthenticated()`。在正常拦截链中，认证信息的准备和必要的重新认证先由拦截器完成；不要把单独调用这个投票者当成完整认证流程。[AuthenticatedVoter 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/vote/AuthenticatedVoter.java)
 
-      // 根据表达式执行结果投票，true则投授权访问，false则投拒绝访问
-      return ExpressionUtils.evaluateAsBoolean(weca.getAuthorizeExpression(), ctx) ? ACCESS_GRANTED
-            : ACCESS_DENIED;
-   }
-   // 遍历配置的属性找出WebExpressionConfigAttribute类型的配置
-   private WebExpressionConfigAttribute findConfigAttribute(
-         Collection<ConfigAttribute> attributes) {
-      for (ConfigAttribute attribute : attributes) {
-         if (attribute instanceof WebExpressionConfigAttribute) {
-            return (WebExpressionConfigAttribute) attribute;
-         }
-      }
-      return null;
-   }
-   // 只支持WebExpressionConfigAttribute类型的配置属性
-   public boolean supports(ConfigAttribute attribute) {
-      return attribute instanceof WebExpressionConfigAttribute;
-   }
-   // 只支持FilterInvocation类型的安全对象
-   public boolean supports(Class<?> clazz) {
-      return FilterInvocation.class.isAssignableFrom(clazz);
-   }
+### WebExpressionVoter 与方法前置投票者
 
-   public void setExpressionHandler(
-         SecurityExpressionHandler<FilterInvocation> expressionHandler) {
-      this.expressionHandler = expressionHandler;
-   }
-}
-```
+WebExpressionVoter 找出 WebExpressionConfigAttribute，基于 FilterInvocation 建立求值上下文，再按表达式结果投赞成或反对；没有相应属性则弃权。PreInvocationAuthorizationAdviceVoter 针对 MethodInvocation，交给 PreInvocationAuthorizationAdvice 执行前置授权及参数过滤。两者面对的安全对象和规则类型不同，不能只因为都支持表达式就互换。
 
-* 配置属性是WebExpressionConfigAttribute类型的才进行投票，否则投弃权票
-* 根据表达式执行结果投票
-  * true投授权访问
-  * false投拒绝访问
+[WebExpressionVoter 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/access/expression/WebExpressionVoter.java)、[PreInvocationAuthorizationAdviceVoter 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/prepost/PreInvocationAuthorizationAdviceVoter.java)
 
-## 总结
+## 怎样验证自己的组合
 
-* AccessDecisionManager做出决策时是根据AccessDecisionVoter投票的结果做出决定的
-* 一共有三种AccessDecisionManager，分别是AffirmativeBased，ConsensusBased和UnanimousBased。它们都会根据投票者的投票数作出自己的决定
-  * <a href="#AffirmativeBased决定策略">AffirmativeBased决定策略</a>
-  * <a href="#ConsensusBased决定策略">ConsensusBased决定策略</a>
-  * <a href="#UnanimousBased决定策略">UnanimousBased决定策略</a>
-* AccessDecisionVoter在进行投票时只会在自己支持的配置属性上进行投票
-  * <a href="#AuthenticatedVoter">AuthenticatedVoter</a>
-  * <a href="#PreInvocationAuthorizationAdviceVoter">PreInvocationAuthorizationAdviceVoter</a>
-  * <a href="#RoleVoter">RoleVoter</a>
-  * <a href="#WebExpressionVoter">WebExpressionVoter</a>
+先写出安全对象、配置属性和主体权限，再分别观察每个投票者的返回值，最后应用决策器规则。至少区分全部弃权、只有反对、赞成与反对混合、非零平票，以及多个独立属性的场景。上文表格是对固定版本代码的推导，不是对某个真实系统权限配置已经通过验证的声明。
 
-## 资料来源
-
-- [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
+配置器负责创建这些组件，拦截器负责调用它们。需要追踪一次 HTTP 授权失败时，继续看 [FilterSecurityInterceptor](/filter-security-interceptor/) 如何取得属性，以及 [ExceptionTranslationFilter](/exception-translation-filter/) 如何把拒绝转换为响应。

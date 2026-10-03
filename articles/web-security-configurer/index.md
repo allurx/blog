@@ -1,7 +1,7 @@
 ---
 title: "WebSecurityConfigurerAdapter 源码分析"
 date: 2019-06-29
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -9,268 +9,102 @@ tags:
 domain: Spring
 ---
 
-WebSecurityConfigurerAdapter 将认证构建器、共享对象与 HttpSecurity 的配置入口组织到一起，并在初始化时把 HttpSecurity 加入 WebSecurity。默认的 DefaultConfigurerAdapter 提供起步配置；自定义适配器可以替代它。
+WebSecurityConfigurerAdapter 把应用的安全规则、认证管理器和 HttpSecurity 组合起来，再让 WebSecurity 构建最终过滤入口。理解这个适配器的关键，是区分本地认证配置、全局认证配置和单条 HTTP 安全链。
 
-下面从默认适配器进入初始化流程，说明认证构建器如何成为共享对象，HttpSecurity 又在何时加入 WebSecurity。
+本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的历史 API。适配器属于该版本的配置方式，不是当前新项目的推荐入口。运行基线见[基本概念](/spring-security-basics/)，固定实现见 [WebSecurityConfigurerAdapter 5.1.5](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/configuration/WebSecurityConfigurerAdapter.java)。
 
-以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/configuration/WebSecurityConfigurerAdapter.java)。
+文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
-## 概述
+## 三个 configure 方法配置不同对象
 
-WebSecurityConfigurerAdapter 配置 HttpSecurity，再将它交给 WebSecurity 参与构建。应用没有提供自己的适配器时，SpringBootWebSecurityConfiguration 会提供以下默认子类。
+| 方法 | 主要职责 |
+| --- | --- |
+| configure(AuthenticationManagerBuilder) | 配置本适配器使用的认证能力 |
+| configure(HttpSecurity) | 配置单条 HTTP 安全链的请求规则与登录方式 |
+| configure(WebSecurity) | 配置整体 Web 构建器，例如忽略范围 |
+
+它们只是同名重载，不能因为都叫 configure 就推断执行阶段和作用相同。HttpSecurity 的构建结果是单条 SecurityFilterChain，WebSecurity 则组合这些链为 FilterChainProxy。
+
+## Boot 的默认子类为什么什么都不写
+
+缺少自定义适配器且满足 Servlet 条件时，SpringBootWebSecurityConfiguration 提供 DefaultConfigurerAdapter。它继承父类默认行为，不需要覆盖方法就能得到要求认证、表单登录与 HTTP Basic 等起步配置。
+
+应用提供自己的适配器 Bean 后，Boot 的默认适配器退让；但 Security 的其他装配职责并不因此全部消失。[默认适配器配置源码](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SpringBootWebSecurityConfiguration.java)
+
+## init 把 HttpSecurity 加到 WebSecurity
 
 ```java
-@Configuration
-@ConditionalOnClass(WebSecurityConfigurerAdapter.class)
-@ConditionalOnMissingBean(WebSecurityConfigurerAdapter.class)
-@ConditionalOnWebApplication(type = Type.SERVLET)
-public class SpringBootWebSecurityConfiguration {
-
-	@Configuration
-	@Order(SecurityProperties.BASIC_AUTH_ORDER)
-	static class DefaultConfigurerAdapter extends WebSecurityConfigurerAdapter {
-
-	}
-
+public void init(final WebSecurity web) throws Exception {
+    final HttpSecurity http = getHttp();
+    web.addSecurityFilterChainBuilder(http).postBuildAction(new Runnable() {
+        public void run() {
+            FilterSecurityInterceptor securityInterceptor = http
+                    .getSharedObject(FilterSecurityInterceptor.class);
+            web.securityInterceptor(securityInterceptor);
+        }
+    });
 }
 ```
 
-这就是spring-security为我们默认添加的一个适配器，如果我们在项目中自己定义了一个类继承WebSecurityConfigurerAdapter的话，这个默认的类就不会被加载了。
+getHttp 取得本适配器的单条链构建器；addSecurityFilterChainBuilder 把它加入整体构建计划。postBuildAction 在链已生成后取得 FilterSecurityInterceptor，供整体 Web 权限查询等协作使用。整个过程发生在启动构建阶段，没有在此执行某个用户请求。
 
+## getHttp 先准备共享状态，再应用 HTTP 规则
 
-## WebSecurityConfigurerAdapter
+首次调用 getHttp 时，适配器依次完成：
+
+1. 准备认证事件发布器，取得本地或全局 AuthenticationManager。
+2. 把它作为 HTTP 链认证构建器的父管理器，建立 UserDetailsService、ApplicationContext、内容协商与信任解析器等共享对象。
+3. 创建 HttpSecurity，按 disableDefaults 决定是否安装基础配置器。
+4. 调用应用可覆盖的 configure(HttpSecurity)，保存并复用这个构建器。
+
+无参构造器传入 `false`，即**启用默认基础配置**。启用时，基础配置包括 CSRF、上下文、会话、异常转换、请求缓存、匿名支持、Servlet API 集成、默认登录页和退出处理等，随后还会加载 spring.factories 中的 AbstractHttpConfigurer。
+
+默认 configure(HttpSecurity) 再添加具体访问规则和认证方式：
 
 ```java
-@Order(100)
-public abstract class WebSecurityConfigurerAdapter implements
-      WebSecurityConfigurer<WebSecurity> {
-   private final Log logger = LogFactory.getLog(WebSecurityConfigurerAdapter.class);
+protected void configure(HttpSecurity http) throws Exception {
+    logger.debug("Using default configure(HttpSecurity). If subclassed this will potentially override subclass configure(HttpSecurity).");
 
-   private ApplicationContext context;
-
-   private ContentNegotiationStrategy contentNegotiationStrategy = new HeaderContentNegotiationStrategy();
-
-   private ObjectPostProcessor<Object> objectPostProcessor = new ObjectPostProcessor<Object>() {
-      public <T> T postProcess(T object) {
-         throw new IllegalStateException(
-               ObjectPostProcessor.class.getName()
-                     + " is a required bean. Ensure you have used @EnableWebSecurity and @Configuration");
-      }
-   };
-   // 自动注入
-   private AuthenticationConfiguration authenticationConfiguration;
-   // 自动注入为DefaultPasswordEncoderAuthenticationManagerBuilder
-   private AuthenticationManagerBuilder authenticationBuilder;
-   // 自动注入为DefaultPasswordEncoderAuthenticationManagerBuilder
-   private AuthenticationManagerBuilder localConfigureAuthenticationBldr;
-   // 是否通过默认的AuthenticationManagerBuilder构建AuthenticationManager
-   private boolean disableLocalConfigureAuthenticationBldr;
-   // 认证管理者是否已经初始化
-   private boolean authenticationManagerInitialized;
-   // 认证管理者
-   private AuthenticationManager authenticationManager;
-   private AuthenticationTrustResolver trustResolver = new AuthenticationTrustResolverImpl();
-   // SpringSecurityFilterChain就是通过HttpSecurity构建出来的
-   private HttpSecurity http;
-   // 是否禁用默认的HttpSecurity配置
-   private boolean disableDefaults;
-   // 默认是不对HttpSecurity进行配置的
-   protected WebSecurityConfigurerAdapter() {
-      this(false);
-   }
-
-   protected WebSecurityConfigurerAdapter(boolean disableDefaults) {
-      this.disableDefaults = disableDefaults;
-   }
-   // 如果子类重写了该方法就意味着不通过默认的AuthenticationManagerBuilder构建
-   // AuthenticationManager
-   protected void configure(AuthenticationManagerBuilder auth) throws Exception {
-      this.disableLocalConfigureAuthenticationBldr = true;
-   }
-   // 这就是默认的过滤器配置的地方
-   @SuppressWarnings({ "rawtypes", "unchecked" })
-   protected final HttpSecurity getHttp() throws Exception {
-      if (http != null) {
-         return http;
-      }
-      // 默认的事件发布者
-      DefaultAuthenticationEventPublisher eventPublisher = objectPostProcessor
-            .postProcess(new DefaultAuthenticationEventPublisher());
-      // 给默认的AuthenticationManagerBuilder设置事件发布者
-      localConfigureAuthenticationBldr.authenticationEventPublisher(eventPublisher);
-	  // 获取AuthenticationManager
-      AuthenticationManager authenticationManager = authenticationManager();
-      // 给AuthenticationManagerBuilder设置父AuthenticationManager
-      authenticationBuilder.parentAuthenticationManager(authenticationManager);
-      // 给AuthenticationManagerBuilder设置事件发布者
-      authenticationBuilder.authenticationEventPublisher(eventPublisher);
-      // 创建共享的对象
-      Map<Class<? extends Object>, Object> sharedObjects = createSharedObjects();
-	  // new一个HttpSecurity
-      http = new HttpSecurity(objectPostProcessor, authenticationBuilder,
-            sharedObjects);
-      // 判断是否禁用默认的HttpSecurity配置，默认disableDefaults为false
-      // 这就是spring-security为我们配置的默认过滤器
-      if (!disableDefaults) {
-         // @formatter:off
-         http
-            .csrf().and()
-            .addFilter(new WebAsyncManagerIntegrationFilter())
-            .exceptionHandling().and()
-            .headers().and()
-            .sessionManagement().and()
-            .securityContext().and()
-            .requestCache().and()
-            .anonymous().and()
-            .servletApi().and()
-            .apply(new DefaultLoginPageConfigurer<>()).and()
-            .logout();
-         // @formatter:on
-         ClassLoader classLoader = this.context.getClassLoader();
-         // 从类路径下中出定义在META-INF/spring.factories中的AbstractHttpConfigurer
-         List<AbstractHttpConfigurer> defaultHttpConfigurers =
-               SpringFactoriesLoader.loadFactories(AbstractHttpConfigurer.class, classLoader);
-		 // 将这些AbstractHttpConfigurer应用于HttpSecurity
-         for (AbstractHttpConfigurer configurer : defaultHttpConfigurers) {
-            http.apply(configurer);
-         }
-      }
-      // 配置HttpSecurity，给HttpSecurity添加属性，一般我们都是重写该方法，添加认证过滤器之类的操作
-      configure(http);
-      return http;
-   }
-   public AuthenticationManager authenticationManagerBean() throws Exception {
-      return new AuthenticationManagerDelegator(authenticationBuilder, context);
-   }
-
-   // 获取AuthenticationManager
-   protected AuthenticationManager authenticationManager() throws Exception {
-      if (!authenticationManagerInitialized) {
-         // 配置默认的AuthenticationManagerBuilder
-         configure(localConfigureAuthenticationBldr);
-         // 如果禁用默认的AuthenticationManagerBuilder
-         if (disableLocalConfigureAuthenticationBldr) {
-            // 从authenticationConfiguration中获取AuthenticationManager
-            // 这个authenticationConfiguration是在自动配置中被注册到spring容器中的
-            authenticationManager = authenticationConfiguration
-                  .getAuthenticationManager();
-         }
-         // 否则从默认的AuthenticationManagerBuilder中构建AuthenticationManager
-         else {
-            authenticationManager = localConfigureAuthenticationBldr.build();
-         }
-         authenticationManagerInitialized = true;
-      }
-      return authenticationManager;
-   }
-
-   public UserDetailsService userDetailsServiceBean() throws Exception {
-      AuthenticationManagerBuilder globalAuthBuilder = context
-            .getBean(AuthenticationManagerBuilder.class);
-      return new UserDetailsServiceDelegator(Arrays.asList(
-            localConfigureAuthenticationBldr, globalAuthBuilder));
-   }
-
-   protected UserDetailsService userDetailsService() {
-      AuthenticationManagerBuilder globalAuthBuilder = context
-            .getBean(AuthenticationManagerBuilder.class);
-      return new UserDetailsServiceDelegator(Arrays.asList(
-            localConfigureAuthenticationBldr, globalAuthBuilder));
-   }
-   // 很重的方法WebSecurity就是在这个地方被初始化的，将HttpSecurity作为它的SecurityBuilder
-   public void init(final WebSecurity web) throws Exception {
-      final HttpSecurity http = getHttp();
-      // 将HttpSecurity添加到WebSecurity内部维护的SecurityBuilder列表中
-      // 并且设置它的postBuildAction为一个新的Runnale，最终设置了我们熟悉的
-      // FilterSecurityInterceptor
-      web.addSecurityFilterChainBuilder(http).postBuildAction(new Runnable() {
-         public void run() {
-            FilterSecurityInterceptor securityInterceptor = http
-                  .getSharedObject(FilterSecurityInterceptor.class);
-            web.securityInterceptor(securityInterceptor);
-         }
-      });
-   }
-
-   public void configure(WebSecurity web) throws Exception {
-   }
-   // 配置HttpSecurity，一般我们都是重写该方法给HttpSecurity添加过滤器，设置请求权限等等
-   protected void configure(HttpSecurity http) throws Exception {
-      logger.debug("Using default configure(HttpSecurity). If subclassed this will potentially override subclass configure(HttpSecurity).");
-
-      http
-         .authorizeRequests()
+    http
+        .authorizeRequests()
             .anyRequest().authenticated()
             .and()
-         .formLogin().and()
-         .httpBasic();
-   }
-
-   protected final ApplicationContext getApplicationContext() {
-      return this.context;
-   }
-   // 自动注入context，初始化authenticationBuilder，localConfigureAuthenticationBldr
-   @Autowired
-   public void setApplicationContext(ApplicationContext context) {
-      this.context = context;
-
-      ObjectPostProcessor<Object> objectPostProcessor = context.getBean(ObjectPostProcessor.class);
-      LazyPasswordEncoder passwordEncoder = new LazyPasswordEncoder(context);
-
-      authenticationBuilder = new DefaultPasswordEncoderAuthenticationManagerBuilder(objectPostProcessor, passwordEncoder);
-      localConfigureAuthenticationBldr = new DefaultPasswordEncoderAuthenticationManagerBuilder(objectPostProcessor, passwordEncoder) {
-         @Override
-         public AuthenticationManagerBuilder eraseCredentials(boolean eraseCredentials) {
-            authenticationBuilder.eraseCredentials(eraseCredentials);
-            return super.eraseCredentials(eraseCredentials);
-         }
-
-      };
-   }
-   // 如果用户自定义，覆盖默认的AuthenticationTrustResolver，
-   @Autowired(required = false)
-   public void setTrustResolver(AuthenticationTrustResolver trustResolver) {
-      this.trustResolver = trustResolver;
-   }
-   // 如果用户自定义，覆盖默认的ContentNegotiationStrategy
-   @Autowired(required = false)
-   public void setContentNegotationStrategy(
-         ContentNegotiationStrategy contentNegotiationStrategy) {
-      this.contentNegotiationStrategy = contentNegotiationStrategy;
-   }
-   // 自动注入ObjectPostProcessor
-   @Autowired
-   public void setObjectPostProcessor(ObjectPostProcessor<Object> objectPostProcessor) {
-      this.objectPostProcessor = objectPostProcessor;
-   }
-   // 自动注入AuthenticationConfiguration
-   @Autowired
-   public void setAuthenticationConfiguration(
-         AuthenticationConfiguration authenticationConfiguration) {
-      this.authenticationConfiguration = authenticationConfiguration;
-   }
-   // 创建共享对象
-   private Map<Class<? extends Object>, Object> createSharedObjects() {
-      Map<Class<? extends Object>, Object> sharedObjects = new HashMap<Class<? extends Object>, Object>();
-      sharedObjects.putAll(localConfigureAuthenticationBldr.getSharedObjects());
-      sharedObjects.put(UserDetailsService.class, userDetailsService());
-      sharedObjects.put(ApplicationContext.class, context);
-      sharedObjects.put(ContentNegotiationStrategy.class, contentNegotiationStrategy);
-      sharedObjects.put(AuthenticationTrustResolver.class, trustResolver);
-      return sharedObjects;
-   }
-   ... 省略部分代码
+        .formLogin().and()
+        .httpBasic();
 }
 ```
 
-WebSecurityConfigurerAdapter是一个很方便的整合各种安全配置的基类，我们可以通过继承这个基类来配置HttpSecurity，AuthenticationManagerBuilder等。
+因此，禁用基础默认项与覆盖 configure(HttpSecurity) 是不同操作。显式禁用默认项需要理解缺少哪些职责，不能只为了得到更短的过滤器列表而使用。
 
-## 总结
+## 覆盖认证配置时使用传入的本地 builder
 
-1. 默认的WebSecurityConfigurerAdapter是DefaultConfigurerAdapter
-2. DefaultConfigurerAdapter是用来配置WebSecurity的，DefaultConfigurerAdapter调用init方法将HttpSecurity添加到WebSecurity的SecurityBuilder列表中
+父类默认的 configure(AuthenticationManagerBuilder) 只设置 disableLocalConfigureAuthenticationBldr 标记，表示本地未提供认证配置，随后改从全局 AuthenticationConfiguration 取得管理器。子类覆盖并配置传入的 auth 时，通常不会调用这个默认实现，便由本地 builder 构建。
 
-## 资料来源
+```java
+protected AuthenticationManager authenticationManager() throws Exception {
+    if (!authenticationManagerInitialized) {
+        configure(localConfigureAuthenticationBldr);
+        if (disableLocalConfigureAuthenticationBldr) {
+            authenticationManager = authenticationConfiguration
+                    .getAuthenticationManager();
+        }
+        else {
+            authenticationManager = localConfigureAuthenticationBldr.build();
+        }
+        authenticationManagerInitialized = true;
+    }
+    return authenticationManager;
+}
+```
 
-- [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
+这个分支也解释了为什么重写方法后又调用 super 可能改变预期：super 的作用是设置切换标记，不是自动合并一套默认用户配置。最终以标记与 builder 状态为准，不能反过来说“重写方法就不使用传入的 builder”。
+
+## 暴露 Bean 与内部持有对象不是一回事
+
+authenticationManagerBean 和 userDetailsServiceBean 提供把相应结果暴露为 Bean 的入口，历史用法通常由子类覆盖并添加 @Bean。适配器内部持有的 HttpSecurity、认证 builder 等字段，并不因为被创建就自动成为独立容器 Bean。
+
+默认密码编码器还会延迟查找应用提供的 PasswordEncoder，没有时使用 DelegatingPasswordEncoder；它的存储格式见[认证管理器分析](/authentication-manager/)。
+
+## 按配置层次定位行为变化
+
+要改用户如何认证，追踪 AuthenticationManagerBuilder 和提供者；要改 URL 的要求和登录响应，追踪 HttpSecurity；要改多条链、忽略范围和最终代理，追踪 WebSecurity。再到实际请求里观察匹配链与过滤器，才能确认配置变化确实到达预期层次。[单条链构建](/http-security/)、[整体 Web 构建](/web-security/)

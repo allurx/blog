@@ -1,7 +1,7 @@
 ---
 title: "FilterChainProxy 源码分析"
 date: 2019-07-01
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -9,218 +9,83 @@ tags:
 domain: Spring
 ---
 
-FilterChainProxy 先通过 HttpFirewall 检查并包装请求，再按配置顺序选择第一条匹配的 SecurityFilterChain，只执行该链中的过滤器，最后衔接原 Servlet 过滤器链。多条匹配链不会自动叠加，所以链的匹配范围与顺序是实际安全行为的一部分。
+配置了多条安全链，不意味着一个请求会把所有匹配链依次执行。FilterChainProxy 只选择按顺序遇到的第一条匹配链，再调用该链中的过滤器；匹配范围和顺序因此直接决定实际保护范围。
 
-本文分析 Servlet 的链选择与 VirtualFilterChain 调用过程。链内过滤器各自负责认证、上下文或授权，FilterChainProxy 主要负责选择与调度；请求没有匹配链时也需要结合整体配置检查实际保护范围。
+本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的 Servlet 请求执行过程，前置背景是 [WebSecurity 如何构建多条链](/web-security/)。固定源码见 [FilterChainProxy 5.1.5](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/FilterChainProxy.java)。
 
-以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/FilterChainProxy.java)。
+文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
-## 概述
+## 先区分三条调用关系
 
-启动时构建出的 springSecurityFilterChain Bean 是 FilterChainProxy。请求进入 Servlet 容器后，代理需要先找到匹配的安全链，再逐个调用链上的过滤器；下面分析链选择与 VirtualFilterChain 的调用过程。
+```text
+Servlet 容器原始过滤链
+  → DelegatingFilterProxy
+    → FilterChainProxy
+      → 第一条匹配的 SecurityFilterChain 内部过滤器
+        → 继续原始 Servlet 过滤链与最终请求处理
+```
 
+最后一条箭头有条件：安全过滤器可以拒绝访问、发送重定向或完成响应而不再调用 chain。FilterChainProxy 负责调度，不保证每个请求都到达 Controller。
 
-## FilterChainProxy
+## HttpFirewall 先检查并包装请求
+
+`doFilterInternal` 先调用 HttpFirewall 取得 FirewalledRequest 和包装后的响应，默认使用 StrictHttpFirewall。请求被认为不合法时可能在选链之前被拒绝，不能把所有拒绝都归为授权规则不匹配。
+
+然后代理调用 getFilters，传入经过防火墙处理的请求。匹配结束后，进入安全链或返回原始链；适当阶段调用 FirewalledRequest.reset，恢复继续处理所需的请求状态。
+
+## getFilters 在第一条匹配处停止
 
 ```java
-public class FilterChainProxy extends GenericFilterBean {
+private List<Filter> getFilters(HttpServletRequest request) {
+    for (SecurityFilterChain chain : filterChains) {
+        if (chain.matches(request)) {
+            return chain.getFilters();
+        }
+    }
 
-	private static final Log logger = LogFactory.getLog(FilterChainProxy.class);
-	// 过滤器是否执行过的标记
-	private final static String FILTER_APPLIED = FilterChainProxy.class.getName().concat(
-			".APPLIED");
-    // 一系列的过滤链
-	private List<SecurityFilterChain> filterChains;
-    // 过滤链验证器，默认为空
-	private FilterChainValidator filterChainValidator = new NullFilterChainValidator();
-    // http防火墙，主要的作用是拒绝一些潜在的危险的请求
-	private HttpFirewall firewall = new StrictHttpFirewall();
-
-	public FilterChainProxy() {
-	}
-
-	public FilterChainProxy(SecurityFilterChain chain) {
-		this(Arrays.asList(chain));
-	}
-
-	public FilterChainProxy(List<SecurityFilterChain> filterChains) {
-		this.filterChains = filterChains;
-	}
-
-	@Override
-	public void afterPropertiesSet() {
-		filterChainValidator.validate(this);
-	}
-    // 过滤逻辑
-	@Override
-	public void doFilter(ServletRequest request, ServletResponse response,
-			FilterChain chain) throws IOException, ServletException {
-        // 是否清空上下文（是否执行过该过滤器）
-		boolean clearContext = request.getAttribute(FILTER_APPLIED) == null;
-        // 没有执行过该过滤器
-		if (clearContext) {
-			try {
-                // 设置执行过的标记
-				request.setAttribute(FILTER_APPLIED, Boolean.TRUE);
-                // 执行过滤逻辑
-				doFilterInternal(request, response, chain);
-			}
-			finally {
-                // 清空安全上下文
-				SecurityContextHolder.clearContext();
-                // 移除执行过的标记
-				request.removeAttribute(FILTER_APPLIED);
-			}
-		}
-		else {
-            // 执行过滤逻辑
-			doFilterInternal(request, response, chain);
-		}
-	}
-
-	private void doFilterInternal(ServletRequest request, ServletResponse response,
-			FilterChain chain) throws IOException, ServletException {
-		// 校验请求然后封装成一个FirewalledRequest
-		FirewalledRequest fwRequest = firewall
-				.getFirewalledRequest((HttpServletRequest) request);
-        // 校验响应然后封装成一个HttpServletResponse
-		HttpServletResponse fwResponse = firewall
-				.getFirewalledResponse((HttpServletResponse) response);
-		// 根据请求找到匹配的过滤器，注意只返回第一个匹配请求的过滤器链
-		List<Filter> filters = getFilters(fwRequest);
-
-		if (filters == null || filters.size() == 0) {
-			if (logger.isDebugEnabled()) {
-				logger.debug(UrlUtils.buildRequestUrl(fwRequest)
-						+ (filters == null ? " has no matching filters"
-								: " has an empty filter list"));
-			}
-
-			fwRequest.reset();
-
-			chain.doFilter(fwRequest, fwResponse);
-
-			return;
-		}
-		// 将FirewalledRequest，FilterChain和filters包装成一个VirtualFilterChain
-		VirtualFilterChain vfc = new VirtualFilterChain(fwRequest, chain, filters);
-        // 开始执行过滤逻辑
-		vfc.doFilter(fwRequest, fwResponse);
-	}
-
-	// 只返回第一个匹配请求的过滤器链
-	private List<Filter> getFilters(HttpServletRequest request) {
-		for (SecurityFilterChain chain : filterChains) {
-			if (chain.matches(request)) {
-				return chain.getFilters();
-			}
-		}
-
-		return null;
-	}
-
-	public List<Filter> getFilters(String url) {
-		return getFilters(firewall.getFirewalledRequest((new FilterInvocation(url, "GET")
-				.getRequest())));
-	}
-
-	public List<SecurityFilterChain> getFilterChains() {
-		return Collections.unmodifiableList(filterChains);
-	}
-
-	public void setFilterChainValidator(FilterChainValidator filterChainValidator) {
-		this.filterChainValidator = filterChainValidator;
-	}
-
-	public void setFirewall(HttpFirewall firewall) {
-		this.firewall = firewall;
-	}
-
-	@Override
-	public String toString() {
-		StringBuilder sb = new StringBuilder();
-		sb.append("FilterChainProxy[");
-		sb.append("Filter Chains: ");
-		sb.append(filterChains);
-		sb.append("]");
-
-		return sb.toString();
-	}
-
-	// 将匹配的请求的过滤链中所有过滤器对请求进行过滤
-	private static class VirtualFilterChain implements FilterChain {
-        // 原始过滤链
-		private final FilterChain originalChain;
-        // 配置的所有过滤器
-		private final List<Filter> additionalFilters;
-        // 请求
-		private final FirewalledRequest firewalledRequest;
-        // 过滤器链的长度
-		private final int size;
-        // 当前执行的位置（第几个过滤器在执行）
-		private int currentPosition = 0;
-
-		private VirtualFilterChain(FirewalledRequest firewalledRequest,
-				FilterChain chain, List<Filter> additionalFilters) {
-			this.originalChain = chain;
-			this.additionalFilters = additionalFilters;
-			this.size = additionalFilters.size();
-			this.firewalledRequest = firewalledRequest;
-		}
-		// 核心过滤逻辑
-		@Override
-		public void doFilter(ServletRequest request, ServletResponse response)
-				throws IOException, ServletException {
-            // 如果已经过滤到尾部过滤器，原始过滤链开始过滤
-			if (currentPosition == size) {
-				if (logger.isDebugEnabled()) {
-					logger.debug(UrlUtils.buildRequestUrl(firewalledRequest)
-							+ " reached end of additional filter chain; proceeding with original chain");
-				}
-
-				// Deactivate path stripping as we exit the security filter chain
-				this.firewalledRequest.reset();
-
-				originalChain.doFilter(request, response);
-			}
-			else {
-                // 当前过滤的位置加一
-				currentPosition++;
-				// 获取当前位置的过滤器
-				Filter nextFilter = additionalFilters.get(currentPosition - 1);
-
-				if (logger.isDebugEnabled()) {
-					logger.debug(UrlUtils.buildRequestUrl(firewalledRequest)
-							+ " at position " + currentPosition + " of " + size
-							+ " in additional filter chain; firing Filter: '"
-							+ nextFilter.getClass().getSimpleName() + "'");
-				}
-				// 过滤器开始过滤
-				nextFilter.doFilter(request, response, this);
-			}
-		}
-	}
-
-	public interface FilterChainValidator {
-		void validate(FilterChainProxy filterChainProxy);
-	}
-
-	private static class NullFilterChainValidator implements FilterChainValidator {
-		@Override
-		public void validate(FilterChainProxy filterChainProxy) {
-		}
-	}
-
+    return null;
 }
 ```
 
-## 总结
+用两个匹配器的顺序可以说明结果。假设 A 匹配 `/api/**`，B 匹配所有请求：
 
-1. 对请求和响应进行安全检查，并返回对应的包装类
-2. 根据请求找到**第一个匹配的SecurityFilterChain**，然后返回SecurityFilterChain包含的所有过滤器
-3. 将请求，原始过滤链以及上一步返回的过滤器包装成一个VirtualFilterChain，挨个执行这些过滤器
+| 配置顺序与请求 | 选中的链 |
+| --- | --- |
+| A、B；请求 `/api/orders` | A |
+| A、B；请求 `/home` | B |
+| B、A；请求 `/api/orders` | B，A 不再被检查 |
+| 没有任何匹配 | 返回 null，继续原始 Servlet 链 |
 
-## 资料来源
+匹配到一条过滤器列表为空的链时，同样直接继续原始链。WebSecurity 的忽略规则就是利用这个路径；后面再放一条更严格的链也不会补上被跳过的检查。
 
-- [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
+## VirtualFilterChain 怎样逐个调用过滤器
+
+选中非空过滤器列表后，代理创建 VirtualFilterChain。它保存原始 FilterChain、额外过滤器列表和当前位置，每次调用按以下逻辑推进：
+
+```java
+if (currentPosition == size) {
+    this.firewalledRequest.reset();
+    originalChain.doFilter(request, response);
+}
+else {
+    currentPosition++;
+    Filter nextFilter = additionalFilters.get(currentPosition - 1);
+    nextFilter.doFilter(request, response, this);
+}
+```
+
+这里省略日志。传给下一个过滤器的 chain 是 VirtualFilterChain 自己，所以过滤器调用 `chain.doFilter` 会重新进入同一个调度对象；当前位置已经递增，不会反复调用同一个过滤器。走到列表末尾后才切回原始 Servlet 链。
+
+这也是过滤器可以形成“进入时处理、返回时清理”结构的原因：调用下游是普通方法调用，结果或异常会沿调用栈返回到外层过滤器。
+
+## 上下文清理属于最外层调用边界
+
+FilterChainProxy 用请求属性记录是否已进入自己的外层调用。首次进入时在 finally 中清理 SecurityContextHolder 并移除标记；嵌套调用仍可执行内部链，但不会在内层提前清除外层持有的上下文。
+
+这个清理与 [SecurityContextPersistenceFilter](/security-context-persistence/) 的仓库保存职责不同。一个负责请求调度边界的最终清理，另一个负责加载、保存与线程绑定生命周期，不能把清理 Holder 理解成删除 HttpSession。
+
+## 排查时先确认命中哪条链
+
+应分别观察防火墙是否接受请求、getFilters 选中了哪条链、链内哪个过滤器提前返回，以及是否最终进入原始 Servlet 链。只看到安全 Bean 已存在，或某条规则能保护一个 URL，都不能证明其他路径也被覆盖。
+
+多链配置的代表性检查至少包含专用路径、公共路径、没有匹配的路径和重叠路径；它们检验的是匹配关系，不是构建是否成功。

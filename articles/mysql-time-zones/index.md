@@ -1,7 +1,7 @@
 ---
 title: "MySQL 时区对时间字段的影响"
 date: 2020-06-11
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - MySql
 domain: MySQL
@@ -9,7 +9,7 @@ domain: MySQL
 
 TIMESTAMP 按会话时区解释输入，转换为 UTC 保存，再转换为读取会话的时区展示。DATETIME 保存日期时间字段本身，不进行同样的时区转换；但插入 NOW() 时，函数返回值已受会话时区影响，所以 DATETIME 的值也可能随写入会话的时区而不同。比较两种类型时，需要同时区分函数求值与列类型的存储语义。
 
-本文按 MySQL 8.4 的服务端语义说明。以下例子使用不带显式时区偏移的日期时间字面量；驱动对 Java 时间类型的转换、连接参数和带偏移输入需要另行核对，不能从列类型独自推断。
+本文按 **MySQL Community Server 9.7.2（9.7 LTS）** 的服务端语义说明。使用 MySQL 9.7 客户端，在同一个连接和有创建临时表权限的测试数据库中执行下面的 SQL。例子使用不带显式时区偏移的字面量；驱动对 Java 时间类型的转换、连接参数和带偏移输入需要另行核对，不能从列类型独自推断。预期值依据类型转换规则推导，不是驱动兼容性或性能实验。
 
 
 ## 三种时区设置
@@ -18,10 +18,9 @@ MySQL 维护系统时区 system_time_zone、全局 time_zone 和每个连接自�
 
 ```sql
 SELECT @@GLOBAL.time_zone, @@SESSION.time_zone;
-SET time_zone = '+08:00';
 ```
 
-NOW() 和 CURTIME() 使用会话时区，UTC_TIMESTAMP() 返回 UTC 时间。使用命名时区，例如 Asia/Shanghai，需要先正确加载 MySQL 的时区表；固定偏移示例不依赖该表。[官方时区说明](https://dev.mysql.com/doc/refman/8.4/en/time-zone-support.html)。
+NOW() 和 CURTIME() 使用会话时区，UTC_TIMESTAMP() 返回 UTC 时间。使用命名时区，例如 Asia/Shanghai，需要先正确加载 MySQL 的时区表；固定偏移示例不依赖该表。[官方时区说明](https://dev.mysql.com/doc/refman/9.7/en/time-zone-support.html)。
 
 ## TIMESTAMP 与 DATETIME
 
@@ -35,9 +34,11 @@ TIMESTAMP 的存储转换以 UTC 为基准，不按会话时区与服务器时�
 
 ## 一个可以观察差异的例子
 
-下面创建的是会话临时表，连接结束后移除：
+下面创建的是会话临时表。先保存连接原有时区，再分别观察写入和读取；最后恢复会话设置并删除本次临时表。`VERSION()` 返回的是实际服务器版本，应先与文章基线比较：
 
 ```sql
+SELECT VERSION(), @@SESSION.time_zone;
+SET @original_time_zone = @@SESSION.time_zone;
 SET time_zone = '+08:00';
 
 CREATE TEMPORARY TABLE timezone_demo (
@@ -50,6 +51,9 @@ VALUES ('2020-06-11 12:00:00', '2020-06-11 12:00:00');
 
 SET time_zone = '+00:00';
 SELECT stored_timestamp, stored_datetime FROM timezone_demo;
+
+SET time_zone = @original_time_zone;
+DROP TEMPORARY TABLE timezone_demo;
 ```
 
 预期结果：
@@ -63,5 +67,5 @@ TIMESTAMP 表达同一个时刻在不同会话时区中的表示，DATETIME 则�
 
 ## 资料来源
 
-- [MySQL 8.4 时区支持](https://dev.mysql.com/doc/refman/8.4/en/time-zone-support.html)
-- [DATE、DATETIME 与 TIMESTAMP 类型](https://dev.mysql.com/doc/refman/8.4/en/datetime.html)
+- [MySQL 9.7 时区支持](https://dev.mysql.com/doc/refman/9.7/en/time-zone-support.html)
+- [DATE、DATETIME 与 TIMESTAMP 类型](https://dev.mysql.com/doc/refman/9.7/en/datetime.html)

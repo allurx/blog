@@ -1,7 +1,7 @@
 ---
 title: "synchronized 用法"
 date: 2019-07-11
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Thread
@@ -9,14 +9,31 @@ tags:
 domain: Java
 ---
 
-`synchronized` 以具体对象的监视器作为互斥边界。实例同步方法锁住 `this`，静态同步方法锁住声明类的 `Class` 对象，同步块锁住括号中的对象。只有竞争同一个监视器的代码才会互斥；未使用该监视器的普通方法仍可以执行。
+synchronized 以一个具体对象的监视器建立互斥。判断两个操作会不会互相等待，关键是它们竞争的是否为同一个监视器，而不是方法都叫 synchronized，或者共享变量看起来属于同一个类。
 
-下面用自增示例比较几种写法究竟锁住哪个对象。`synchronized` 不保证所有方法都被锁住，也不自动保证公平。共享字段的全部相关访问需要遵循一致的同步协议；不同实例的 `this` 锁不能共同保护一个静态共享字段。
+本文按 Java SE 25 的语言规则比较常见写法，用一个完整自增程序验证静态共享状态的保护。示例只依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下运行。
 
+## 五种写法最终锁住哪个对象
 
-## 修饰静态方法
+| 写法 | 使用的监视器 |
+| --- | --- |
+| static synchronized 方法 | 声明该方法的类的 Class 对象 |
+| synchronized 实例方法 | 调用目标 this |
+| synchronized(SomeClass.class) | 指定的 Class 对象 |
+| synchronized(this) | 当前实例 |
+| synchronized(lock) | 执行时 lock 引用指向的对象 |
+
+监视器属于对象，不属于变量名。两个变量指向同一个对象，就竞争同一监视器；两个不同实例即使来自同一类，也有不同的 this 监视器。普通方法或使用其他锁的代码，不会因为旁边存在一个同步方法就自动被阻止。
+
+## 静态共享计数由类监视器保护
+
+下面两个 Worker 操作同一个静态 n，increase 使用类监视器，把读取、加一和写回合并到同一个互斥区间。main 用 join 等待两个工作线程结束后再读取结果。
+
+保存为 DemoApplication.java，执行 `javac -encoding UTF-8 -d out DemoApplication.java`、`java -cp out io.allurx.DemoApplication`：
 
 ```java
+package io.allurx;
+
 public class DemoApplication {
 
     private static int n = 0;
@@ -47,164 +64,37 @@ public class DemoApplication {
 }
 ```
 
-synchronized修饰类的静态方法，可以保证在多线程运行的情况下同时只有一个线程能够访问这个静态方法，正如上面的例子，两个线程需要对类的共享变量n进行增加操作（n++不是原子性的操作），输出的结果为2000，和预期的一致。
+实测输出 2000。这里依赖两个不同关系：监视器避免 n++ 丢失更新，join 确保读取发生在工作线程结束之后。只看到某次结果恰好是 2000，不足以证明一个去掉同步的变体也正确。
 
-## 修饰实例方法
+## 同步块可以表达相同的互斥边界
+
+上面 increase 的等价保护范围可以写成下面的方法片段：
 
 ```java
-public class DemoApplication {
-
-    private static int n = 0;
-
-    synchronized void increase() {
+static void increase() {
+    synchronized (DemoApplication.class) {
         n++;
     }
-
-    public static void main(String[] args) throws Exception {
-        DemoApplication demoApplication = new DemoApplication();
-        Thread thread1 = demoApplication.new Worker();
-        Thread thread2 = demoApplication.new Worker();
-        thread1.start();
-        thread2.start();
-        thread1.join();
-        thread2.join();
-        System.out.println(n);
-    }
-
-    class Worker extends Thread {
-
-        @Override
-        public void run() {
-            for (int i = 0; i < 1000; i++) {
-                increase();
-            }
-        }
-    }
 }
 ```
 
-synchronized修饰类的实例方法，只让竞争同一个实例监视器的同步方法或同步块互斥；未同步的方法仍可并发执行，正如上面的例子，两个线程同时访问DemoApplication实例对象的increase方法，输出的结果为2000，和预期的一致。
+实例方法中的 synchronized(this) 则等价于对当前实例同步。选择块式写法可以缩小实际需要保护的区间，但缩小前必须确认检查、修改和关联不变量仍在同一个边界内，不能只为了减少代码行把检查移出去。
 
-## 修饰class对象
+## 两个实例不能各自保护同一份静态状态
 
-```java
-public class DemoApplication {
+假设静态 n 仍共享，却由实例 A 和实例 B 的 synchronized 实例方法分别自增。线程 1 可以持有 A，线程 2 同时持有 B；两个临界区并不互斥，因此复合更新仍可丢失。
 
-    private static int n = 0;
+同理，实例字段 lock 即使声明为 final，也只保证引用不改指向，不代表不同实例共享了同一个锁。若希望用专门锁对象保护静态状态，应明确共享该对象；若状态属于各自实例，则各实例锁通常更符合职责。
 
-    static void increase() {
-        synchronized (DemoApplication.class) {
-            n++;
-        }
-    }
+## 可见性、重入与释放边界
 
-    public static void main(String[] args) throws Exception {
-        Thread thread1 = new Worker();
-        Thread thread2 = new Worker();
-        thread1.start();
-        thread2.start();
-        thread1.join();
-        thread2.join();
-        System.out.println(n);
-    }
+同一监视器上的解锁 happens-before 后续成功加锁，所以锁既提供互斥，也发布此前写入；共享字段的相关访问仍须遵循同一协议。synchronized 可重入，拥有者再次进入同一监视器不会与自己死锁，退出时对应减少持有层数。
 
-    static class Worker extends Thread {
+正常返回或异常离开同步范围时都会释放监视器，但不回滚已经修改的业务数据。锁保护的数据如果需要事务式一致性，仍应安排合适的更新顺序与失败处理。
 
-        @Override
-        public void run() {
-            for (int i = 0; i < 1000; i++) {
-                increase();
-            }
-        }
-    }
-}
-```
-
-synchronized修饰class对象，只让竞争同一个 Class 对象监视器的代码互斥，不会自动阻止所有静态方法和实例方法的执行。正如上面的例子，两个线程需要对类的共享变量n进行增加操作，输出的结果为2000，和预期的一致。
-
-## 修饰实例对象
-
-```java
-public class DemoApplication {
-
-    private static int n = 0;
-
-    void increase() {
-        synchronized (this){
-            n++;
-        }
-    }
-
-    public static void main(String[] args) throws Exception {
-        DemoApplication demoApplication = new DemoApplication();
-        Thread thread1 = demoApplication.new Worker();
-        Thread thread2 = demoApplication.new Worker();
-        thread1.start();
-        thread2.start();
-        thread1.join();
-        thread2.join();
-        System.out.println(n);
-    }
-
-    class Worker extends Thread {
-
-        @Override
-        public void run() {
-            for (int i = 0; i < 1000; i++) {
-                increase();
-            }
-        }
-    }
-}
-```
-
-synchronized修饰实例对象，只让竞争同一个实例对象监视器的代码互斥，普通方法及使用不同监视器的同步代码仍可执行，正如上面的例子，两个线程同时访问DemoApplication实例对象的increase方法，输出的结果为2000，和预期的一致。
-
-## 修饰实例变量
-
-```java
-public class DemoApplication {
-
-    private static int n = 0;
-
-    private final Object lock = new Object();
-
-    void increase() {
-        synchronized (lock) {
-            n++;
-        }
-    }
-
-    public static void main(String[] args) throws Exception {
-        DemoApplication demoApplication = new DemoApplication();
-        Thread thread1 = demoApplication.new Worker();
-        Thread thread2 = demoApplication.new Worker();
-        thread1.start();
-        thread2.start();
-        thread1.join();
-        thread2.join();
-        System.out.println(n);
-    }
-
-    class Worker extends Thread {
-
-        @Override
-        public void run() {
-            for (int i = 0; i < 1000; i++) {
-                increase();
-            }
-        }
-    }
-}
-```
-
-这里的同步块锁住成员变量引用的对象，只有使用同一个对象监视器的代码才互斥，正如上面的例子，两个线程同时访问DemoApplication实例对象的increase方法，输出的结果为2000，和预期的一致。即使该引用是 static，也不会自动限制所有访问该变量的方法；它们仍需遵守相同的同步协议。
-
-## 总结
-
-本文主要总结了synchronized的几种用法，它可以用来确保多线程有序的访问共享的资源。本质上synchronized是通过对象的monitor来实现的，因为当线程进入被synchronized修饰的方法或者代码块后就拥有了某个对象的monitor，例如修饰静态方法就拥有了整个类的monitor，修饰class对象就拥有了整个类的monitor，修饰实例对象就拥有了这个实例的monitor，修饰实例变量就拥有了这个实例变量的monitor，其他线程只有在尝试获取同一个 monitor 时才会等待。释放监视器后，竞争者可以继续获取，但规范不保证公平的获取顺序。
+wait 会暂时释放调用目标的监视器，返回前重新取得；sleep 不释放已持有监视器。synchronized 不保证公平，争用监视器的等待也不是可中断获取 API。需要超时、可中断获取或多个条件队列时，再评估 [ReentrantLock](/reentrant-lock/)。
 
 ## 资料来源
 
 - [JLS 14.19：synchronized 语句](https://docs.oracle.com/javase/specs/jls/se25/html/jls-14.html#jls-14.19)
-- [JLS 17.1：锁与监视器](https://docs.oracle.com/javase/specs/jls/se25/html/jls-17.html#jls-17.1)
+- [JLS 17：监视器与 happens-before](https://docs.oracle.com/javase/specs/jls/se25/html/jls-17.html)

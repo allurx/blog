@@ -1,7 +1,7 @@
 ---
 title: "发布 JAR 包到 Maven 中央仓库"
 date: 2019-08-22
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Maven
 domain: Maven
@@ -9,7 +9,9 @@ domain: Maven
 
 发布到 Maven Central 需要先取得命名空间权限，再准备完整的 POM、主 JAR、源码 JAR、Javadoc JAR 和签名，最后上传到 Central Publisher Portal 验证并发布。上传成功与公开发布是两个阶段，应分别确认；正式版本发布后不能覆盖同一坐标。
 
-以下示例面向已能通过本地构建的普通 JAR 项目，使用 Central 发布插件；多模块、SNAPSHOT 和已有发布父 POM 的工程需要按自身结构调整。下面固定插件版本以便复现配置；运行环境仍需满足这些插件与项目自身的 JDK 要求。
+以下示例面向已能通过本地构建的普通 JAR 项目，使用 Central 发布插件；多模块、SNAPSHOT 和已有发布父 POM 的工程需要按自身结构调整。通用工具基线采用 **JDK 25 LTS、Apache Maven 3.10.0、GnuPG 2.5.24**。Maven 3.10.0 是稳定版，GnuPG 2.5 属于官方长期支持系列；使用发行版回移安全补丁的包时，还要核对该发行版的支持渠道，不能只比较上游版本数字。[Maven 版本](https://maven.apache.org/download.cgi)、[GnuPG 版本与支持说明](https://gnupg.org/download/index.html)
+
+文章中的 POM 是合入已有项目的发布配置，不是独立可运行工程。项目需要较低 Java 目标字节码或特定 JDK 时，应保留自己的 `release` 与 toolchain 配置。先运行 `java -version`、`mvn -version`、`gpg --version` 确认实际执行工具，尤其注意 `mvn -version` 显示的 Java 可能与另一个终端不同。下文固定发布插件版本，不把本地构建成功解释为 Portal 已接受、公开仓库已发布。
 
 
 ## 取得命名空间权限

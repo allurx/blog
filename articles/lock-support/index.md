@@ -1,7 +1,7 @@
 ---
 title: "LockSupport 源码分析"
 date: 2019-07-25
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Concurrent
@@ -10,158 +10,31 @@ tags:
 domain: Java
 ---
 
-`LockSupport` 为每个线程维护至多一个许可：`unpark()` 提供许可，`park()` 消耗许可或等待。通知可以先于等待，但许可不能累加；`park()` 还可能因中断或虚假唤醒返回。因此等待必须围绕业务条件组织，不能把一次返回当作条件已满足的证明。
+LockSupport 为每个线程关联至多一个许可。unpark 提供许可，park 消耗许可或等待；许可可以先于停车到达，但不会累计成消息数量。正确用法始终围绕一个业务条件循环检查，不能把 park 返回当作条件已经满足的证明。
 
-下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/locks/LockSupport.java) 分析许可交接与 parkBlocker 的诊断用途。blocker 只记录阻塞原因，不充当监视器锁；超时、中断和虚假唤醒都可能使 park 返回，之后仍需检查业务条件。
+本文先用许可模型解释返回原因，再给出两阶段协作程序，最后说明 blocker 的诊断用途。完整示例只依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下运行；内部背景参考 [OpenJDK 8u202-b08 LockSupport](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/locks/LockSupport.java)。
 
+## 一个许可，决定能否免于等待
 
-## Unsafe中的实现
+| 发生的动作 | 随后的观察 |
+| --- | --- |
+| 先 unpark，再 park | park 可以消费已有许可并返回 |
+| 连续两次 unpark | 仍至多保留一个许可 |
+| 第二次 park 前没有新许可 | 可能等待，但仍可能中断或虚假返回 |
 
-LockSupport阻塞唤醒线程是通过调用Unsafe类中的park，unpark和putObject方法来实现的
+unpark 可以在线程已启动但尚未 park 时发出，因此比依赖“等对方先停住”的协议更容易组合。不过对尚未启动线程的 unpark 不能作为可靠许可交付方式，API 不保证这种用法。
 
-```java
-public native void park(boolean var1, long var2);
+park 还可能因中断或虚假唤醒返回，不会像 wait 那样抛出 InterruptedException，也不会清除中断标记。若调用者不处理退出条件，再次 park 可能立即返回，形成忙循环。
 
-public native void unpark(Object var1);
+## 用共享条件保护两次通知
 
-public native void putObject(Object var1, long var2, Object var4);
-```
+phase 保存业务进度，volatile 读写发布条件。Worker 先等待 phase 至少为 1，再等待至少为 2；main 修改条件后再 unpark。即使两次更新发生在 Worker 第一次运行之前，它也能依次通过两个条件，不需要积累两个许可。
 
-* Unsafe.park 的布尔参数区分绝对时间与相对时间；LockSupport.park 使用相对时间零表示不设置超时，但仍可因许可、中断或虚假唤醒返回。
-* unpark的参数是Thread实例，它的作用是用来唤醒这个被阻塞的线程
-* putObject 把 blocker 写入目标线程的 parkBlocker 字段，供诊断工具读取；这个对象不会因此成为监视器锁。
-
-## 阻塞方法
-
-在LockSupport中一共定义了六个阻塞线程的方法
-
-### public static void park()
-
-```java
-public static void park() {
-	UNSAFE.park(false, 0L);
-}
-```
-
-没有许可且未中断时，线程可以等待；许可、中断或虚假唤醒均可能使调用返回。
-
-### public static void park(Object blocker)
-
-```java
-public static void park(Object blocker) {
-	Thread t = Thread.currentThread();
-	setBlocker(t, blocker);
-	UNSAFE.park(false, 0L);
-	setBlocker(t, null);
-}
-```
-
-该重载在停车前记录 blocker，返回后清空它。blocker 用于说明等待原因，实际许可仍与线程关联：
-
-```java
-private static void setBlocker(Thread t, Object arg) {
-	UNSAFE.putObject(t, parkBlockerOffset, arg);
-}
-```
-
-最终调用的是Unsafe类的putObject方法，设置当前线程的parkBlocker成员变量为arg，然后接着执行`UNSAFE.park(false, 0L);`这行代码后，当前线程就被阻塞在这一行了，在其它线程唤醒当前线程后接着执行`setBlocker(t, null);`这行代码，清除当前线程的parkBlocker
-
-### public static void parkNanos(long nanos)
-
-```java
-public static void parkNanos(long nanos) {
-	if (nanos > 0)
-		UNSAFE.park(false, nanos);
-}
-```
-
-以 nanos 指定相对等待上限；许可、中断或虚假唤醒可能让调用提前返回，超时也不保证马上获得 CPU。
-
-### public static void parkNanos(Object blocker, long nanos)
-
-```java
-public static void parkNanos(Object blocker, long nanos) {
-    if (nanos > 0) {
-        Thread t = Thread.currentThread();
-        setBlocker(t, blocker);
-        UNSAFE.park(false, nanos);
-        setBlocker(t, null);
-    }
-}
-```
-
-与 parkNanos(nanos) 使用同一等待语义，同时记录用于诊断的 blocker。
-
-### public static void parkUntil(long deadline)
-
-```java
-public static void parkUntil(long deadline) {
-	UNSAFE.park(true, deadline);
-}
-```
-
-以从 Unix 纪元起算的毫秒时间戳 deadline 作为等待截止时间。调用仍可能提前返回，实际继续执行取决于调度。
-
-### public static void parkUntil(Object blocker, long deadline)
-
-```java
-public static void parkUntil(Object blocker, long deadline) {
-    Thread t = Thread.currentThread();
-    setBlocker(t, blocker);
-    UNSAFE.park(true, deadline);
-    setBlocker(t, null);
-}
-```
-
-与 parkUntil(deadline) 使用同一截止时间语义，同时记录 blocker，不获取 blocker 的监视器。
-
-## 唤醒方法
-
-在LockSupport中只有一个唤醒线程的方法
-
-```java
-public static void unpark(Thread thread) {
-	if (thread != null)
-		UNSAFE.unpark(thread);
-}
-```
-
-唤醒指定的线程
-
-## 许可证
-
-LockSupport 为每个线程关联至多一个许可。unpark(thread) 向目标线程提供许可；park 消耗当前线程的许可，或在没有许可时等待。unpark 可以先于 park，连续多次 unpark 也不会积累多个许可。以下顺序用于说明许可，不应替代业务条件循环：
-
-```java
-LockSupport.unpark(Thread.currentThread());
-LockSupport.park();
-```
-
-第一个 park 可以消费已有许可并返回；如果没有新的许可，第二个 park 可能等待，但仍可能因中断或虚假唤醒返回。
-
-```
-LockSupport.unpark(Thread.currentThread());
-LockSupport.park();
-LockSupport.park();
-```
-
-第二次 park 没有前一次遗留的许可，因此可能等待。许可只记录零或一，不是可累加的计数器。
-
-```java
-LockSupport.unpark(Thread.currentThread());
-LockSupport.unpark(Thread.currentThread());
-LockSupport.park();
-LockSupport.park();
-```
-
-连续两次 unpark 也只保留一个许可，第二次 park 仍可能等待。
-
-## 例子
+保存为 DemoApplication.java，执行 `javac -encoding UTF-8 -d out DemoApplication.java`、`java -cp out io.allurx.DemoApplication`：
 
 ```java
 package io.allurx;
 
-import java.time.LocalTime;
 import java.util.concurrent.locks.LockSupport;
 
 /**
@@ -169,52 +42,60 @@ import java.util.concurrent.locks.LockSupport;
  */
 public class DemoApplication {
 
-    private static Object lock = new Object();
+    private static volatile int phase;
 
-    public static void main(String[] args) {
-        Worker worker = new Worker("worker");
+    public static void main(String[] args) throws InterruptedException {
+        Thread worker = new Thread(() -> {
+            for (int expected = 1; expected <= 2; expected++) {
+                while (phase < expected) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        return;
+                    }
+                    LockSupport.park(DemoApplication.class);
+                }
+                System.out.println("已观察到阶段 " + expected);
+            }
+        }, "worker");
         worker.start();
-        LockSupport.parkNanos(2000000000);
-        LockSupport.unpark(worker);
-        LockSupport.parkNanos(2000000000);
-        LockSupport.unpark(worker);
-    }
 
-    static class Worker extends Thread {
-
-        Worker(String name) {
-            super(name);
-        }
-
-        @Override
-        public void run() {
-            LockSupport.park();
-            System.out.println(getName() + "第一次被唤醒" + LocalTime.now());
-            LockSupport.park(lock);
-            System.out.println(getName() + "第二次被唤醒" + LocalTime.now());
-            LockSupport.parkUntil(System.currentTimeMillis() + 2000);
-            System.out.println(getName() + "第三次被唤醒" + LocalTime.now());
+        try {
+            Thread.sleep(100);
+            phase = 1;
+            LockSupport.unpark(worker);
+            Thread.sleep(100);
+            phase = 2;
+            LockSupport.unpark(worker);
+            worker.join();
+        } finally {
+            worker.interrupt();
         }
     }
-
 }
 ```
 
-控制台输出
+实测依次输出“已观察到阶段 1”和“已观察到阶段 2”。main 的 sleep 只拉开观察间隔，正确性依赖 phase 与检查循环；换成不可见的普通共享变量，unpark 也不能替它自动补齐完整的业务状态协议。
 
-```
-worker第一次被唤醒15:00:33.282
-worker第二次被唤醒15:00:35.231
-worker第三次被唤醒15:00:37.231
-```
+若业务要消费两条独立消息，应在队列或计数中保存消息，不能用两次 unpark 代替。这里的条件表示阶段进度，含义与消息数量不同。
 
-1. 开启一个worker线程，分别通过`park()`，`park(Object blocker)`，`parkUntil(long deadline)`阻塞该线程
-2. 在main线程中通过`parkNanos(long nanos)`方法每隔2秒唤醒worker线程
+## 定时等待也要区分预算与时刻
 
-## 总结
+| 方法 | 时间含义 |
+| --- | --- |
+| park | 不主动设置超时 |
+| parkNanos(nanos) | 相对等待纳秒数，非正值不等待 |
+| parkUntil(deadline) | 从 Unix 纪元起算的绝对毫秒截止点 |
 
-LockSupport相比于传统的wait和notify机制能够精确的唤醒具体哪个线程，并且提供的阻塞唤醒方法更为直观可理解。并且它的实现方式是类比生产者消费者模式的，在调用阻塞和唤醒方法时分别需要消费和生产一个许可证。
+所有这些方法都可能提前返回，超时后也不保证马上获得 CPU。需要相对总预算时通常使用单调时钟维护剩余时间，循环重新检查；墙上时间可能调整，不能把 parkUntil 的截止时间直接当作单调计时。
+
+## blocker 是诊断信息，不是锁
+
+带 blocker 的重载把等待原因关联到线程，供 getBlocker 或诊断工具观察。在所引 Java 8 实现中，它先设置 Thread.parkBlocker，调用 Unsafe.park，返回后清除字段。
+
+这个对象不因此获得监视器语义：park 不要求 synchronized(blocker)，也不会释放已经持有的监视器。getBlocker 的结果只是瞬时观察，线程可能已返回，不能把它当作另一个业务状态变量。
+
+应用通常直接使用 ReentrantLock、Condition、CountDownLatch 等成熟同步器。自己组合 LockSupport 时，应先写清条件如何发布、谁负责通知、怎样处理中断以及何时退出，再考虑停车机制。
 
 ## 资料来源
 
-- [LockSupport：许可、中断与虚假唤醒](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/locks/LockSupport.html)
+- [LockSupport：许可、虚假唤醒、中断与 blocker](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/locks/LockSupport.html)
+- [OpenJDK 8u202-b08 LockSupport 的完整实现](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/locks/LockSupport.java)

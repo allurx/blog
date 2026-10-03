@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IndexedDB 整批写入与回滚实验</title>
+  <style>
+    body { max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: #172f43; font: 16px/1.7 system-ui, sans-serif; }
+    button { padding: .5rem 1rem; font: inherit; cursor: pointer; }
+    pre { padding: 1rem; border-radius: .5rem; background: #f3f6fa; white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>观察 IndexedDB 的整批写入与回滚</h1>
+  <p>依次运行有效写入、唯一索引冲突和不可克隆数据三个场景。每次创建独立的临时数据库，读回记录数后关闭并删除它，不读取已有应用数据。</p>
+  <p>通过 HTTPS 或 localhost 打开页面。正常情况应保存 2 条记录，两个失败场景应留下 0 条。</p>
+  <button id="run" type="button">运行三个事务场景</button>
+  <pre id="result" role="status" aria-live="polite">等待运行</pre>
+  <noscript>实验需要 JavaScript；算法与结果解释可在文章正文中阅读。</noscript>
+  <script type="module">
+function saveBooks(db, books) {
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction("book", "readwrite");
+        // 整批写入以事务完成为准，不以某一条请求成功为准。
+        tx.addEventListener("complete", () => resolve(), { once: true });
+        tx.addEventListener("abort", () => reject(tx.error ?? new DOMException("事务已中止", "AbortError")), { once: true });
+        try {
+            const store = tx.objectStore("book");
+            for (const book of books) {
+                store.put(book);
+            }
+        }
+        catch (error) {
+            // 同步入队失败时，先前已提交给事务的写入也必须回滚。
+            try {
+                tx.abort();
+            }
+            finally {
+                reject(error);
+            }
+        }
+    });
+}
+async function importText(db, file) {
+    const content = await file.text();
+    const book = {
+        id: crypto.randomUUID(),
+        title: file.name,
+        content,
+    };
+    await saveBooks(db, [book]);
+}
+
+
+    // 这些辅助函数只用于建立、观察和清理实验，不参与 saveBooks 的事务实现。
+    function requestResult(request) {
+      return new Promise((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+    }
+
+    async function runCase(kind) {
+      const name = 'allurx-indexeddb-example-' + crypto.randomUUID();
+      let db;
+      try {
+        const open = indexedDB.open(name, 1);
+        open.onupgradeneeded = () => {
+          const store = open.result.createObjectStore('book', { keyPath: 'id' });
+          store.createIndex('title', 'title', { unique: true });
+        };
+        db = await requestResult(open);
+
+        const first = { id: 'a', title: 'one', content: 'first' };
+        const second = { id: 'b', title: 'two', content: 'second' };
+        if (kind === 'unique') second.title = 'one';
+        // 刻意传入不符合 Book 类型的数据，触发同步 DataCloneError。
+        if (kind === 'clone') second.content = () => {};
+
+        let rejected = false;
+        let failureName = '';
+        try {
+          await saveBooks(db, [first, second]);
+        } catch (error) {
+          rejected = true;
+          failureName = error.name;
+        }
+        const count = await requestResult(db.transaction('book').objectStore('book').count());
+        const expected = kind === 'success' ? 2 : 0;
+        const expectedFailure = kind === 'unique' ? 'ConstraintError' : kind === 'clone' ? 'DataCloneError' : '';
+        if (count !== expected || rejected !== (kind !== 'success') || failureName !== expectedFailure) {
+          throw new Error(kind + ': rejected=' + rejected + ', error=' + failureName + ', records=' + count);
+        }
+        return kind + ': ' + (rejected ? 'rejected, rollback complete' : 'resolved, transaction complete') + ', records=' + count;
+      } finally {
+        db?.close();
+        await requestResult(indexedDB.deleteDatabase(name));
+      }
+    }
+
+    const button = document.querySelector('#run');
+    const output = document.querySelector('#result');
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      output.textContent = '运行中…';
+      const lines = [];
+      try {
+        for (const kind of ['success', 'unique', 'clone']) {
+          lines.push(await runCase(kind));
+        }
+        lines.push(navigator.userAgent);
+        if (navigator.userAgentData) {
+          const version = await navigator.userAgentData.getHighEntropyValues(['fullVersionList']);
+          lines.push(JSON.stringify(version.fullVersionList));
+        }
+        output.textContent = lines.join('\n');
+      } catch (error) {
+        output.textContent = [...lines, '验证失败：' + String(error)].join('\n');
+        console.error(error);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

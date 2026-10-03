@@ -1,14 +1,14 @@
 ---
 title: "MySQL 深分页为什么越翻越慢"
 date: "2026-09-09"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "MySQL"
 tags: ["MySQL", "索引", "分页"]
 ---
 
 同样返回 20 篇文章，第一页很快，第一百万行之后的一页却明显变慢。`LIMIT` 只约束返回数量；数据库仍需要确定排序后的起点，使用索引也不会让这个位置凭空可得。
 
-本文以 MySQL 8.4 的 InnoDB 查询为例。连续翻页可以把“跳过多少行”改成“从上一页最后一个排序值继续”，也就是 Keyset Pagination。它能避免深度增长带来的重复越过成本，但牺牲了直接按页码随机跳转的能力，也不自动提供跨请求快照。
+本文以 MySQL 9.7 LTS、InnoDB 为目标，普通安装包可采用 9.7.2。DDL 与查询是待接入业务数据验证的示例，本文没有把执行计划或延迟作为实测结果。连续翻页可以把“跳过多少行”改成“从上一页最后一个排序值继续”，也就是 Keyset Pagination。它能避免深度增长带来的重复越过成本，但牺牲了直接按页码随机跳转的能力，也不自动提供跨请求快照。
 
 ## 按位置跳过与按值继续
 
@@ -28,7 +28,7 @@ $$
 
 这不是严格的物理 I/O 公式，因为缓存命中、覆盖索引、回表、排序和执行计划都会改变实际成本，它用于描述能利用索引顺序时的扫描增长趋势；若还有过滤或排序，实际处理量可能更大。
 
-MySQL 官方说明，`ORDER BY ... LIMIT row_count` 在使用有序索引时可以很快地找到前 `row_count` 行；如果必须执行 `filesort`，则需要先选出匹配行并对其中多数或全部进行排序。[MySQL 8.4：LIMIT Query Optimization](https://dev.mysql.com/doc/refman/8.4/en/limit-optimization.html)
+MySQL 官方说明，`ORDER BY ... LIMIT row_count` 在使用有序索引时可以很快地找到前 `row_count` 行；如果必须执行 `filesort`，则需要先选出匹配行并对其中多数或全部进行排序。[MySQL 9.7：LIMIT Query Optimization](https://dev.mysql.com/doc/refman/9.7/en/limit-optimization.html)
 
 对于带有大 `OFFSET` 的查询，可以据此合理推断：优化器即使利用索引顺序，也仍需越过 `offset` 对应的索引记录。
 
@@ -57,7 +57,7 @@ $$
 
 ## 为过滤、排序和游标建立同一索引
 
-假设表结构为：
+在独立测试库中，假设使用以下表结构。`title` 只是读取内容，游标需要的排序字段都为 `NOT NULL`，避免再引入空值排序规则：
 
 ```sql
 CREATE TABLE article (
@@ -114,7 +114,22 @@ LIMIT 20;
 ORDER BY created_at DESC
 ```
 
-多行具有相同 `created_at` 时，它们之间的顺序不确定。MySQL 官方明确指出：`ORDER BY` 列值相同的记录可以按任意顺序返回，而且执行计划受到 `LIMIT` 影响，因此不同查询的相对顺序可能变化。需要稳定排序时，应增加唯一列。[MySQL 8.4：LIMIT 排序确定性](https://dev.mysql.com/doc/refman/8.4/en/limit-optimization.html)
+多行具有相同 `created_at` 时，它们之间的顺序不确定。MySQL 官方明确指出：`ORDER BY` 列值相同的记录可以按任意顺序返回，而且执行计划受到 `LIMIT` 影响，因此不同查询的相对顺序可能变化。需要稳定排序时，应增加唯一列。[MySQL 9.7：LIMIT 排序确定性](https://dev.mysql.com/doc/refman/9.7/en/limit-optimization.html)
+
+## 先用六条记录验证游标边界
+
+下载 [keyset-pagination-demo.sql](./keyset-pagination-demo.sql)。在文件所在目录启动 MySQL 9.7 客户端并连接一个独立测试库，然后执行 `SOURCE keyset-pagination-demo.sql;`。脚本在当前连接中创建临时表，包含五条已发布文章和一条时间最新的草稿；连接结束时临时表自动释放。每次复现使用新连接，避免重复创建同名临时表。
+
+为了让翻页过程一眼可见，这组输入将每页大小改成 2。ID 3 和 2 的创建时间完全相同，且刻意落在两页之间。下面是根据固定记录和查询条件推导的预期，本文没有在 MySQL 实例中执行该脚本：
+
+| 查询 | 预期返回的 ID | 检查点 |
+| --- | --- | --- |
+| 第一页 | 6、5 | 时间更新的草稿 7 被状态条件排除 |
+| 以 ID 5 的完整游标继续 | 4、3 | 从上一页之后继续，保留微秒精度 |
+| 以 ID 3 的完整游标继续 | 2 | 相同时间的较小 ID 仍会被读取 |
+| 只用 ID 3 的时间、遗漏 ID 条件 | 空 | 错误地漏掉与它同时间的 ID 2 |
+
+脚本给出了建表、数据、三页查询及错误对照，先验证的是“每条目标记录恰好出现一次”。六条记录无法证明深分页性能；后文的 `article` 仍指业务表，执行计划分析需要为它准备有代表性的数据规模。
 
 ## 对比执行计划与真实游标
 
@@ -143,11 +158,11 @@ ORDER BY created_at DESC, id DESC
 LIMIT 1000000, 20;
 ```
 
-`EXPLAIN ANALYZE` 会执行查询，并提供实际迭代次数和耗时；生产环境使用前必须评估查询成本。[MySQL 8.4：EXPLAIN](https://dev.mysql.com/doc/refman/8.4/en/explain.html)
+`EXPLAIN ANALYZE` 会执行查询，并提供实际迭代次数和耗时；生产环境使用前必须评估查询成本。[MySQL 9.7：EXPLAIN](https://dev.mysql.com/doc/refman/9.7/en/explain.html)
 
 ### Keyset Pagination
 
-第一页返回：
+假设第一页的最后一条记录是：
 
 ```text
 最后一条：

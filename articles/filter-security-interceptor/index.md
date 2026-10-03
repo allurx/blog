@@ -1,7 +1,7 @@
 ---
 title: "FilterSecurityInterceptor 源码分析"
 date: 2019-06-14
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -9,420 +9,103 @@ tags:
 domain: Spring
 ---
 
-FilterSecurityInterceptor 把 HTTP 请求包装成 FilterInvocation，在调用下游过滤器链之前取得配置属性、认证信息并进行访问决策。父类还支持临时 RunAs 身份与调用后的处理；这些扩展是否实际参与，取决于配置。URL 授权和方法授权复用部分基础机制，但拦截对象不同。
+HTTP 请求进入业务处理之前，FilterSecurityInterceptor 把请求包装为安全对象，读取规则并调用访问决策器。它还借助基类维护临时身份和调用后处理，但这些扩展不等于直接拦截 Controller 方法或修改其返回值。
 
-下面分析 FilterSecurityInterceptor 与 AbstractSecurityInterceptor 的协作。下游是 Servlet 过滤器链及最终请求处理，并不意味着这里直接拦截某个带注解的业务方法；方法安全由相应的方法拦截器处理。
+本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE**。前置知识是 Authentication、ConfigAttribute 与[访问决策器](/access-decision-manager/)；固定源码见 [FilterSecurityInterceptor](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/access/intercept/FilterSecurityInterceptor.java) 和 [AbstractSecurityInterceptor](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/intercept/AbstractSecurityInterceptor.java)。
 
-以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/access/intercept/FilterSecurityInterceptor.java)。
+文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
-## 概述
+## 一次 HTTP 授权怎样被包围
 
-FilterSecurityInterceptor 通常位于认证过滤器之后、业务处理之前。它从当前安全上下文读取认证信息，对请求资源执行授权；认证不足或访问被拒绝时抛出安全异常，由位于外层的 [ExceptionTranslationFilter](/exception-translation-filter/) 转换为响应。过滤器链可以定制，因此不能把它的位置固定为所有应用的最后一个。
-
-
-## FilterSecurityInterceptor
+FilterInvocation 保存请求、响应和下游 FilterChain，随后 invoke 把调用分为前置决策、执行、恢复与后置处理：
 
 ```java
-public class FilterSecurityInterceptor extends AbstractSecurityInterceptor implements
-		Filter {
-
-    // 是否执行过该过滤器的标记
-	private static final String FILTER_APPLIED = "__spring_security_filterSecurityInterceptor_filterApplied";
-
-
-	// 访问的资源元数据，默认是ExpressionBasedFilterInvocationSecurityMetadataSource
-	private FilterInvocationSecurityMetadataSource securityMetadataSource;
-
-    // 是否每次只请求一次该过滤器，例如在jsp进行转发的时候，会多次经过该过滤器，这个标记就是用来
-    // 判断此时需不需要spring-security再进行一次安全检查
-	private boolean observeOncePerRequest = true;
-
-	public void init(FilterConfig arg0) throws ServletException {
-	}
-
-	public void destroy() {
-	}
-
-	// 过滤方法，实际上是new一个FilterInvocation然后委托给它执行
-	public void doFilter(ServletRequest request, ServletResponse response,
-			FilterChain chain) throws IOException, ServletException {
-		FilterInvocation fi = new FilterInvocation(request, response, chain);
-        // 核心调用
-		invoke(fi);
-	}
-
-	public FilterInvocationSecurityMetadataSource getSecurityMetadataSource() {
-		return this.securityMetadataSource;
-	}
-
-	public SecurityMetadataSource obtainSecurityMetadataSource() {
-		return this.securityMetadataSource;
-	}
-
-	public void setSecurityMetadataSource(FilterInvocationSecurityMetadataSource newSource) {
-		this.securityMetadataSource = newSource;
-	}
-
-    // 安全对象类型
-	public Class<?> getSecureObjectClass() {
-		return FilterInvocation.class;
-	}
-
-	public void invoke(FilterInvocation fi) throws IOException, ServletException {
-        // 如果request不为空并且已经执行过该过滤器并且observeOncePerRequest = true
-        // (只请求一次该过滤器)则过滤器继续往下走，不执行spring-security检查
-		if ((fi.getRequest() != null)
-				&& (fi.getRequest().getAttribute(FILTER_APPLIED) != null)
-				&& observeOncePerRequest) {
-			fi.getChain().doFilter(fi.getRequest(), fi.getResponse());
-		}
-		else {
-			// 如果请求不为空并且只请求一次该过滤器，设置已经执行过该过滤器的标记
-			if (fi.getRequest() != null && observeOncePerRequest) {
-				fi.getRequest().setAttribute(FILTER_APPLIED, Boolean.TRUE);
-			}
-
-            // 安全对象调用前进行权限判断
-			InterceptorStatusToken token = super.beforeInvocation(fi);
-
-			try {
-                // 过滤链继续执行
-				fi.getChain().doFilter(fi.getRequest(), fi.getResponse());
-			}
-			finally {
-
-                // 安全对象调用完成后，清理AbstractSecurityInterceptor的工作
-				super.finallyInvocation(token);
-			}
-
-            // 安全对象调用完成后，完成AbstractSecurityInterceptor的工作。
-			super.afterInvocation(token, null);
-		}
-	}
-
-	public boolean isObserveOncePerRequest() {
-		return observeOncePerRequest;
-	}
-
-	public void setObserveOncePerRequest(boolean observeOncePerRequest) {
-		this.observeOncePerRequest = observeOncePerRequest;
-	}
-}
-
-```
-
-FilterSecurityInterceptor在进行过滤时第一步先构造一个FilterInvocation对象，然后交给父类分别在安全对象（需要保护的资源，例如某些方法需要特定的权限才能访问）调用前，调用后，和执行完毕时进行处理。下面重点分析一下父类AbstractSecurityInterceptor是如何进行处理的
-
-## AbstractSecurityInterceptor
-
-### beforeInvocation方法
-
-安全方法调用前的处理逻辑
-
-```java
-// 参数object就是FilterSecurityInterceptor过滤时构造的new FilterInvocation(request, response, chain);
-protected InterceptorStatusToken beforeInvocation(Object object) {
-   Assert.notNull(object, "Object was null");
-   final boolean debug = logger.isDebugEnabled();
-   // 调用子类实现的getSecureObjectClass方法判断安全对象类型和参数类型是否一致
-   // 从FilterSecurityInterceptor中我们可以发现它的安全对象类型就是FilterInvocation.class
-   if (!getSecureObjectClass().isAssignableFrom(object.getClass())) {
-      throw new IllegalArgumentException(
-            "Security invocation attempted for object "
-                  + object.getClass().getName()
-                  + " but AbstractSecurityInterceptor only configured to support secure objects of type: "
-                  + getSecureObjectClass());
-   }
-
-   // 从当前的安全对象（这里可以当做是http请求）获取与当前安全对象相关的配置属性
-   // 例如permitAll，denyAll，anonymous，authenticated，fullyAuthenticated，rememberMe
-   Collection<ConfigAttribute> attributes = this.obtainSecurityMetadataSource()
-         .getAttributes(object);
-
-   // 如果当前安全对象没有配置属性就返回null
-   if (attributes == null || attributes.isEmpty()) {
-      // 如果当前是拒绝公共调用的（可以理解为没有配置任何属性的请求不允许直接调用）直接抛出异常
-      if (rejectPublicInvocations) {
-         throw new IllegalArgumentException(
-               "Secure object invocation "
-                     + object
-                     + " was denied as public invocations are not allowed via this interceptor. "
-                     + "This indicates a configuration error because the "
-                     + "rejectPublicInvocations property is set to 'true'");
-      }
-
-      if (debug) {
-         logger.debug("Public object - authentication not attempted");
-      }
-      // 发布事件
-      publishEvent(new PublicInvocationEvent(object));
-
-      return null; // no further work post-invocation
-   }
-
-   if (debug) {
-      logger.debug("Secure object: " + object + "; Attributes: " + attributes);
-   }
-   // 受保护调用需要认证信息；未启用匿名认证或前置过滤器未填充上下文时，
-   // 这里抛出 AuthenticationCredentialsNotFoundException
-   if (SecurityContextHolder.getContext().getAuthentication() == null) {
-      credentialsNotFound(messages.getMessage(
-            "AbstractSecurityInterceptor.authenticationNotFound",
-            "An Authentication object was not found in the SecurityContext"),
-            object, attributes);
-   }
-   // 根据alwaysReauthenticate判断是否需要重新认证，如果需要重新认证则调用AuthenticationManager
-   // 重新认证然后返回认证信息，否则直接返回之前的认证信息，默认是不需要重新认证的
-   Authentication authenticated = authenticateIfRequired();
-
-   // 开始进行授权判断
-   try {
-      // 授权是交给AccessDecisionManager来判断的
-      this.accessDecisionManager.decide(authenticated, object, attributes);
-   }
-   catch (AccessDeniedException accessDeniedException) {
-      publishEvent(new AuthorizationFailureEvent(object, attributes, authenticated,
-            accessDeniedException));
-
-      throw accessDeniedException;
-   }
-
-   if (debug) {
-      logger.debug("Authorization successful");
-   }
-
-   // 是否发布授权成功事件
-   if (publishAuthorizationSuccess) {
-      publishEvent(new AuthorizedEvent(object, attributes, authenticated));
-   }
-
-   // 尝试重新替换掉之前的认证信息，这一步可以理解为以不同的身份进行接下来的逻辑
-   Authentication runAs = this.runAsManager.buildRunAs(authenticated, object,
-         attributes);
-
-   // RunAsManager没有返回新的认证信息
-   if (runAs == null) {
-      if (debug) {
-         logger.debug("RunAsManager did not change Authentication object");
-      }
-
-      // 返回拦截状态令牌
-      return new InterceptorStatusToken(SecurityContextHolder.getContext(), false,
-            attributes, object);
-   }
-   // RunAsManager返回了一个新的身份令牌
-   else {
-      if (debug) {
-         logger.debug("Switching to RunAs Authentication: " + runAs);
-      }
-	  // 重新填充安全上下文和认证信息
-      SecurityContext origCtx = SecurityContextHolder.getContext();
-      SecurityContextHolder.setContext(SecurityContextHolder.createEmptyContext());
-      SecurityContextHolder.getContext().setAuthentication(runAs);
-
-      // need to revert to token.Authenticated post-invocation
-      // 返回拦截状态令牌
-      return new InterceptorStatusToken(origCtx, true, attributes, object);
-   }
-}
-```
-
-从上面的分析中我们可以发现，一共有三个很重要的步骤构成了beforeInvocation方法，它们分别是
-
-1. 从安全对象中获取属性
-
-   ```java
-   Collection<ConfigAttribute> attributes = this.obtainSecurityMetadataSource()
-               .getAttributes(object);
-   ```
-
-2. 由`AccessDecisionManager`进行权限判断
-
-   ```java
-   this.accessDecisionManager.decide(authenticated, object, attributes);
-   ```
-
-3. 由`RunAsManager`来替换掉已认证的信息
-
-   ```java
-   Authentication runAs = this.runAsManager.buildRunAs(authenticated, object,
-                   attributes);
-   ```
-
-接下来我们逐一分析这三步
-
-#### ConfigAttribute
-
-从表面意思上我们可以猜测到，它是和安全对象相关的配置的属性。其实它就是我们在`HttpSecurity`中给特定的url设置的安全属性：permitAll，denyAll，anonymous，authenticated，fullyAuthenticated，rememberMe。从debug中我们可以发现FilterSecurityInterceptor内部维护的FilterInvocationSecurityMetadataSource是ExpressionBasedFilterInvocationSecurityMetadataSource，所以我们只需要关注它是如何从安全对象中获取配置属性即可。在它的父类DefaultFilterInvocationSecurityMetadataSource中找到了getAttributes方法
-
-```java
-public Collection<ConfigAttribute> getAttributes(Object object) {
-    // 可以看到安全对象就是FilterInvocation，然后从中取出请求
-    final HttpServletRequest request = ((FilterInvocation) object).getRequest();
-    // 遍历内部维护的map，遍历判断RequestMatcher是否匹配当前请求，如果匹配就返回配置的属性
-    for (Map.Entry<RequestMatcher, Collection<ConfigAttribute>> entry : requestMap
-         .entrySet()) {
-        if (entry.getKey().matches(request)) {
-            return entry.getValue();
-        }
+public void invoke(FilterInvocation fi) throws IOException, ServletException {
+    if ((fi.getRequest() != null)
+            && (fi.getRequest().getAttribute(FILTER_APPLIED) != null)
+            && observeOncePerRequest) {
+        // filter already applied to this request and user wants us to observe
+        // once-per-request handling, so don't re-do security checking
+        fi.getChain().doFilter(fi.getRequest(), fi.getResponse());
     }
-    return null;
+    else {
+        // first time this request being called, so perform security checking
+        if (fi.getRequest() != null && observeOncePerRequest) {
+            fi.getRequest().setAttribute(FILTER_APPLIED, Boolean.TRUE);
+        }
+
+        InterceptorStatusToken token = super.beforeInvocation(fi);
+
+        try {
+            fi.getChain().doFilter(fi.getRequest(), fi.getResponse());
+        }
+        finally {
+            super.finallyInvocation(token);
+        }
+
+        super.afterInvocation(token, null);
+    }
 }
 ```
 
-从上面的代码我们可以发现是通过遍历map来返回ConfigAttribute的，并且只返回第一个匹配的结果，这也就是为什么我们再平时给url配置多个访问权限时却只有第一个生效的原因
+默认 observeOncePerRequest 使用请求属性避免同一请求重复执行授权边界。若直接进入其跳过分支，就继续下游链；是否需要重复授权仍与转发、分派和配置有关。
 
-#### AccessDecisionManager
+最关键的顺序是：beforeInvocation 抛异常时，不会进入业务链；下游正常返回或抛异常都会执行 finallyInvocation；只有正常返回后才继续 afterInvocation。不能把后置处理描述成无条件执行。
 
-AccessDecisionManager 根据 Authentication 与配置属性决定是否允许访问。三种投票策略及其差异见 [AccessDecisionManager](/access-decision-manager/)。
+## beforeInvocation 先取得规则，再决定是否需要认证
 
-#### RunAsManager
+元数据源根据安全对象返回 ConfigAttribute 集合。本文的 HTTP 路径通常使用表达式元数据源，其父类按 RequestMatcher 的配置顺序查找，返回第一项匹配的属性。
 
-RunAsManager 为一次受保护调用临时替换 Authentication，使下游代码在限定调用范围内使用额外权限。AbstractSecurityInterceptor 保存原上下文，并在 finally 中恢复；它不是绕过授权的入口。NullRunAsManager 不替换身份，RunAsManagerImpl 则根据 RUN_AS_ 配置属性构造临时令牌，并由相应的 AuthenticationProvider 验证该令牌。
+| 元数据结果 | 处理方式 |
+| --- | --- |
+| 没有属性，rejectPublicInvocations=false | 视为公共调用，返回 null 状态令牌，不尝试认证 |
+| 没有属性，rejectPublicInvocations=true | 作为配置错误拒绝 |
+| 有属性，但上下文没有 Authentication | 抛 AuthenticationCredentialsNotFoundException |
+| 有属性且有 Authentication | 按需重新认证，然后调用访问决策器 |
+
+“没有配置属性”和一个显式 `permitAll` 表达式不是同一个内部路径。前者可以直接视为公共调用，后者仍是交给决策体系求值的规则。
+
+同一 URL 配置多条规则时，首先要看匹配顺序，而不是假定所有匹配属性会自动合并。[DefaultFilterInvocationSecurityMetadataSource 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/access/intercept/DefaultFilterInvocationSecurityMetadataSource.java)
+
+## 认证与授权在这里相继发生
+
+`authenticateIfRequired()` 在令牌已经被信任且不要求始终重新认证时复用它；否则委托 AuthenticationManager，更新上下文后取得结果。接着执行：
 
 ```java
-public class RunAsManagerImpl implements RunAsManager, InitializingBean {
-
-   private String key;
-
-   // 角色名称前缀
-   private String rolePrefix = "ROLE_";
-
-   public void afterPropertiesSet() throws Exception {
-      Assert.notNull(
-            key,
-            "A Key is required and should match that configured for the RunAsImplAuthenticationProvider");
-   }
-
-   // 构造新的Authentication
-   public Authentication buildRunAs(Authentication authentication, Object object,
-         Collection<ConfigAttribute> attributes) {
-      // new一个空的集合
-      List<GrantedAuthority> newAuthorities = new ArrayList<>();
-
-      // 将安全对象上配置的属性拼接角色前缀添加到newAuthorities中
-      for (ConfigAttribute attribute : attributes) {
-         if (this.supports(attribute)) {
-            GrantedAuthority extraAuthority = new SimpleGrantedAuthority(
-                  getRolePrefix() + attribute.getAttribute());
-            newAuthorities.add(extraAuthority);
-         }
-      }
-
-      if (newAuthorities.size() == 0) {
-         return null;
-      }
-
-      // 将之前认证过的信息中已有的权限信息也添加到newAuthorities中
-      newAuthorities.addAll(authentication.getAuthorities());
-	  // 构造一个新的Authentication令牌
-      return new RunAsUserToken(this.key, authentication.getPrincipal(),
-            authentication.getCredentials(), newAuthorities,
-            authentication.getClass());
-   }
-
-   public String getKey() {
-      return key;
-   }
-
-   public String getRolePrefix() {
-      return rolePrefix;
-   }
-
-   public void setKey(String key) {
-      this.key = key;
-   }
-
-   public void setRolePrefix(String rolePrefix) {
-      this.rolePrefix = rolePrefix;
-   }
-   // 只支持以RUN_AS_开头的配置的属性
-   public boolean supports(ConfigAttribute attribute) {
-      return attribute.getAttribute() != null
-            && attribute.getAttribute().startsWith("RUN_AS_");
-   }
-
-   public boolean supports(Class<?> clazz) {
-      return true;
-   }
-}
+this.accessDecisionManager.decide(authenticated, object, attributes);
 ```
 
-RunAsManagerImpl在构造新的认证令牌时，主要是在前一个的认证信息的权限基础上添加了安全对象的配置属性，并且只会添加以RUN_AS_开头的ConfigAttribute
+正常返回表示当前受保护调用获准继续；AccessDeniedException 会发布相应失败事件并向外传播。匿名令牌也可能具有 authenticated 状态，能否访问仍由授权规则判断。[投票规则与全部弃权边界](/access-decision-manager/)
 
-### finallyInvocation方法
+## RunAs 临时替换身份，finally 恢复原绑定
 
-安全方法调用后始终会执行的逻辑，通过finally保证
+授权通过后，RunAsManager 可以返回一次调用专用的 Authentication。NullRunAsManager 不替换身份；RunAsManagerImpl 识别 `RUN_AS_` 属性，在原权限基础上增加相应临时权限，并与配套提供者使用一致的 key。
+
+发生替换时，基类保存原 SecurityContext，创建新的空上下文并设置临时认证，随后把原上下文放进 InterceptorStatusToken。它不在原会话上下文对象上直接改来改去，也不绕过前面的访问决策。
 
 ```java
 protected void finallyInvocation(InterceptorStatusToken token) {
-    // beforeInvocation方法返回的InterceptorStatusToken不为空并且RunAsManager返回
-    // 了新的认证结果，重新设置一下安全上下文
     if (token != null && token.isContextHolderRefreshRequired()) {
         if (logger.isDebugEnabled()) {
             logger.debug("Reverting to original Authentication: "
-                         + token.getSecurityContext().getAuthentication());
+                    + token.getSecurityContext().getAuthentication());
         }
-		// 设置上下文为原始上下文信息，即内部保存的是原始的认证信息，不是RunAsManager返回的认证信息
+
         SecurityContextHolder.setContext(token.getSecurityContext());
     }
 }
 ```
 
-如果重新设置过认证信息，即RunAsManager返回结果不为null，就重新设置一下安全上下文，注意此时的安全上下文中的认证信息是原始的认证信息，不是RunAsManager返回的认证信息。
+这个恢复在下游失败时也会执行，避免临时身份泄漏到外层后续逻辑。[RunAsManagerImpl 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/intercept/RunAsManagerImpl.java)
 
-### afterInvocation方法
+## afterInvocation 的返回值边界
 
-安全方法调用结束的处理逻辑
+AbstractSecurityInterceptor 可以把返回值交给 AfterInvocationManager 做后置授权或过滤，但 FilterSecurityInterceptor 调用时传入的是 null，因为 Servlet FilterChain 没有业务返回值。因此不能据此声称它会过滤 Controller 返回的集合。
 
-```java
-// 从FilterSecurityInterceptor调用处可以发现参数returnedObject始终为null
-protected Object afterInvocation(InterceptorStatusToken token, Object returnedObject) {
-   // 安全对象没有配置任何属性
-   if (token == null) {
-      // public object
-      return returnedObject;
-   }
-   // 又再次调用了finallyInvocation方法
-   finallyInvocation(token);
-   // 如果配置了AfterInvocationManager，默认没有配置，所以就不作分析了
-   if (afterInvocationManager != null) {
-      // Attempt after invocation handling
-      try {
-         returnedObject = afterInvocationManager.decide(token.getSecurityContext()
-               .getAuthentication(), token.getSecureObject(), token
-               .getAttributes(), returnedObject);
-      }
-      catch (AccessDeniedException accessDeniedException) {
-         AuthorizationFailureEvent event = new AuthorizationFailureEvent(
-               token.getSecureObject(), token.getAttributes(), token
-                     .getSecurityContext().getAuthentication(),
-               accessDeniedException);
-         publishEvent(event);
+方法安全拦截器也会复用这个基类，但它保护 MethodInvocation，能够取得方法返回值；两种安全对象不同，扩展能力不能仅凭共同父类互相套用。
 
-         throw accessDeniedException;
-      }
-   }
+## 把访问失败定位到正确阶段
 
-   return returnedObject;
-}
-```
+先确认元数据是否匹配到预期规则，再检查是否有认证信息、是否重新认证、决策器为何拒绝；若使用 RunAs，还要检查调用后上下文已恢复。向外传播的安全异常通常由位于外层的 [ExceptionTranslationFilter](/exception-translation-filter/)转换为响应，但响应已经提交时不能再假定能返回标准错误页。
 
-AbstractSecurityInterceptor 可以把返回值交给 AfterInvocationManager 做后置检查或过滤。FilterSecurityInterceptor 调用这里时传入的是 null，因为 Servlet 过滤器链没有业务返回值；不能据此推断它会修改 Controller 返回的数据。
-
-## 总结
-
-FilterSecurityInterceptor的整体执行逻辑已经全部解析完了，这里总结一下它的执行步骤
-
-1. 调用父类的beforeInvocation方法，传入`new FilterInvocation(request, response, chain)`，然后返回结果为InterceptorStatusToken，真正的前置权限认证就在其中判断
-
-2. 继续执行Servlet过滤器链及最终请求处理。这里的安全对象是FilterInvocation；对业务方法的注解授权属于方法安全拦截器的职责。
-
-3. 调用父类的finallyInvocation方法，传入第一步返回的InterceptorStatusToken，主要是根据RunAsManager是否返回结果来还原之前的认证信息
-
-4. 调用父类的afterInvocation方法，传入第一步返回的InterceptorStatusToken，主要是对最终返回的结果进一步处理
-
-## 资料来源
-
-- [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
+最小配置观察应包含无匹配属性、匿名访问、已登录但无权限、正常放行，以及业务链抛异常时的状态恢复。源码中的可选字段不等于应用已经启用相应扩展。

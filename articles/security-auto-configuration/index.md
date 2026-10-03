@@ -1,7 +1,7 @@
 ---
 title: "SecurityAutoConfiguration 源码分析"
 date: 2019-06-17
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -9,563 +9,125 @@ tags:
 domain: Spring
 ---
 
-SecurityAutoConfiguration 通过条件装配引入安全属性、认证事件发布器和 Web 安全配置。满足 Servlet 应用及相关类、Bean 条件时，默认适配器和 @EnableWebSecurity 参与创建 springSecurityFilterChain；默认行为来自多个配置类协作，并非一个配置类完成所有工作。
+引入安全 starter 后出现登录页，不是某一个自动配置类直接创建了所有过滤器。Spring Boot 先根据条件引入默认配置，Spring Security 再使用适配器和构建器生成过滤入口；认证管理器又由另一条配置链准备。
 
-本文分析没有自定义安全适配器的 Servlet 应用启动过程。下文逐步分析的装配条件以这个示例场景为前提，自定义 Bean 或不同 Web 栈可能使这些自动配置退让。
+本文固定分析 **Spring Boot 2.1.5.RELEASE、Spring Security 5.1.5.RELEASE**，场景是没有自定义安全适配器的 Servlet 应用。Reactive 应用、用户提供的 Bean 或显式 @EnableWebSecurity 都可能改变入口。可运行环境见[基本概念](/spring-security-basics/)，这套旧版本用于源码研究，不是当前新项目基线。
 
-以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SecurityAutoConfiguration.java)。
+文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
-## 概述
+## SecurityAutoConfiguration 只负责接入第一层配置
 
-SecurityAutoConfiguration主要负责在项目启动时为当前的web容器添加一些必要的配置类
-
-
-## SecurityAutoConfiguration
+[SecurityAutoConfiguration 源码](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SecurityAutoConfiguration.java) 的关键声明为：
 
 ```java
 @Configuration
 @ConditionalOnClass(DefaultAuthenticationEventPublisher.class)
 @EnableConfigurationProperties(SecurityProperties.class)
 @Import({ SpringBootWebSecurityConfiguration.class, WebSecurityEnablerConfiguration.class,
-		SecurityDataConfiguration.class })
-public class SecurityAutoConfiguration {
-
-	@Bean
-	@ConditionalOnMissingBean(AuthenticationEventPublisher.class)
-	public DefaultAuthenticationEventPublisher authenticationEventPublisher(ApplicationEventPublisher publisher) {
-		return new DefaultAuthenticationEventPublisher(publisher);
-	}
-
-}
-
+        SecurityDataConfiguration.class })
 ```
 
-1. 将DefaultAuthenticationEventPublisher注册到spring容器中
-2. 将SecurityProperties注册到spring容器中
-3. 将SpringBootWebSecurityConfiguration、WebSecurityEnablerConfiguration和SecurityDataConfiguration注册到当前容器中
+它接入 SecurityProperties，按条件提供 DefaultAuthenticationEventPublisher，并导入其他配置。默认用户由另一自动配置负责，Servlet 代理的注册也由另一自动配置负责，不能都归到这个类的一条工厂方法里。
 
-这里我们主要关注一下SpringBootWebSecurityConfiguration、WebSecurityEnablerConfiguration这两个配置类
+| 后续配置 | 在本文场景中的作用 |
+| --- | --- |
+| SpringBootWebSecurityConfiguration | 缺少自定义适配器时，提供默认 WebSecurityConfigurerAdapter |
+| WebSecurityEnablerConfiguration | 满足条件时启用 @EnableWebSecurity |
+| SecurityDataConfiguration | 与 Spring Data 安全集成有关；不承担本文的过滤器链构建主线 |
 
-### SpringBootWebSecurityConfiguration
+## 默认适配器与启用注解是两步
+
+SpringBootWebSecurityConfiguration 同时要求：类路径有 WebSecurityConfigurerAdapter、容器没有该类型 Bean、当前是 Servlet Web 应用。满足后，它的内部 DefaultConfigurerAdapter 继承 WebSecurityConfigurerAdapter，不覆盖默认方法，并设置 Boot 指定的顺序。[该配置源码](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SpringBootWebSecurityConfiguration.java)
+
+接下来，WebSecurityEnablerConfiguration 要求容器中已有适配器、没有名为 `springSecurityFilterChain` 的 Bean，并且仍是 Servlet 应用。满足后，类上的 @EnableWebSecurity 才把 Security 自己的配置引入。[启用配置源码](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/WebSecurityEnablerConfiguration.java)
+
+这解释了两种常见变化：提供自己的适配器会让 Boot 的默认适配器退让；显式启用 Security 时，也可以通过 Security 自身的配置链构建入口。条件判断针对 Bean 和名称，不是只检查源码里有没有写一个继承类。
+
+## @EnableWebSecurity 把两条配置链连接起来
+
+这个注解导入 WebSecurityConfiguration，以及 MVC/OAuth2 相关导入选择器；它本身还标记 @EnableGlobalAuthentication，后者导入 AuthenticationConfiguration。
+
+```text
+SecurityAutoConfiguration
+  → 默认适配器与 WebSecurityEnablerConfiguration
+  → @EnableWebSecurity
+      → WebSecurityConfiguration → WebSecurity → springSecurityFilterChain
+      → @EnableGlobalAuthentication → AuthenticationConfiguration
+          → AuthenticationManagerBuilder、认证配置器、ObjectPostProcessor
+```
+
+图中的箭头表示配置引入或构建依赖，不表示每个名字都成为独立 Bean。ImportSelector 参与配置解析；WebSecurity 则是 WebSecurityConfiguration 内部创建并持有的构建器。
+
+## WebSecurityConfiguration 收集适配器并生成过滤入口
+
+它使用 AutowiredWebSecurityConfigurersIgnoreParents 查找当前 BeanFactory 的配置器，对其排序并要求 @Order 唯一，然后逐个 `webSecurity.apply(...)`。相同 order 会使启动失败，不能靠声明顺序猜测多条链的优先级。
+
+过滤入口的 Bean 工厂方法为：
 
 ```java
-@Configuration
-@ConditionalOnClass(WebSecurityConfigurerAdapter.class)
-@ConditionalOnMissingBean(WebSecurityConfigurerAdapter.class)
-@ConditionalOnWebApplication(type = Type.SERVLET)
-public class SpringBootWebSecurityConfiguration {
-
-	@Configuration
-	@Order(SecurityProperties.BASIC_AUTH_ORDER)
-	static class DefaultConfigurerAdapter extends WebSecurityConfigurerAdapter {
-
-	}
-
+public Filter springSecurityFilterChain() throws Exception {
+    boolean hasConfigurers = webSecurityConfigurers != null
+            && !webSecurityConfigurers.isEmpty();
+    if (!hasConfigurers) {
+        WebSecurityConfigurerAdapter adapter = objectObjectPostProcessor
+                .postProcess(new WebSecurityConfigurerAdapter() {
+                });
+        webSecurity.apply(adapter);
+    }
+    return webSecurity.build();
 }
 ```
 
-1. 判断类路径下是否有WebSecurityConfigurerAdapter，正常情况是肯定有的，**满足条件**
-2. 判断spring容器中是否有WebSecurityConfigurerAdapter实例，由于我们没有自己编写自己的类继承它，所以容器中是没有改实例的，**满足条件**
-3. 判断当前web应用是不是基于servlet的，springmvc就是基于servlet的，**满足条件**
+没有配置器时，Security 自身还会创建一个默认适配器。`webSecurity.build()` 返回的通常是 FilterChainProxy，而不是 HttpSecurity，也不是单个 SecurityFilterChain。构建完成后，WebSecurityConfiguration 的其他工厂方法可取得表达式处理器和 WebInvocationPrivilegeEvaluator 等协作对象。[WebSecurityConfiguration 5.1.5 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/configuration/WebSecurityConfiguration.java)
 
-综上，满足所有条件，将SpringBootWebSecurityConfiguration和DefaultConfigurerAdapter注册到spring容器中
+## AuthenticationConfiguration 准备认证构建器
 
-### WebSecurityEnablerConfiguration
+认证配置先导入 ObjectPostProcessorConfiguration，使手工创建的安全对象也能经过 AutowireBeanFactoryObjectPostProcessor 处理。AuthenticationManagerBuilder 的 Bean 使用延迟选择的 PasswordEncoder，并接入可用的 AuthenticationEventPublisher。
+
+此外，InitializeUserDetailsBeanManagerConfigurer 与 InitializeAuthenticationProviderBeanManagerConfigurer 会根据已有认证组件配置全局构建器。它们参与的是认证能力的准备，与 URL 路径规则属于不同层次。
+
+需要全局 AuthenticationManager 时，执行：
 
 ```java
-@Configuration
-@ConditionalOnBean(WebSecurityConfigurerAdapter.class)
-@ConditionalOnMissingBean(name = BeanIds.SPRING_SECURITY_FILTER_CHAIN)
-@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
-@EnableWebSecurity
-public class WebSecurityEnablerConfiguration {
+public AuthenticationManager getAuthenticationManager() throws Exception {
+    if (this.authenticationManagerInitialized) {
+        return this.authenticationManager;
+    }
+    AuthenticationManagerBuilder authBuilder = authenticationManagerBuilder(
+            this.objectPostProcessor, this.applicationContext);
+    if (this.buildingAuthenticationManager.getAndSet(true)) {
+        return new AuthenticationManagerDelegator(authBuilder);
+    }
 
+    for (GlobalAuthenticationConfigurerAdapter config : globalAuthConfigurers) {
+        authBuilder.apply(config);
+    }
+
+    authenticationManager = authBuilder.build();
+
+    if (authenticationManager == null) {
+        authenticationManager = getAuthenticationManagerBean();
+    }
+
+    this.authenticationManagerInitialized = true;
+    return authenticationManager;
 }
 ```
 
-1. 判断spring容器中是否有WebSecurityConfigurerAdapter实例，在上一步的SpringBootWebSecurityConfiguration配置中，最终将WebSecurityConfigurerAdapter的实例DefaultConfigurerAdapter注册到了spring容器中，**满足条件**
-2. 判断spring容器中是否没有bean的名称为**springSecurityFilterChain**，默认我们没有自定义这个bean，**满足条件**
-3. 判断当前web应用是不是基于servlet的，springmvc就是基于servlet的，**满足条件**
+这里可观察三个状态：尚未构建时应用全局配置器并 build；递归进入构建过程时返回 AuthenticationManagerDelegator；已经初始化后直接复用结果。若构建结果为 null，还会尝试查找已有 AuthenticationManager Bean。委托器用于处理初始化依赖，不是为每次认证都重新创建管理器。[AuthenticationConfiguration 5.1.5 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/authentication/configuration/AuthenticationConfiguration.java)
 
-综上，满足所有条件，将WebSecurityEnablerConfiguration实例注册到spring容器中，并且开启EnableWebSecurity注解，这个EnableWebSecurity注解很重要，下面我们来着重分析一下它
+### 密码编码器的选择也有退让关系
 
-#### EnableWebSecurity
+LazyPasswordEncoder 优先取得应用提供的 PasswordEncoder Bean；不存在时才创建 DelegatingPasswordEncoder。默认委托格式与直接 BCrypt 编码不同，详见[认证管理器中的存储格式](/authentication-manager/)。因此“有了默认用户”与“密码以什么格式校验”不能脱离 Bean 条件单独判断。
 
-```java
-@Retention(value = java.lang.annotation.RetentionPolicy.RUNTIME)
-@Target(value = { java.lang.annotation.ElementType.TYPE })
-@Documented
-@Import({ WebSecurityConfiguration.class,
-		SpringWebMvcImportSelector.class,
-		OAuth2ImportSelector.class })
-@EnableGlobalAuthentication
-@Configuration
-public @interface EnableWebSecurity {
+## 从启动结果回到自己的配置
 
-	/**
-	 * Controls debugging support for Spring Security. Default is false.
-	 * @return if true, enables debug support with Spring Security
-	 */
-	boolean debug() default false;
-}
+| 要排查的现象 | 应追踪的入口 |
+| --- | --- |
+| 默认适配器为什么仍存在或消失 | SpringBootWebSecurityConfiguration 的缺失 Bean 条件 |
+| 多个安全配置为什么启动失败 | 配置器排序与重复 @Order 检查 |
+| 认证组件为什么没有被采用 | AuthenticationConfiguration 的全局构建和已有 Bean |
+| 过滤链已经构建但请求没进入 | [Servlet 代理注册](/security-filter-registration/) |
+| 请求进入了错误的安全链 | [WebSecurity 构建顺序](/web-security/)与 [FilterChainProxy 匹配](/filter-chain-proxy/) |
 
-```
-
-1. 将WebSecurityConfiguration、SpringWebMvcImportSelector和OAuth2ImportSelector注册到spring容器中
-2. 开启EnableGlobalAuthentication注解
-
-接下来我们分析一下WebSecurityConfiguration这个配置类为我们配置了哪些类
-
-##### WebSecurityConfiguration
-
-```java
-@Configuration
-public class WebSecurityConfiguration implements ImportAware, BeanClassLoaderAware {
-	private WebSecurity webSecurity;
-
-	private Boolean debugEnabled;
-
-	private List<SecurityConfigurer<Filter, WebSecurity>> webSecurityConfigurers;
-
-	private ClassLoader beanClassLoader;
-
-	@Autowired(required = false)
-	private ObjectPostProcessor<Object> objectObjectPostProcessor;
-
-	@Bean
-	public static DelegatingApplicationListener delegatingApplicationListener() {
-		return new DelegatingApplicationListener();
-	}
-
-    // spring-security安全过滤链注册完之后，将SecurityExpressionHandler注册到spring容器中
-	@Bean
-	@DependsOn(AbstractSecurityWebApplicationInitializer.DEFAULT_FILTER_NAME)
-	public SecurityExpressionHandler<FilterInvocation> webSecurityExpressionHandler() {
-		return webSecurity.getExpressionHandler();
-	}
-
-	// spring-security安全过滤链就是在这里初始化并注册到spring容器中的
-	@Bean(name = AbstractSecurityWebApplicationInitializer.DEFAULT_FILTER_NAME)
-	public Filter springSecurityFilterChain() throws Exception {
-        // 是否有webSecurityConfigurers
-		boolean hasConfigurers = webSecurityConfigurers != null
-				&& !webSecurityConfigurers.isEmpty();
-        // 如果没有则创建一个
-		if (!hasConfigurers) {
-			WebSecurityConfigurerAdapter adapter = objectObjectPostProcessor
-					.postProcess(new WebSecurityConfigurerAdapter() {
-					});
-			webSecurity.apply(adapter);
-		}
-		return webSecurity.build();
-	}
-
-	@Bean
-	@DependsOn(AbstractSecurityWebApplicationInitializer.DEFAULT_FILTER_NAME)
-	public WebInvocationPrivilegeEvaluator privilegeEvaluator() throws Exception {
-		return webSecurity.getPrivilegeEvaluator();
-	}
-
-	@Autowired(required = false)
-	public void setFilterChainProxySecurityConfigurer(
-			ObjectPostProcessor<Object> objectPostProcessor,
-            // 注入autowiredWebSecurityConfigurersIgnoreParents这个bean的getWebSecurityConfigurers返回的值
-			@Value("#{@autowiredWebSecurityConfigurersIgnoreParents.getWebSecurityConfigurers()}") List<SecurityConfigurer<Filter, WebSecurity>> webSecurityConfigurers)
-			throws Exception {
-        // 初始化webSecurity
-		webSecurity = objectPostProcessor
-				.postProcess(new WebSecurity(objectPostProcessor));
-		if (debugEnabled != null) {
-			webSecurity.debug(debugEnabled);
-		}
-		// 对webSecurityConfigurers进行排序
-		Collections.sort(webSecurityConfigurers, AnnotationAwareOrderComparator.INSTANCE);
-
-		Integer previousOrder = null;
-		Object previousConfig = null;
-		for (SecurityConfigurer<Filter, WebSecurity> config : webSecurityConfigurers) {
-			Integer order = AnnotationAwareOrderComparator.lookupOrder(config);
-			if (previousOrder != null && previousOrder.equals(order)) {
-				throw new IllegalStateException(
-						"@Order on WebSecurityConfigurers must be unique. Order of "
-								+ order + " was already used on " + previousConfig + ", so it cannot be used on "
-								+ config + " too.");
-			}
-			previousOrder = order;
-			previousConfig = config;
-		}
-		for (SecurityConfigurer<Filter, WebSecurity> webSecurityConfigurer : webSecurityConfigurers) {
-            // 给WebSecurity添加SecurityConfigurer
-			webSecurity.apply(webSecurityConfigurer);
-		}
-		this.webSecurityConfigurers = webSecurityConfigurers;
-	}
-
-	// 在spring容器中注册一个AutowiredWebSecurityConfigurersIgnoreParents实例，bean的name
-    // 是autowiredWebSecurityConfigurersIgnoreParents，这个bean就在在上面的
-    // setFilterChainProxySecurityConfigurer出用到，用来获取ConfigurableListableBeanFactory
-    // 中配置的List<SecurityConfigurer<Filter, WebSecurity>>
-	@Bean
-	public static AutowiredWebSecurityConfigurersIgnoreParents autowiredWebSecurityConfigurersIgnoreParents(
-			ConfigurableListableBeanFactory beanFactory) {
-		return new AutowiredWebSecurityConfigurersIgnoreParents(beanFactory);
-	}
-
-	// 排序比较器
-	private static class AnnotationAwareOrderComparator extends OrderComparator {
-		private static final AnnotationAwareOrderComparator INSTANCE = new AnnotationAwareOrderComparator();
-
-		@Override
-		protected int getOrder(Object obj) {
-			return lookupOrder(obj);
-		}
-
-		private static int lookupOrder(Object obj) {
-			if (obj instanceof Ordered) {
-				return ((Ordered) obj).getOrder();
-			}
-			if (obj != null) {
-				Class<?> clazz = (obj instanceof Class ? (Class<?>) obj : obj.getClass());
-				Order order = AnnotationUtils.findAnnotation(clazz, Order.class);
-				if (order != null) {
-					return order.value();
-				}
-			}
-			return Ordered.LOWEST_PRECEDENCE;
-		}
-	}
-
-	public void setImportMetadata(AnnotationMetadata importMetadata) {
-		Map<String, Object> enableWebSecurityAttrMap = importMetadata
-				.getAnnotationAttributes(EnableWebSecurity.class.getName());
-		AnnotationAttributes enableWebSecurityAttrs = AnnotationAttributes
-				.fromMap(enableWebSecurityAttrMap);
-		debugEnabled = enableWebSecurityAttrs.getBoolean("debug");
-		if (webSecurity != null) {
-			webSecurity.debug(debugEnabled);
-		}
-	}
-
-	public void setBeanClassLoader(ClassLoader classLoader) {
-		this.beanClassLoader = classLoader;
-	}
-}
-
-```
-
-1. 从ConfigurableListableBeanFactory中找到所有SecurityConfigurer<Filter, WebSecurity>，然后初始化webSecurity，在对所有SecurityConfigurer进行排序
-2. 在springSecurityFilterChain实例注册到spring容器中后，将WebInvocationPrivilegeEvaluator、SecurityExpressionHandler、DelegatingApplicationListener等实例注册到spring容器中
-
-##### EnableGlobalAuthentication
-
-```java
-@Retention(value = java.lang.annotation.RetentionPolicy.RUNTIME)
-@Target(value = { java.lang.annotation.ElementType.TYPE })
-@Documented
-@Import(AuthenticationConfiguration.class)
-@Configuration
-public @interface EnableGlobalAuthentication {
-}
-
-```
-
-`@EnableWebSecurity`被`EnableGlobalAuthentication`注解了，从EnableGlobalAuthentication注解我们可以看到它的作用是将AuthenticationConfiguration注册到spring容器中
-
-###### AuthenticationConfiguration
-
-```java
-@Configuration
-@Import(ObjectPostProcessorConfiguration.class)
-public class AuthenticationConfiguration {
-
-	private AtomicBoolean buildingAuthenticationManager = new AtomicBoolean();
-
-	private ApplicationContext applicationContext;
-
-	private AuthenticationManager authenticationManager;
-
-	private boolean authenticationManagerInitialized;
-
-	private List<GlobalAuthenticationConfigurerAdapter> globalAuthConfigurers = Collections
-			.emptyList();
-
-	private ObjectPostProcessor<Object> objectPostProcessor;
-
-    // 我们熟悉的AuthenticationManager出现了
-	@Bean
-	public AuthenticationManagerBuilder authenticationManagerBuilder(
-			ObjectPostProcessor<Object> objectPostProcessor, ApplicationContext context) {
-        // 默认的密码编码者
-		LazyPasswordEncoder defaultPasswordEncoder = new LazyPasswordEncoder(context);
-        // 这个AuthenticationEventPublisher就是SecurityAutoConfiguration中配置的
-        // DefaultAuthenticationEventPublisher
-		AuthenticationEventPublisher authenticationEventPublisher = getBeanOrNull(context, AuthenticationEventPublisher.class);
-		// 密码编码者构造者，继承了AuthenticationManagerBuilder
-		DefaultPasswordEncoderAuthenticationManagerBuilder result = new DefaultPasswordEncoderAuthenticationManagerBuilder(objectPostProcessor, defaultPasswordEncoder);
-		if (authenticationEventPublisher != null) {
-            // 设置authenticationEventPublisher
-			result.authenticationEventPublisher(authenticationEventPublisher);
-		}
-		return result;
-	}
-
-    // 全局认证配置者适配器，主要是用来打印spring容器中的使用@EnableGlobalAuthentication
-    // 注解的类
-	@Bean
-	public static GlobalAuthenticationConfigurerAdapter enableGlobalAuthenticationAutowiredConfigurer(
-			ApplicationContext context) {
-		return new EnableGlobalAuthenticationAutowiredConfigurer(context);
-	}
-	// 熟悉的UserDetailsService，主要用来配置UserDetailsService
-	@Bean
-	public static InitializeUserDetailsBeanManagerConfigurer initializeUserDetailsBeanManagerConfigurer(ApplicationContext context) {
-		return new InitializeUserDetailsBeanManagerConfigurer(context);
-	}
-
-    // 熟悉的AuthenticationProvider，主要用来配置AuthenticationProvider
-	@Bean
-	public static InitializeAuthenticationProviderBeanManagerConfigurer initializeAuthenticationProviderBeanManagerConfigurer(ApplicationContext context) {
-		return new InitializeAuthenticationProviderBeanManagerConfigurer(context);
-	}
-
-	public AuthenticationManager getAuthenticationManager() throws Exception {
-		if (this.authenticationManagerInitialized) {
-			return this.authenticationManager;
-		}
-		AuthenticationManagerBuilder authBuilder = authenticationManagerBuilder(
-				this.objectPostProcessor, this.applicationContext);
-		if (this.buildingAuthenticationManager.getAndSet(true)) {
-			return new AuthenticationManagerDelegator(authBuilder);
-		}
-
-		for (GlobalAuthenticationConfigurerAdapter config : globalAuthConfigurers) {
-			authBuilder.apply(config);
-		}
-
-		authenticationManager = authBuilder.build();
-
-		if (authenticationManager == null) {
-			authenticationManager = getAuthenticationManagerBean();
-		}
-
-		this.authenticationManagerInitialized = true;
-		return authenticationManager;
-	}
-
-	@Autowired(required = false)
-	public void setGlobalAuthenticationConfigurers(
-			List<GlobalAuthenticationConfigurerAdapter> configurers) throws Exception {
-		Collections.sort(configurers, AnnotationAwareOrderComparator.INSTANCE);
-		this.globalAuthConfigurers = configurers;
-	}
-
-	@Autowired
-	public void setApplicationContext(ApplicationContext applicationContext) {
-		this.applicationContext = applicationContext;
-	}
-
-	@Autowired
-	public void setObjectPostProcessor(ObjectPostProcessor<Object> objectPostProcessor) {
-		this.objectPostProcessor = objectPostProcessor;
-	}
-
-	@SuppressWarnings("unchecked")
-	private <T> T lazyBean(Class<T> interfaceName) {
-		LazyInitTargetSource lazyTargetSource = new LazyInitTargetSource();
-		String[] beanNamesForType = BeanFactoryUtils.beanNamesForTypeIncludingAncestors(
-				applicationContext, interfaceName);
-		if (beanNamesForType.length == 0) {
-			return null;
-		}
-		Assert.isTrue(beanNamesForType.length == 1,
-				() -> "Expecting to only find a single bean for type " + interfaceName
-						+ ", but found " + Arrays.asList(beanNamesForType));
-		lazyTargetSource.setTargetBeanName(beanNamesForType[0]);
-		lazyTargetSource.setBeanFactory(applicationContext);
-		ProxyFactoryBean proxyFactory = new ProxyFactoryBean();
-		proxyFactory = objectPostProcessor.postProcess(proxyFactory);
-		proxyFactory.setTargetSource(lazyTargetSource);
-		return (T) proxyFactory.getObject();
-	}
-
-	private AuthenticationManager getAuthenticationManagerBean() {
-		return lazyBean(AuthenticationManager.class);
-	}
-
-	private static <T> T getBeanOrNull(ApplicationContext applicationContext, Class<T> type) {
-		try {
-			return applicationContext.getBean(type);
-		} catch(NoSuchBeanDefinitionException notFound) {
-			return null;
-		}
-	}
-
-	private static class EnableGlobalAuthenticationAutowiredConfigurer extends
-			GlobalAuthenticationConfigurerAdapter {
-		private final ApplicationContext context;
-		private static final Log logger = LogFactory
-				.getLog(EnableGlobalAuthenticationAutowiredConfigurer.class);
-
-		public EnableGlobalAuthenticationAutowiredConfigurer(ApplicationContext context) {
-			this.context = context;
-		}
-
-		@Override
-		public void init(AuthenticationManagerBuilder auth) {
-			Map<String, Object> beansWithAnnotation = context
-					.getBeansWithAnnotation(EnableGlobalAuthentication.class);
-			if (logger.isDebugEnabled()) {
-				logger.debug("Eagerly initializing " + beansWithAnnotation);
-			}
-		}
-	}
-
-	/**
-	 * Prevents infinite recursion in the event that initializing the
-	 * AuthenticationManager.
-	 *
-	 * @author Rob Winch
-	 * @since 4.1.1
-	 */
-	static final class AuthenticationManagerDelegator implements AuthenticationManager {
-		private AuthenticationManagerBuilder delegateBuilder;
-		private AuthenticationManager delegate;
-		private final Object delegateMonitor = new Object();
-
-		AuthenticationManagerDelegator(AuthenticationManagerBuilder delegateBuilder) {
-			Assert.notNull(delegateBuilder, "delegateBuilder cannot be null");
-			this.delegateBuilder = delegateBuilder;
-		}
-
-		@Override
-		public Authentication authenticate(Authentication authentication)
-				throws AuthenticationException {
-			if (this.delegate != null) {
-				return this.delegate.authenticate(authentication);
-			}
-
-			synchronized (this.delegateMonitor) {
-				if (this.delegate == null) {
-					this.delegate = this.delegateBuilder.getObject();
-					this.delegateBuilder = null;
-				}
-			}
-
-			return this.delegate.authenticate(authentication);
-		}
-
-		@Override
-		public String toString() {
-			return "AuthenticationManagerDelegator [delegate=" + this.delegate + "]";
-		}
-	}
-
-	static class DefaultPasswordEncoderAuthenticationManagerBuilder extends AuthenticationManagerBuilder {
-		private PasswordEncoder defaultPasswordEncoder;
-
-		/**
-		 * Creates a new instance
-		 *
-		 * @param objectPostProcessor the {@link ObjectPostProcessor} instance to use.
-		 */
-		DefaultPasswordEncoderAuthenticationManagerBuilder(
-			ObjectPostProcessor<Object> objectPostProcessor, PasswordEncoder defaultPasswordEncoder) {
-			super(objectPostProcessor);
-			this.defaultPasswordEncoder = defaultPasswordEncoder;
-		}
-
-		@Override
-		public InMemoryUserDetailsManagerConfigurer<AuthenticationManagerBuilder> inMemoryAuthentication()
-			throws Exception {
-			return super.inMemoryAuthentication()
-				.passwordEncoder(this.defaultPasswordEncoder);
-		}
-
-		@Override
-		public JdbcUserDetailsManagerConfigurer<AuthenticationManagerBuilder> jdbcAuthentication()
-			throws Exception {
-			return super.jdbcAuthentication()
-				.passwordEncoder(this.defaultPasswordEncoder);
-		}
-
-		@Override
-		public <T extends UserDetailsService> DaoAuthenticationConfigurer<AuthenticationManagerBuilder, T> userDetailsService(
-			T userDetailsService) throws Exception {
-			return super.userDetailsService(userDetailsService)
-				.passwordEncoder(this.defaultPasswordEncoder);
-		}
-	}
-
-	static class LazyPasswordEncoder implements PasswordEncoder {
-		private ApplicationContext applicationContext;
-		private PasswordEncoder passwordEncoder;
-
-		LazyPasswordEncoder(ApplicationContext applicationContext) {
-			this.applicationContext = applicationContext;
-		}
-
-		@Override
-		public String encode(CharSequence rawPassword) {
-			return getPasswordEncoder().encode(rawPassword);
-		}
-
-		@Override
-		public boolean matches(CharSequence rawPassword,
-			String encodedPassword) {
-			return getPasswordEncoder().matches(rawPassword, encodedPassword);
-		}
-
-		@Override
-		public boolean upgradeEncoding(String encodedPassword) {
-			return getPasswordEncoder().upgradeEncoding(encodedPassword);
-		}
-
-		private PasswordEncoder getPasswordEncoder() {
-			if (this.passwordEncoder != null) {
-				return this.passwordEncoder;
-			}
-			PasswordEncoder passwordEncoder = getBeanOrNull(this.applicationContext, PasswordEncoder.class);
-			if (passwordEncoder == null) {
-				passwordEncoder = PasswordEncoderFactories.createDelegatingPasswordEncoder();
-			}
-			this.passwordEncoder = passwordEncoder;
-			return passwordEncoder;
-		}
-
-		@Override
-		public String toString() {
-			return getPasswordEncoder().toString();
-		}
-	}
-}
-```
-
-配置了AuthenticationManagerBuilder、InitializeUserDetailsBeanManagerConfigurer、InitializeAuthenticationProviderBeanManagerConfigurer这些必要的配置类，同时也通过`@Import(ObjectPostProcessorConfiguration.class)`将ObjectPostProcessor注入到spring容器中了
-
-###### ObjectPostProcessorConfiguration
-
-```java
-@Configuration
-public class ObjectPostProcessorConfiguration {
-
-	@Bean
-	public ObjectPostProcessor<Object> objectPostProcessor(
-			AutowireCapableBeanFactory beanFactory) {
-		return new AutowireBeanFactoryObjectPostProcessor(beanFactory);
-	}
-}
-
-```
-
-默认的ObjectPostProcessor就是AutowireBeanFactoryObjectPostProcessor
-
-## 总结
-
-1. 将DefaultAuthenticationEventPublisher注册到spring容器中
-2. 将DefaultConfigurerAdapter注册到spring容器中
-3. 开启@EnableWebSecurity注解，将springSecurityFilterChain，WebSecurity，ObjectPostProcessor,AuthenticationManagerBuilder等配置类注入到spring容器中
-
-## 资料来源
-
-- [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
+启动时创建对象和运行时处理请求不能混为一谈。沿上面两条配置链先确认对象从哪里来，再进入相应过滤器，才能把条件装配、自定义覆盖和实际访问结果连在一起。

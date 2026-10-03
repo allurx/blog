@@ -1,7 +1,7 @@
 ---
 title: "JDK 24 后 synchronized 为什么不再固定虚拟线程"
 date: "2026-09-11"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "JVM"
 tags: ["JVM", "VirtualThreads", "并发"]
 ---
@@ -188,7 +188,7 @@ import java.util.concurrent.Future;
 
 public final class SynchronizedBlockingDemo {
 
-    private static final Object[] LOCKS = new Object[1_000];
+    private static final Object[] LOCKS = new Object[20];
 
     static {
         for (int index = 0; index < LOCKS.length; index++) {
@@ -204,7 +204,7 @@ public final class SynchronizedBlockingDemo {
 
                 tasks.add(executor.submit(() -> {
                     synchronized (LOCKS[taskIndex]) {
-                        Thread.sleep(Duration.ofSeconds(1));
+                        Thread.sleep(Duration.ofMillis(100));
                     }
                     return null;
                 }));
@@ -213,6 +213,7 @@ public final class SynchronizedBlockingDemo {
             for (Future<?> task : tasks) {
                 task.get();
             }
+            System.out.println("completed=" + tasks.size());
         }
     }
 }
@@ -223,7 +224,26 @@ public final class SynchronizedBlockingDemo {
 * JDK 21～23：睡眠发生在 `synchronized` 内，可能固定大量 Carrier。
 * JDK 24+：持有 Monitor 不再阻止虚拟线程在睡眠时卸载。
 
-保存为 `SynchronizedBlockingDemo.java` 即可编译运行。程序等待每个任务的 Future，避免把任务异常留在未读取的结果中。它用于比较调度行为，不是性能基准；不同 JDK 的运行时间还受 CPU、调度器并行度和机器负载影响。不能只跑一个版本就声称已经验证版本间提升。
+保存为 `SynchronizedBlockingDemo.java`。程序使用 20 把不同的锁，每个任务持锁睡眠 100 ms，并读取全部 Future，避免遗漏任务异常。分别在 JDK 21 LTS 与 JDK 25 LTS 的独立实验目录执行下列命令，先确认 `java`、`javac` 和 `jfr` 来自同一个 JDK：
+
+```sh
+java -version
+javac --release 21 -d out SynchronizedBlockingDemo.java
+java -Djdk.virtualThreadScheduler.parallelism=2 -XX:StartFlightRecording=filename=pinning.jfr,settings=profile -cp out SynchronizedBlockingDemo
+jfr summary pinning.jfr
+jfr print --events jdk.VirtualThreadPinned pinning.jfr
+```
+
+`--release 21` 让两个 JDK 编译同一份不依赖新 API 的程序，服务于版本对照。调度器并行度固定为 2，JFR 记录用于观察 `Thread.sleep` 是否在持有 Monitor 时产生 Pinning；`completed=20` 只证明所有任务正常结束，不代表两者采用相同调度过程。这个实验不测量吞吐量或生产延迟。
+
+在同一 Windows 环境下，使用 Oracle JDK 21.0.10 LTS 与 Oracle JDK 25.0.2 LTS，按相同输入、并行度和 JFR `profile` 设置运行，观察到：
+
+| 运行时 | 任务完成输出 | `jdk.VirtualThreadPinned` 事件数 |
+| --- | --- | ---: |
+| Oracle JDK 21.0.10 | `completed=20` | 20 |
+| Oracle JDK 25.0.2 | `completed=20` | 0 |
+
+`jfr summary` 中 `jdk.VirtualThreadPinned` 行的 `Count` 给出上表数量，`jfr print` 展开每个事件的持续时间和栈。21 的事件栈指向持有 Monitor 时的 `Thread.sleep`；25 的记录没有该事件。这组结果支持本例的 Monitor 行为差异，不证明所有阻塞操作都会卸载，也不代替应用自身的锁竞争与下游容量测量。
 
 ### 缩短临界区仍然有价值
 

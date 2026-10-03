@@ -1,7 +1,7 @@
 ---
 title: "Spring Security 自动配置类概述"
 date: 2019-06-16
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -9,201 +9,51 @@ tags:
 domain: Spring
 ---
 
-Servlet 自动配置可以沿三条职责理解：SecurityAutoConfiguration 启用安全基础配置，UserDetailsServiceAutoConfiguration 在未提供用户或认证组件时补默认用户，SecurityFilterAutoConfiguration 将代理注册到容器；请求匹配器由相应适配配置提供。条件装配使自定义组件可以替代默认行为。
+理解 Spring Security 的默认行为，先找出“谁构建安全链、谁提供默认用户、谁把代理注册到 Servlet 容器”。这些职责分布在不同自动配置中，不能因为它们一起由安全 starter 引入，就把条件装配当作一条无条件初始化链。
 
-分析范围是 Servlet 自动配置；Spring Boot 2.1.5 通过 `META-INF/spring.factories` 发现这些配置类，Reactive Web 应用则使用另一组配置。
+本文范围是 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的历史 Servlet 应用。Boot 2.1.5 通过 `META-INF/spring.factories` 中的 EnableAutoConfiguration 条目发现自动配置；Reactive Web 应用使用另一组配置。运行入口见[基本概念](/spring-security-basics/)。
 
-以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SecurityAutoConfiguration.java)。
+## 从发现清单到生效条件
 
-## 概述
+该版本安全相关清单包含 SecurityAutoConfiguration、SecurityRequestMatcherProviderAutoConfiguration、UserDetailsServiceAutoConfiguration、SecurityFilterAutoConfiguration，以及 ReactiveSecurityAutoConfiguration 和 ReactiveUserDetailsServiceAutoConfiguration。出现在清单里只表示候选配置，是否生效还需要判断类路径、应用类型和已有 Bean。
 
-spring-boot-starter-security和spring其它系列的starter一样，依赖spring-boot-autoconfigure，根据其META-INF下的spring.factories加载自动配置类，然后进行一系列的初始化配置。查看spring.factories下的EnableAutoConfiguration和spring-security相关的一共有以下几种自动配置
+例如，一个存在 Security 依赖的非 Web 应用不因此变成 Servlet 应用；应用提供 UserDetailsService 后，也不应再按“默认用户自动生成”推断运行状态。[Boot 2.1.5 的 spring.factories](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/resources/META-INF/spring.factories)
 
-```java
-SecurityAutoConfiguration
-SecurityRequestMatcherProviderAutoConfiguration
-UserDetailsServiceAutoConfiguration
-SecurityFilterAutoConfiguration
-ReactiveSecurityAutoConfiguration
-ReactiveUserDetailsServiceAutoConfiguration
-```
+## 四项 Servlet 职责怎样协作
 
-下面对这些自动配置类进行简单的分析
+| 自动配置 | 输入条件或依赖 | 主要结果 |
+| --- | --- | --- |
+| SecurityAutoConfiguration | 类路径具备认证事件发布相关类型 | 接入安全属性、默认事件发布器与后续 Web 配置 |
+| SecurityRequestMatcherProviderAutoConfiguration | Servlet 应用；分别满足 MVC 或 Jersey 的类与 Bean 条件 | 提供 RequestMatcherProvider |
+| UserDetailsServiceAutoConfiguration | 认证基础已存在，且缺少指定的自定义认证组件 | 按额外条件创建默认内存用户 |
+| SecurityFilterAutoConfiguration | Servlet 应用，已有名为 springSecurityFilterChain 的 Bean | 创建注册对象，把 DelegatingFilterProxy 接到 Servlet 容器 |
 
+这里不是要求请求按表格从上到下经过四个类。自动配置在启动时准备对象，请求运行时经过的是已注册的代理与过滤器链。
 
-## SecurityAutoConfiguration
+## 安全链的配置入口
 
-```java
-@Configuration
-// 类路径下存在DefaultAuthenticationEventPublisher时才进行装配
-@ConditionalOnClass(DefaultAuthenticationEventPublisher.class)
-// 配置参数
-@EnableConfigurationProperties(SecurityProperties.class)
-// 导入SpringBootWebSecurityConfiguration，WebSecurityEnablerConfiguration和SecurityDataConfiguration配置类
-@Import({ SpringBootWebSecurityConfiguration.class, WebSecurityEnablerConfiguration.class,
-      SecurityDataConfiguration.class })
-public class SecurityAutoConfiguration {
+SecurityAutoConfiguration 导入 SpringBootWebSecurityConfiguration、WebSecurityEnablerConfiguration 等配置。在未定义安全适配器的 Servlet 场景中，前者补 DefaultConfigurerAdapter，后者按条件启用 @EnableWebSecurity。
 
-   @Bean
-   // 容器中不存在 AuthenticationEventPublisher Bean 时才进行装配
-   @ConditionalOnMissingBean(AuthenticationEventPublisher.class)
-   public DefaultAuthenticationEventPublisher authenticationEventPublisher(
-         ApplicationEventPublisher publisher) {
-      return new DefaultAuthenticationEventPublisher(publisher);
-   }
+Security 自身的 WebSecurityConfiguration 随后收集配置器，用 WebSecurity 构建过滤入口；AuthenticationConfiguration 则准备认证管理器的构建依赖。展开这条链见 [SecurityAutoConfiguration 分析](/security-auto-configuration/)。
 
-}
-```
+## 请求匹配适配取决于实际 Web 栈
 
-## SecurityRequestMatcherProviderAutoConfiguration
+MVC 分支要求 DispatcherServlet 和 HandlerMappingIntrospector；Jersey 分支要求 ResourceConfig、JerseyApplicationPath，并排除 DispatcherServlet。它们提供匹配能力，不执行凭据校验，也不作最终访问决策。
 
-```java
-@Configuration
-// 类路径下存在RequestMatcher时才进行装配
-@ConditionalOnClass({ RequestMatcher.class })
-// 基于servlet的Web应用程序才进行装配
-@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
-public class SecurityRequestMatcherProviderAutoConfiguration {
+所以仅凭项目依赖中出现某个 Web 库不能决定最终分支，仍要看完整条件与 Bean 是否存在。[匹配器适配配置](/security-request-matchers/)
 
-   @Configuration
-   // 类路径下存在DispatcherServlet时才进行装配
-   @ConditionalOnClass(DispatcherServlet.class)
-   // spring容器中存在HandlerMappingIntrospector实例时才进行装配
-   @ConditionalOnBean(HandlerMappingIntrospector.class)
-   public static class MvcRequestMatcherConfiguration {
+## 默认用户与认证组件的退让关系
 
-      @Bean
-      // 类路径下存在DispatcherServlet时才进行装配
-      @ConditionalOnClass(DispatcherServlet.class)
-      public RequestMatcherProvider requestMatcherProvider(
-            HandlerMappingIntrospector introspector) {
-         return new MvcRequestMatcherProvider(introspector);
-      }
+默认内存用户配置要求没有 AuthenticationManager、AuthenticationProvider、UserDetailsService 这些指定类型的 Bean；工厂方法还会检查 OAuth2 ClientRegistrationRepository。用户名、密码和角色从 SecurityProperties 读取。
 
-   }
+这使开发应用可以起步，也使应用定义自己的认证能力时能够接管。但“没有随机密码日志”不等于“用户服务已经按预期工作”，日志生成和 Bean 条件必须分开观察。[默认用户配置详解](/default-user-details-service/)
 
-   @Configuration
-   // 类路径下存在ResourceConfig时才进行装配
-   @ConditionalOnClass(ResourceConfig.class)
-   // 类路径下不存在org.springframework.web.servlet.DispatcherServlet时才进行装配
-   @ConditionalOnMissingClass("org.springframework.web.servlet.DispatcherServlet")
-   // spring容器中存在JerseyApplicationPath实例时才进行装配
-   @ConditionalOnBean(JerseyApplicationPath.class)
-   public static class JerseyRequestMatcherConfiguration {
+## 最后把代理接到 Servlet 容器
 
-      @Bean
-      public RequestMatcherProvider requestMatcherProvider(
-            JerseyApplicationPath applicationPath) {
-         return new JerseyRequestMatcherProvider(applicationPath);
-      }
+SecurityFilterAutoConfiguration 不重新构建链。它创建 DelegatingFilterProxyRegistrationBean，指定目标 Bean 名 `springSecurityFilterChain`，并设置过滤器顺序与 dispatcher types。Servlet 容器调用代理，代理再委托 Spring 管理的过滤入口。[代理注册分析](/security-filter-registration/)
 
-   }
+## 用启动结果验证自己的判断
 
-}
-```
+阅读源码时，为每个候选配置写清当前应用是否满足其条件，再检查实际 Bean 和请求路径。自定义一个认证 Bean、改成另一种 Web 栈或定义自己的安全适配器，都可能改变部分结果，而不意味着全部安全自动配置都消失。
 
-## UserDetailsServiceAutoConfiguration
-
-```java
-@Configuration
-// 类路径下存在AuthenticationManager时才进行装配
-@ConditionalOnClass(AuthenticationManager.class)
-// spring容器中存在ObjectPostProcessor实例时才进行装配
-@ConditionalOnBean(ObjectPostProcessor.class)
-// spring容器中同时不存在AuthenticationManager，AuthenticationProvider，UserDetailsService实例时才进行装配
-@ConditionalOnMissingBean({ AuthenticationManager.class, AuthenticationProvider.class,
-      UserDetailsService.class })
-public class UserDetailsServiceAutoConfiguration {
-
-   private static final String NOOP_PASSWORD_PREFIX = "{noop}";
-
-   private static final Pattern PASSWORD_ALGORITHM_PATTERN = Pattern
-         .compile("^\\{.+}.*$");
-
-   private static final Log logger = LogFactory
-         .getLog(UserDetailsServiceAutoConfiguration.class);
-
-   @Bean
-   @ConditionalOnMissingBean(
-         type = "org.springframework.security.oauth2.client.registration.ClientRegistrationRepository")
-   @Lazy
-   public InMemoryUserDetailsManager inMemoryUserDetailsManager(
-         SecurityProperties properties,
-         ObjectProvider<PasswordEncoder> passwordEncoder) {
-      SecurityProperties.User user = properties.getUser();
-      List<String> roles = user.getRoles();
-      return new InMemoryUserDetailsManager(User.withUsername(user.getName())
-            .password(getOrDeducePassword(user, passwordEncoder.getIfAvailable()))
-            .roles(StringUtils.toStringArray(roles)).build());
-   }
-
-   private String getOrDeducePassword(SecurityProperties.User user,
-         PasswordEncoder encoder) {
-      String password = user.getPassword();
-      if (user.isPasswordGenerated()) {
-         logger.info(String.format("%n%nUsing generated security password: %s%n",
-               user.getPassword()));
-      }
-      if (encoder != null || PASSWORD_ALGORITHM_PATTERN.matcher(password).matches()) {
-         return password;
-      }
-      return NOOP_PASSWORD_PREFIX + password;
-   }
-
-}
-```
-
-## SecurityFilterAutoConfiguration
-
-```java
-@Configuration
-// 基于servlet的Web应用程序才进行装配
-@ConditionalOnWebApplication(type = Type.SERVLET)
-// 将SecurityProperties注册为bean
-@EnableConfigurationProperties(SecurityProperties.class)
-// 类路径下同时存在AbstractSecurityWebApplicationInitializer，SessionCreationPolicy时才进行装配
-@ConditionalOnClass({ AbstractSecurityWebApplicationInitializer.class,
-      SessionCreationPolicy.class })
-// 在SecurityAutoConfiguration准备后才进行装配
-@AutoConfigureAfter(SecurityAutoConfiguration.class)
-public class SecurityFilterAutoConfiguration {
-
-   private static final String DEFAULT_FILTER_NAME = AbstractSecurityWebApplicationInitializer.DEFAULT_FILTER_NAME;
-
-   @Bean
-   // spring容器中存在名称为springSecurityFilterChain的实例时才进行装配
-   @ConditionalOnBean(name = DEFAULT_FILTER_NAME)
-   public DelegatingFilterProxyRegistrationBean securityFilterChainRegistration(
-         SecurityProperties securityProperties) {
-      DelegatingFilterProxyRegistrationBean registration = new DelegatingFilterProxyRegistrationBean(
-            DEFAULT_FILTER_NAME);
-      registration.setOrder(securityProperties.getFilter().getOrder());
-      registration.setDispatcherTypes(getDispatcherTypes(securityProperties));
-      return registration;
-   }
-
-   private EnumSet<DispatcherType> getDispatcherTypes(
-         SecurityProperties securityProperties) {
-      if (securityProperties.getFilter().getDispatcherTypes() == null) {
-         return null;
-      }
-      return securityProperties.getFilter().getDispatcherTypes().stream()
-            .map((type) -> DispatcherType.valueOf(type.name())).collect(Collectors
-                  .collectingAndThen(Collectors.toSet(), EnumSet::copyOf));
-   }
-
-}
-```
-
-剩下的ReactiveSecurityAutoConfiguration和ReactiveUserDetailsServiceAutoConfiguration是spring5新增的reactive非阻塞的web框架中的配置类，不在本次的讨论之中，就不做分析了。
-
-## 总结
-
-本章主要分析了spring-security在项目启动时主要加载了哪些自动配置类，从spring-boot-autoconfigure的META-INF下的spring.factories文件中，我们可以发现，在项目启动时主要是加载SecurityAutoConfiguration
-SecurityRequestMatcherProviderAutoConfiguration、UserDetailsServiceAutoConfiguration、
-SecurityFilterAutoConfiguration这四个配置类，接下来的文章我们将围绕这四个配置类分析spring-security究竟为我们做了哪些自动配置。
-
-## 资料来源
-
-- [Spring Boot 2.1.5.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.1.5.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/)
+固定版本的依赖关系可对照 [Boot 2.1.5 依赖版本表](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/appendix-dependency-versions.html)。只有把启动装配与请求执行分开，后续的过滤器分析才有明确入口。

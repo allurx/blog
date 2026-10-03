@@ -1,7 +1,7 @@
 ---
 title: "MySQL 的事务机制"
 date: 2020-05-30
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - MySql
   - MySql的事务机制
@@ -11,7 +11,7 @@ domain: MySQL
 
 事务把一组操作作为一个提交或回滚的单位，但一致性、隔离性与持久性解决的是不同问题。一致性要求事务前后满足数据和业务约束；隔离性限制并发事务之间的可见性与干扰；持久性要求已提交结果在相应故障模型下能够恢复。InnoDB 的锁、MVCC、日志与刷盘配置共同参与这些保障，不能把它们归结为一种机制。
 
-以下讨论采用 MySQL 8.4 的 InnoDB 语义。其他存储引擎、不同读写方式和持久化配置可能有不同保障；事务不能替代应用正确实现业务规则。[InnoDB 与 ACID](https://dev.mysql.com/doc/refman/8.4/en/mysql-acid.html)说明了这些保障涉及的机制与配置。
+以下讨论采用 **MySQL Community Server 9.7.2、InnoDB** 的服务端语义，属于 MySQL 9.7 LTS 分支。本文解释事务模型与配置边界，不给出并发压测或故障恢复实验结论。其他存储引擎、不同读写方式和持久化配置可能有不同保障；事务不能替代应用正确实现业务规则。[InnoDB 与 ACID](https://dev.mysql.com/doc/refman/9.7/en/mysql-acid.html)说明了这些保障涉及的机制与配置。
 
 
 ## 事务的基本属性（ACID）
@@ -49,17 +49,19 @@ domain: MySQL
 | REPEATABLE READ | 默认级别。同一事务的普通一致性读通常使用首次建立的同一快照；锁定读和写操作遵循锁规则。 |
 | SERIALIZABLE | 提供更强隔离，可能把普通读取转换为加锁读取，增加阻塞；并非简单把所有事务按开始时间排成一条串行队列。 |
 
-不能把通用隔离级别对照表里的“REPEATABLE READ 允许幻读”直接当作 InnoDB 所有场景的结论。InnoDB 的一致性读通过快照维持读取视图，范围锁定读可能通过 next-key locks 阻止范围内插入；具体锁范围受查询、索引和隔离级别影响。事务混用快照读与锁定读时，也不能承诺两者看到完全相同的状态。[官方隔离级别说明](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)给出了相应边界。
+不能把通用隔离级别对照表里的“REPEATABLE READ 允许幻读”直接当作 InnoDB 所有场景的结论。InnoDB 的一致性读通过快照维持读取视图，范围锁定读可能通过 next-key locks 阻止范围内插入；具体锁范围受查询、索引和隔离级别影响。事务混用快照读与锁定读时，也不能承诺两者看到完全相同的状态。[官方隔离级别说明](https://dev.mysql.com/doc/refman/9.7/en/innodb-transaction-isolation-levels.html)给出了相应边界。
 
-可以先确认当前会话的隔离级别，再分析具体 SQL：
+在 MySQL 9.7 客户端或能够执行 SQL 的连接工具中，先确认实际服务器、当前会话隔离级别与自动提交设置，再分析具体 SQL。连接工具的版本不等于服务器版本：
 
 ```sql
-SELECT @@SESSION.transaction_isolation;
+SELECT VERSION(), @@version_comment,
+       @@SESSION.transaction_isolation, @@SESSION.autocommit;
 ```
 
-选择隔离级别时，从业务需要排除的异常出发，再检查相应查询和更新是否使用正确的事务边界与锁。仅把级别调高并不能修正跨事务的错误业务流程。
+上面的查询只读取环境，不证明某个并发异常已经出现或被排除。复现具体异常时，需要用两个独立连接明确列出事务开始、查询、写入和提交的交错，并给出表结构、索引及存储引擎。仅把级别调高并不能修正跨事务的错误业务流程。
 
 ## 资料来源
 
-- [InnoDB 与 ACID 模型](https://dev.mysql.com/doc/refman/8.4/en/mysql-acid.html)
-- [InnoDB 事务隔离级别](https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html)
+- [InnoDB 与 ACID 模型](https://dev.mysql.com/doc/refman/9.7/en/mysql-acid.html)
+- [InnoDB 事务隔离级别](https://dev.mysql.com/doc/refman/9.7/en/innodb-transaction-isolation-levels.html)
+- [MySQL LTS 与 Innovation 发布模型](https://dev.mysql.com/doc/refman/9.7/en/mysql-releases.html)

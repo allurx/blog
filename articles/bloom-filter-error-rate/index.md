@@ -1,13 +1,14 @@
 ---
 title: Bloom Filter 的误判率从哪里来
 date: 2026-10-02
+updated: 2026-10-03
 domain: 数据结构
 tags: [Bloom Filter, 概率, 哈希, 容量规划]
 ---
 
 如果只想知道一个键是否存在，保存完整集合有时仍然太贵。Bloom Filter（布隆过滤器）把集合压缩成一段位数组，允许把少数不存在的键回答为“可能存在”，以换取较小的存储开销。它适合放在昂贵的精确查询之前：先排除确定不存在的键，再让剩余请求访问真实数据。
 
-这个结构常被概括为“可能误判，不会漏判”。但这句话没有直接回答两个问题：误判概率如何由空间和插入量决定？配置的“1%”究竟是不是保证？本文讨论只插入、不删除的标准 Bloom Filter，从置位过程推导容量公式，再用 Python 3.12 标准库复现实验。理解过程只需知道哈希函数把键映射到数组位置，以及独立事件的概率如何相乘。
+这个结构常被概括为“可能误判，不会漏判”。但这句话没有直接回答两个问题：误判概率如何由空间和插入量决定？配置的“1%”究竟是不是保证？本文讨论只插入、不删除的标准 Bloom Filter，从置位过程推导容量公式，再用 Java 25 标准库复现实验。理解过程只需知道哈希函数把键映射到数组位置，以及独立事件的概率如何相乘；示例使用循环、字节数组和位运算。
 
 ## 位数组记住了位置，却没有记住归属
 
@@ -98,41 +99,51 @@ $$
 \frac{m}{n}\approx-\frac{\ln p}{(\ln2)^2}.
 $$
 
-因此，每个不同键需要多少位，主要由目标误判率决定。例如目标为 1% 时约需每键 9.585 位。`n = 1000` 时将 `m` 向上取整得到 9586 位；再比较连续最优点两侧的合法整数 `k`，本例选择 7。[Boost.Bloom 的 FPR 估算说明](https://www.boost.org/doc/libs/latest/libs/bloom/doc/html/bloom.html#bloom_fpr_estimation)也明确采用相邻整数比较。
+因此，每个不同键需要多少位，主要由目标误判率决定。例如目标为 1% 时约需每键 9.585 位。`n = 1000` 时将 `m` 向上取整得到 9586 位；再比较连续最优点两侧的合法整数 `k`，本例选择 7。[Boost.Bloom 的 FPR 估算说明](https://www.boost.org/doc/libs/latest/libs/bloom/doc/html/bloom.html#fpr_estimation)也明确采用相邻整数比较。
 
 取整之后还应代回公式检查。本例的指数近似为 **1.0035%**，已经略高于最初输入的 1%。所以这个输入是容量规划目标，不是硬上限。如果业务对误判成本敏感，应预留空间，依据真实键分布与查询负载验证，并在插入量增长时重新评估。
 
-9586 位用字节数组存储需要向上取整到 1199 字节。这只是位数组的有效载荷，不包含 Python 对象、解释器和实验中生成的字符串等内存。
+9586 位用字节数组存储需要向上取整到 1199 字节。这只是 `byte[]` 元素占用的空间，不包含数组对象头、过滤器对象、哈希状态、实验中的临时对象及 JVM 本身的内存。
 
 ## 用同一个过滤器观察插入量翻倍后的变化
 
-完整程序见 [bloom_filter_demo.py](./bloom_filter_demo.py)。它只依赖 Python 标准库，使用字节数组真正按位存储；每次哈希都给键加上固定四字节序号前缀，再计算 SHA-256 并对 `m` 取模。这样可以得到稳定、可复现的多个位置，避免使用会受到进程随机化影响的内置字符串 `hash()`。
+完整程序见 [BloomFilterDemo.java](./BloomFilterDemo.java)。它只依赖 Java 标准库，使用 `byte[]` 真正按位存储。键统一编码为 ASCII；第 `i` 次哈希把从 0 开始的序号 `i` 编码为四字节大端前缀，接在键字节之前，再计算 SHA-256。将全部 256 位摘要解释为无符号大端整数，对 `m` 取模，就得到一个位置。固定这些约定后，同一组键在不同运行中会落到相同的位置。
+
+Java 的 `BigInteger` 可以直接完成摘要到位置的换算，但应使用 [`new BigInteger(1, digest)`](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/math/BigInteger.html#%3Cinit%3E(int,byte%5B%5D)) 显式指定正号。单参数的字节数组构造器按有符号二进制补码解释输入，会改变最高位为 1 的摘要所对应的整数。
 
 这个实现用于讲解。不同前缀不等于数学上已经证明哈希独立，取模也不构成严格均匀分布的证明；实验以 SHA-256 输出近似均匀为建模依据，不把它当成性能优化方案或生产级并发容器。
 
 插入与查询的核心如下，完整的哈希实现、参数计算和入口都在附件中：
 
-```python
-def add(self, key: bytes) -> None:
-    for position in self.positions(key):
-        self.bits[position // 8] |= 1 << (position % 8)
+```java
+void add(byte[] key) {
+    for (int index = 0; index < k; index++) {
+        int position = position(key, index);
+        bits[position / 8] |= 1 << (position % 8);
+    }
+}
 
-def might_contain(self, key: bytes) -> bool:
-    return all(
-        self.bits[position // 8] & (1 << (position % 8))
-        for position in self.positions(key)
-    )
+boolean mightContain(byte[] key) {
+    for (int index = 0; index < k; index++) {
+        int position = position(key, index);
+        if ((bits[position / 8] & (1 << (position % 8))) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
 ```
 
 程序先枚举前文小例子的全部 16 种位置组合。然后固定 `m = 9586、k = 7`，依次插入 `member:0` 到 `member:999`，再追加到 `member:1999`。两个阶段都查询同一组 `absent:0` 到 `absent:99999`；这 100000 个键明确不属于插入集合，因此阳性回答都可计为误判。每个阶段还查询全部已插入键，统计漏判。
 
-将附件保存到本地，在其所在目录运行：
+安装 [JDK 25 LTS](https://www.oracle.com/java/technologies/java-se-support-roadmap.html)，将附件保存到本地，在其所在目录依次执行以下命令。编译产物写入 `out`，随后通过完整类名启动，不需要第三方依赖或预览特性：
 
 ```sh
-python3 bloom_filter_demo.py
+javac -d out BloomFilterDemo.java
+java -cp out io.allurx.BloomFilterDemo
 ```
 
-在 Linux、CPython 3.12.14 下得到以下输出。固定编码、输入和哈希算法让结果可以重复：
+在 Windows、Oracle JDK 25.0.2 下得到以下输出。程序固定使用 `Locale.ROOT` 输出小数，避免系统区域设置改变小数点格式：
 
 ```text
 tiny: exact=5/8, shortcut=9/16
@@ -149,7 +160,7 @@ n=2000, set_bits=7314, false_negatives=0, false_positives=14970/100000, observed
 
 标准 Bloom Filter 无法安全地直接删除一个键。前面的 A、B 共用位置 4，如果删除 A 时把位置 4 清零，B 就可能被漏判。位数组没有记录共享关系，清位不能作为插入的逆操作；需要删除能力时，应另选支持该操作的数据结构及其正确实现。
 
-并发同样需要单独处理。两个线程对同一字节执行非原子的“读取、按位或、写回”，可能覆盖彼此设置的不同位。这里丢失的是插入结果，而不是概率公式突然失效。例如 [Guava 33.4.8 的 API 文档](https://guava.dev/releases/33.4.8-jre/api/docs/com/google/common/hash/BloomFilter.html)说明其 BloomFilter 从 23.0 起借助原子操作和 CAS 保证并发访问的正确性。本文的 Python 示例只做顺序执行，没有提供这种保证。
+并发同样需要单独处理。两个线程对同一字节执行非原子的“读取、按位或、写回”，可能覆盖彼此设置的不同位。这里丢失的是插入结果，而不是概率公式突然失效。例如 [Guava 33.4.8 的 API 文档](https://guava.dev/releases/33.4.8-jre/api/docs/com/google/common/hash/BloomFilter.html)说明其 BloomFilter 从 23.0 起借助原子操作和 CAS 保证并发访问的正确性。本文的 Java 示例只做顺序执行：普通 `byte[]` 不提供并发写入保障，实例内复用的 `MessageDigest` 也具有可变状态，不能让多个线程同时使用；即使把置位改成原子操作，也还需要单独处理哈希状态和写入可见性。
 
 如果把过滤器用于数据库前置判断，还必须回答“它表示哪个时刻的哪些数据”。一条记录已进入数据库，却尚未进入过滤器，此时过滤器回答不存在并不违反其内部集合的语义，但直接拒绝请求会成为业务层面的漏查。同步、重建和切换期间，能否用阴性结果排除真实数据，需要系统另外建立一致性条件。
 

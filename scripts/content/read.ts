@@ -19,6 +19,26 @@ async function readPngSize(sourcePath: string): Promise<{ width: number; height:
   return { width, height };
 }
 
+async function readSvgSize(sourcePath: string): Promise<{ width: number; height: number }> {
+  const source = await readFile(sourcePath, 'utf8');
+  const root = /<svg\b[^>]*>/i.exec(source)?.[0] ?? '';
+  const attribute = (name: string): string | undefined =>
+    new RegExp(`\\s${name}\\s*=\\s*["']([^"']+)["']`, 'i').exec(root)?.[1];
+  const pixels = (value: string | undefined): number =>
+    value && /^\d+(?:\.\d+)?(?:px)?$/.test(value) ? Number.parseFloat(value) : 0;
+
+  // 优先保留显式像素尺寸；只声明 viewBox 的矢量图按其宽高比预留空间。
+  const width = pixels(attribute('width'));
+  const height = pixels(attribute('height'));
+  if (width > 0 && height > 0) return { width, height };
+
+  const viewBox = attribute('viewBox')?.trim().split(/[\s,]+/).map(Number);
+  if (viewBox?.length === 4 && viewBox.every(Number.isFinite) && viewBox[2]! > 0 && viewBox[3]! > 0) {
+    return { width: viewBox[2]!, height: viewBox[3]! };
+  }
+  throw new Error(sourcePath + ': SVG 必须声明有效的像素宽高或 viewBox');
+}
+
 /**
  * 只把文章包根的 index.md 作为正文；其余普通文件按包内路径原样发布。
  */
@@ -36,9 +56,11 @@ async function articleAssets(directory: string, outputDirectory: string, article
     if (entry.isDirectory()) assets.push(...await articleAssets(sourcePath, outputPath, false));
     else if (entry.isFile()) {
       const asset: ArticleAsset = { sourcePath, outputPath };
-      // 当前文章配图都是 PNG，IHDR 的真实尺寸让懒加载图片提前占位。
+      // 位图与矢量图都在构建时读取尺寸，让懒加载图片提前占位。
       if (entry.name.toLowerCase().endsWith('.png')) {
         asset.imageSize = await readPngSize(sourcePath);
+      } else if (entry.name.toLowerCase().endsWith('.svg')) {
+        asset.imageSize = await readSvgSize(sourcePath);
       }
       assets.push(asset);
     }

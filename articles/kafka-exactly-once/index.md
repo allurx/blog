@@ -1,7 +1,7 @@
 ---
 title: "Kafka Exactly-Once 为什么解决不了数据库与消息双写"
 date: "2026-09-10"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "MQ"
 tags: ["Kafka", "ExactlyOnce", "Outbox"]
 ---
@@ -16,10 +16,10 @@ Kafka 的 Exactly-Once Semantics 必须连同范围一起讨论：Producer 重�
 
 ```java
 orderRepository.save(order);
-kafkaTemplate.send("order-created", event);
+kafkaProducer.send(new ProducerRecord<>("order-created", serializedEvent));
 ```
 
-它没有表达两个操作如何一起提交、发送失败如何恢复。即使把它们放进两个相互协调的事务，提交仍有先后：
+这里沿用 Kafka Client 4.3 的原生 `KafkaProducer`，`serializedEvent` 表示应用已序列化的事件。这个片段没有表达两个操作如何一起提交、发送失败如何恢复。即使把它们放进两个相互协调的事务，提交仍有先后：
 
 ### 数据库先提交
 
@@ -181,7 +181,7 @@ CDC 并没有把端到端语义变成神奇的 Exactly Once。Connector 或下�
 消费记录 eventId
 ```
 
-并对 `event_id` 建立唯一约束：
+下面的 MySQL 9.7 LTS/InnoDB 表把消费者与事件 ID 组合成唯一键。示例中的 `?` 由应用绑定，DDL、参数绑定及消息确认需要在实际集成中一起验证：
 
 ```sql
 CREATE TABLE consumed_event (
@@ -189,7 +189,7 @@ CREATE TABLE consumed_event (
     consumer     VARCHAR(100) NOT NULL,
     processed_at DATETIME(6)  NOT NULL,
     PRIMARY KEY (event_id, consumer)
-);
+) ENGINE = InnoDB;
 ```
 
 事务流程：
@@ -218,7 +218,9 @@ COMMIT;
 
 ## 业务写入与中继发布的代码边界
 
-以下展示 Java 21、Spring Framework 6、MySQL 8.4 下的应用边界。`OrderRepository`、`OutboxRepository`、序列化器及业务实体是应用提供的组件，片段不构成可以单独启动的完整项目；两个 Repository 必须使用同一数据库和受同一个事务管理器管理的连接。
+以下片段以 JDK 25 LTS、Spring Framework 7.0.9、Kafka Client 4.3 和 MySQL 9.7 LTS/InnoDB 为目标。Spring 7.0 支持 JDK 25，应用仍需让事务管理器与两个 Repository 使用同一数据源。[Spring 版本与 JDK 兼容范围](https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-Versions)
+
+这些片段只解释事务边界，本文没有运行 Spring、Kafka 与 MySQL 的联合实验。`OrderRepository`、`OutboxRepository`、序列化器及业务实体是应用提供的组件，片段不构成可以单独启动的完整项目；两个 Repository 必须使用同一数据库和受同一个事务管理器管理的连接。
 
 ### Outbox 表
 
@@ -229,14 +231,14 @@ CREATE TABLE outbox_event (
     aggregate_id   VARCHAR(100)  NOT NULL,
     event_type     VARCHAR(100)  NOT NULL,
     payload        JSON          NOT NULL,
-    created_at     DATETIME(6)   NOT NULL,
+    created_at     DATETIME(6)   NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     published_at   DATETIME(6)   NULL,
     PRIMARY KEY (id),
     INDEX idx_outbox_unpublished (published_at, created_at)
 ) ENGINE = InnoDB;
 ```
 
-`id` 必须在事件首次创建时生成，重试发布时不能重新生成，否则消费者无法识别重复事件。
+`id` 必须在事件首次创建时生成，重试发布时不能重新生成，否则消费者无法识别重复事件。`created_at` 由数据库在插入时填入，表示持久化意图的时间；它不是全局事件顺序号，不能替代后文按实体维护的发布顺序。
 
 ### 同一事务写业务与事件
 
@@ -305,7 +307,7 @@ public class OrderApplicationService {
 
 ### 至少一次发布
 
-简化的 Polling Publisher 使用原生 `KafkaProducer<String, String>`，假定 payload 已序列化为字符串；`ExecutionException` 来自 `java.util.concurrent`。这里等待 Broker 确认后才更新数据库标记：
+简化的 Polling Publisher 使用原生 `KafkaProducer<String, String>`，配置 `enable.idempotence=true`、`acks=all`，且不设置 `transactional.id`，因此发送的是非事务消息。payload 已序列化为字符串；`ExecutionException` 来自 `java.util.concurrent`。在这个前提下，等待 Broker 确认后才更新数据库标记：
 
 ```java
 public void publish(OutboxEvent event)
@@ -324,7 +326,18 @@ public void publish(OutboxEvent event)
 
 如果 `send().get()` 成功后进程崩溃，`markPublished()` 尚未执行，事件之后会被重新发布。这是预期行为，不应尝试通过不可靠的内存标志消除它。
 
+如果改用 Kafka 事务 Producer，`send().get()` 成功仍不表示事务已提交。必须在 `commitTransaction()` 成功之后才把 Outbox 标记为已发布；否则数据库标记先提交、Kafka 事务随后中止时，消息仍会丢失。事务提交结果未知时也应保留恢复路径，不能先写成功标记。[KafkaProducer 事务提交](https://kafka.apache.org/43/javadoc/org/apache/kafka/clients/producer/KafkaProducer.html#commitTransaction())
+
 原生 `KafkaProducer.send()` 返回的是 `Future<RecordMetadata>`，等待方法是 `get()`，不是 `CompletableFuture.join()`。发送失败或被中断时异常向调用方传播，本方法不写已发布标记；上层负责中断策略及有界重试。[KafkaProducer.send](https://kafka.apache.org/43/javadoc/org/apache/kafka/clients/producer/KafkaProducer.html#send(org.apache.kafka.clients.producer.ProducerRecord))
+
+按下面的失败点检查恢复流程，比只测试一次成功发送更能验证 Outbox 的边界。表中状态是从上述提交顺序推导的，未作为集成实测结果：
+
+| 失败点 | 持久状态 | 恢复动作 |
+| --- | --- | --- |
+| 业务事务提交之前 | 订单与 Outbox 都未提交 | 按业务请求的幂等规则重新尝试 |
+| 数据库已提交，Kafka 尚未确认 | Outbox 待发布 | 用原 `eventId` 重发；响应丢失时也可能重复 |
+| Kafka 已确认，`markPublished` 尚未提交 | Kafka 可能已有消息，Outbox 仍待发布 | 允许重发，由消费者去重 |
+| 已发布标记提交之后 | Outbox 记录已完成 | 按保留策略归档 |
 
 完整工程还需处理：
 

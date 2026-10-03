@@ -1,7 +1,7 @@
 ---
 title: "微任务为什么会饿死定时器"
 date: 2026-10-01
-updated: 2026-10-02
+updated: 2026-10-03
 domain: "JavaScript"
 tags: ["EventLoop", "Microtask", "Performance"]
 ---
@@ -46,7 +46,7 @@ Node.js 的 `setImmediate()` 在执行中的 immediate 回调内再次安排回�
 
 ## 用相同批次比较两种调度
 
-下面的完整程序使用 Node.js 24 或更新版本，无外部依赖。保存为 `MicrotaskStarvationDemo.mjs`，执行 `node MicrotaskStarvationDemo.mjs`。两组都计算相同的整数和，也都每 1,000 项结束一个批次，唯一变化是安排下一批的方式。
+下面的完整程序以 Node.js 24 LTS 为基线，无外部依赖，使用 ES module。保存为 `MicrotaskStarvationDemo.mjs`，执行 `node MicrotaskStarvationDemo.mjs`。两组都计算相同的整数和，也都每 1,000 项结束一个批次，唯一变化是安排下一批的方式。
 
 程序观察定时器执行时工作是否已经全部完成，不用毫秒差异推导性能提升。
 
@@ -104,7 +104,7 @@ console.log('immediate: timer saw all work =', immediate.timerSawAllWork);
 console.log('both sums match =', microtask.sum === immediate.sum);
 ```
 
-以 Windows、Node.js v26.8.2 为运行环境，可以观察到下面这种输出；其中 `immediate` 一行取决于实际调度与计时：
+在 Windows、Node.js 24.19.0 下运行得到以下输出；其中 `immediate` 一行取决于实际调度与计时：
 
 ```text
 microtask: timer saw all work = true
@@ -127,7 +127,7 @@ queueMicrotask(() => order.push('microtask'));
 setImmediate(() => console.log(order.join(' -> ')));
 ```
 
-同一 Node.js v26.8.2 环境的实际输出分别为：
+同一 Node.js 24.19.0 环境的实际输出分别为：
 
 ```text
 nextTick -> microtask

@@ -1,7 +1,7 @@
 ---
-title: "Spring Security OAuth 2.0 Client"
+title: "Spring Security 5.2 的 OAuth 2.0 登录流程"
 date: 2020-03-29
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -11,45 +11,41 @@ tags:
 domain: Spring
 ---
 
-OAuth2 登录包含发起授权、接收回调、用授权码换取访问令牌、获取用户信息这几个阶段。Spring Security 用不同过滤器和认证提供者协作完成流程，ClientRegistration 保存第三方配置，OAuth2AuthorizedClient 则保存已经授权的客户端及令牌；它们承担不同职责。
+使用 GitHub 登录一个应用时，浏览器跳转、服务端交换令牌、读取用户资料和建立应用内登录状态是几个不同阶段。Spring Security 用不同过滤器与提供者连接它们；区分这些职责，才能定位回调丢失、state 不匹配或令牌交换失败。
 
-下面分析 Servlet 应用的授权码登录流程，使用 Spring Boot 2.2.6.RELEASE 与其默认管理的 Spring Security 5.2.2.RELEASE，自动配置可对照 [OAuth2WebSecurityConfiguration](https://github.com/spring-projects/spring-boot/blob/v2.2.6.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/oauth2/client/servlet/OAuth2WebSecurityConfiguration.java)。OAuth2 授权与应用内登录相关但并不等同，OpenID Connect 则有额外的身份协议语义。
+本文研究 **Spring Boot 2.2.6.RELEASE / Spring Security 5.2.2.RELEASE** 的历史 Servlet 授权码登录。复现基线为 **Eclipse Temurin JDK 11.0.32.1+1、Maven 3.10.0**，选择 JDK 11 是为了满足旧 Boot 声明的 Java 8—13 兼容范围。旧依赖用于对照源码，不是新项目推荐版本。[该版本运行要求](https://docs.spring.io/spring-boot/docs/2.2.6.RELEASE/reference/html/getting-started.html#getting-started-system-requirements)
 
-## 概述
+应先理解授权码和访问令牌的区别：OAuth 2.0 授予的是资源访问权，应用可在取得第三方资料后建立自己的身份；OpenID Connect 另有身份协议语义。[RFC 6749 授权码流程](https://www.rfc-editor.org/rfc/rfc6749.html#section-4.1)
 
-OAuth（开放授权）是一个开放标准，允许用户授权第三方网站访问他们存储在另外的服务提供者上的信息，而不需要将用户名和密码提供给第三方网站或分享他们数据的所有内容。网上有很多关于OAuth协议的讲解，这里就不在详细解释OAuth相关的概念了，请读者自行查阅相关资料，否则本文接下来的内容可能会很难理解。
+本文适合对照或维护这一历史实现。新应用的组件配置、授权方式与兼容版本应从 [当前 OAuth2 Login 文档](https://docs.spring.io/spring-security/reference/servlet/oauth2/login/core.html)和 [Spring Boot 当前文档](https://docs.spring.io/spring-boot/)进入；下文适配器、POM 和源码必须作为同一历史版本组合阅读。
 
+## 先准备能独立启动的本地应用
 
-## Spring-Security对OAuth2.0的支持
+下载 [完整 POM](./pom.xml) 和 [OAuthClientApplication.java](./OAuthClientApplication.java)，按下列目录放置文件：
 
-Spring Security 的 OAuth2 Client 支持把授权码换成访问令牌，并用令牌读取第三方用户资料。下面以 GitHub 为提供者：应用根据取得的 GitHub 用户信息建立本地 Authentication，再由自己的授权规则决定可访问的资源。
-
-### 创建GitHub OAuth Apps
-
-在[Github OAuth Apps](https://github.com/settings/developers)中创建一个新的应用
-
-![](./images/github-oauth-app.png)
-
-示例中的 GITHUB_CLIENT_ID 和 GITHUB_CLIENT_SECRET 由运行环境提供，分别对应自己的 OAuth App 凭据，不应写入文章或提交到仓库。
-
-OAuth App 记录客户端身份与回调地址。使用 Spring Boot 2.2.6.RELEASE 的 parent 或 BOM 管理依赖版本，并在 POM 中添加以下依赖：
-
-```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-oauth2-client</artifactId>
-</dependency>
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-security</artifactId>
-</dependency>
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>
-</dependency>
+```text
+oauth-client-demo/
+├─ pom.xml
+└─ src/main/
+   ├─ java/io/allurx/OAuthClientApplication.java
+   └─ resources/application.yml
 ```
 
-然后在配置文件中填上刚刚注册的应用的clientId和clientSecret
+POM 由 Boot parent 管理 `spring-boot-starter-oauth2-client` 和 `spring-boot-starter-web`。入口类提供公开首页、受保护的 `/user`，并通过 `oauth2Login()` 接入登录流程；这不是只有配置片段、缺少 main 方法的工程。
+
+### OAuth App 的回调必须与本地地址一致
+
+在 [GitHub OAuth Apps](https://github.com/settings/developers) 创建自己的测试应用。本例没有上下文路径，默认端口为 8080：
+
+| 字段 | 本地示例值与作用 |
+| --- | --- |
+| Application name | 可辨认的测试名称，例如 `Local OAuth Demo` |
+| Homepage URL | `http://localhost:8080` |
+| Authorization callback URL | `http://localhost:8080/login/oauth2/code/github` |
+
+修改端口、上下文路径或反向代理公开地址时，要同步修改回调注册。当前平台操作见 [GitHub OAuth App 创建文档](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/creating-an-oauth-app)；历史截图中的其他项目路径不应直接复制。
+
+把自己取得的客户端凭据通过运行环境注入 `GITHUB_CLIENT_ID` 和 `GITHUB_CLIENT_SECRET`，不要保存到文章或 Git 仓库。`application.yml` 内容为：
 
 ```yaml
 spring:
@@ -60,163 +56,39 @@ spring:
           github:
             clientId: ${GITHUB_CLIENT_ID}
             clientSecret: ${GITHUB_CLIENT_SECRET}
-```
-
-紧接着就像普通的spring-security应用一样，继承WebSecurityConfigurerAdapter，进行一些简单的配置即可
-
-```java
-@SpringBootApplication
-@RestController
-public class SocialApplication extends WebSecurityConfigurerAdapter {
-
-    // ...
-
-    @Override
-    protected void configure(HttpSecurity http) throws Exception {
-        // @formatter:off
-        http
-            .authorizeRequests(a -> a
-                .antMatchers("/", "/error", "/webjars/**").permitAll()
-                .anyRequest().authenticated()
-            )
-            .exceptionHandling(e -> e
-                .authenticationEntryPoint(new HttpStatusEntryPoint(HttpStatus.UNAUTHORIZED))
-            )
-            .oauth2Login();
-        // @formatter:on
-    }
-}
-```
-
-上面的片段展示安全规则，启动类与页面仍由 Spring Boot 应用提供。页面中的 GitHub 登录链接指向 `/oauth2/authorization/github`，默认回调地址为 `{baseUrl}/login/oauth2/code/github`，需要与 OAuth App 中登记的地址一致。用户授权后，服务端交换令牌并读取用户资料，再建立本地登录状态。要观察过滤器链，可启用下面的调试日志：
-
-```yaml
 logging:
   level:
     org.springframework.security: debug
 ```
 
-重新启动应用之后，从控制台输出中我们可以看到与普通spring-security应用不同的地方在于整个过滤链多出了以下几个过滤器
+在项目根目录执行 `mvn package`，再运行 `java -jar target/historical-oauth-client-demo-1.0.0.jar`。应用启动可以验证本地装配；完整授权仍需要有效的 OAuth App、可达的 GitHub 端点和用户授权，编译成功不能替代这一步。
 
-```java
-OAuth2AuthorizationRequestRedirectFilter
-OAuth2LoginAuthenticationFilter
-```
+### 观察完整登录与失败路径
 
-联想oauth2的授权码模式以及这两个过滤器的名字，熟悉spring-security的同学心中肯定已经有了一点想法了。对没错，spring-security对客户端模式的支持完全就是基于这两个过滤器来实现的。现在我们来回想以下授权码模式的执行流程
+打开首页，点击 GitHub 登录链接，浏览器先请求 `/oauth2/authorization/github`；允许授权后返回回调，登录成功后可访问 `/user`，看到提供者对应的主体标识。直接未登录访问 `/user`，本例配置返回 401。
 
-1. 用户在客户端页面点击三方应用登录按钮（客户端就是我们刚刚注册的github应用）
+同时观察取消授权、回调所在浏览器会话丢失和重复使用旧回调的情况。它们失败的位置不同，不应全部解释成“客户端密码错误”。外部平台页面与账号权限可能变化，本文的源码分析不保证历史依赖长期兼容所有提供者变化。
 
-2. 页面跳转到三方应用注册的授权方页面（授权服务器即github）
+## 四种数据对象分别保存什么
 
-3. 用户登入授权后，github调用我们应用的回调地址（我们刚刚注册github应用时填写的回调地址）
+| 对象 | 内容与生命周期 |
+| --- | --- |
+| ClientRegistration | 提供者地址、client id、回调模板、scope 等静态注册信息 |
+| OAuth2AuthorizationRequest | 本次待完成授权的 state、scope、回调等请求信息 |
+| OAuth2AuthenticationToken | 应用内已经建立的用户认证信息 |
+| OAuth2AuthorizedClient | 注册信息、关联主体、访问令牌和可选刷新令牌 |
 
-4. 第三步的回调地址中github会将code参数放到url中，接下来我们的客户端就会在内部拿这个code再次去调用github
+Authentication 解决应用内“当前主体是谁”，AuthorizedClient 保存应用调用第三方资源所需的授权材料；二者不能只因出现在同一次登录里就混为一个对象。
 
-   的access_token地址获取令牌
+## 发起授权：解析、保存、重定向
 
-上面就是标准的authorization_code授权模式，OAuth2AuthorizationRequestRedirectFilter的作用就是上面步骤中的1.2步的合体，当用户点击页面的github授权url之后，OAuth2AuthorizationRequestRedirectFilter匹配这个请求，接着它会将我们配置文件中的clientId、scope以及构造一个state参数（防止csrf攻击）拼接成一个url重定向到github的授权url，OAuth2LoginAuthenticationFilter的作用则是上面3.4步骤的合体，当用户在github的授权页面授权之后github调用回调地址，OAuth2LoginAuthenticationFilter匹配这个回调地址，解析回调地址后的code与state参数进行验证之后内部拿着这个code远程调用github的access_token地址，拿到access_token之后通过OAuth2UserService获取相应的用户信息（内部是拿access_token远程调用github的用户信息端点）最后将用户信息构造成Authentication被SecurityContextPersistenceFilter过滤器保存到HttpSession中。
+OAuth2AuthorizationRequestRedirectFilter 将请求交给 DefaultOAuth2AuthorizationRequestResolver。默认解析器从发起地址提取 registrationId，例如 `github`，再查 ClientRegistrationRepository，构造带随机 state 的授权请求。
 
-下面我们就来看一下这两个过滤器内部执行的原理
-
-### OAuth2AuthorizationRequestRedirectFilter
-
-```java
-public class OAuth2AuthorizationRequestRedirectFilter extends OncePerRequestFilter {
-
-    ......省略部分代码
-
-	@Override
-	protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
-			throws ServletException, IOException {
-
-		try {
-			OAuth2AuthorizationRequest authorizationRequest = this.authorizationRequestResolver.resolve(request);
-			if (authorizationRequest != null) {
-				this.sendRedirectForAuthorization(request, response, authorizationRequest);
-				return;
-			}
-		} catch (Exception failed) {
-			this.unsuccessfulRedirectForAuthorization(request, response, failed);
-			return;
-		}
-        ......省略部分代码
-}
-```
-
-通过authorizationRequestResolver解析器解析请求，解析器的默认实现是DefaultOAuth2AuthorizationRequestResolver，核心解析方法如下
-
-```java
-
-// 第一步解析
-@Override
-public OAuth2AuthorizationRequest resolve(HttpServletRequest request) {
-    // 通过内部的authorizationRequestMatcher来解析当前请求中的registrationId
-    // 也就是/oauth2/authorization/github中的github
-    String registrationId = this.resolveRegistrationId(request);
-    String redirectUriAction = getAction(request, "login");
-    return resolve(request, registrationId, redirectUriAction);
-}
-
-// 第二步解析
-private OAuth2AuthorizationRequest resolve(HttpServletRequest request, String registrationId, String redirectUriAction) {
-    if (registrationId == null) {
-        return null;
-    }
-	// 根据传入的registrationId找到注册的应用信息
-    ClientRegistration clientRegistration = this.clientRegistrationRepository.findByRegistrationId(registrationId);
-    if (clientRegistration == null) {
-        throw new IllegalArgumentException("Invalid Client Registration with Id: " + registrationId);
-    }
-
-    Map<String, Object> attributes = new HashMap<>();
-    attributes.put(OAuth2ParameterNames.REGISTRATION_ID, clientRegistration.getRegistrationId());
-
-    OAuth2AuthorizationRequest.Builder builder;
-    // 根据不同的AuthorizationGrantType构造不同的builder
-    if (AuthorizationGrantType.AUTHORIZATION_CODE.equals(clientRegistration.getAuthorizationGrantType())) {
-        builder = OAuth2AuthorizationRequest.authorizationCode();
-        Map<String, Object> additionalParameters = new HashMap<>();
-        if (!CollectionUtils.isEmpty(clientRegistration.getScopes()) &&
-            clientRegistration.getScopes().contains(OidcScopes.OPENID)) {
-            // Section 3.1.2.1 Authentication Request - https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
-            // scope
-            // 		REQUIRED. OpenID Connect requests MUST contain the "openid" scope value.
-            addNonceParameters(attributes, additionalParameters);
-        }
-        if (ClientAuthenticationMethod.NONE.equals(clientRegistration.getClientAuthenticationMethod())) {
-            addPkceParameters(attributes, additionalParameters);
-        }
-        builder.additionalParameters(additionalParameters);
-    } else if (AuthorizationGrantType.IMPLICIT.equals(clientRegistration.getAuthorizationGrantType())) {
-        builder = OAuth2AuthorizationRequest.implicit();
-    } else {
-        throw new IllegalArgumentException("Invalid Authorization Grant Type ("  +
-                                           clientRegistration.getAuthorizationGrantType().getValue() +
-                                           ") for Client Registration with Id: " + clientRegistration.getRegistrationId());
-    }
-
-    String redirectUriStr = expandRedirectUri(request, clientRegistration, redirectUriAction);
-
-    OAuth2AuthorizationRequest authorizationRequest = builder
-        .clientId(clientRegistration.getClientId())
-        .authorizationUri(clientRegistration.getProviderDetails().getAuthorizationUri())
-        .redirectUri(redirectUriStr)
-        .scopes(clientRegistration.getScopes())
-        // 生成随机state值
-        .state(this.stateGenerator.generateKey())
-        .attributes(attributes)
-        .build();
-
-    return authorizationRequest;
-}
-```
-
-DefaultOAuth2AuthorizationRequestResolver判断请求是否是授权请求，最终返回一个OAuth2AuthorizationRequest对象给OAuth2AuthorizationRequestRedirectFilter，如果OAuth2AuthorizationRequest不为null的话，说明当前请求是一个授权请求，那么接下来就要拿着这个请求重定向到授权服务器的授权端点了，下面我们接着看OAuth2AuthorizationRequestRedirectFilter发送重定向的逻辑
+解析器只负责生成请求；真正的保存发生在过滤器发送重定向之前：
 
 ```java
 private void sendRedirectForAuthorization(HttpServletRequest request, HttpServletResponse response,
-                                          OAuth2AuthorizationRequest authorizationRequest) throws IOException {
+                                            OAuth2AuthorizationRequest authorizationRequest) throws IOException {
 
     if (AuthorizationGrantType.AUTHORIZATION_CODE.equals(authorizationRequest.getGrantType())) {
         this.authorizationRequestRepository.saveAuthorizationRequest(authorizationRequest, request, response);
@@ -225,331 +97,49 @@ private void sendRedirectForAuthorization(HttpServletRequest request, HttpServle
 }
 ```
 
-1. 如果当前是授权码类型的授权请求那么就需要将这个请求信息保存下来，因为接下来授权服务器回调我们需要用到这个授权请求的参数进行校验等操作（比对state），这里是通过authorizationRequestRepository保存授权请求的，默认的保存方式是通过HttpSessionOAuth2AuthorizationRequestRepository保存在httpsession中的，具体的保存逻辑很简单，这里就不细说了。
-
-2. 保存完成之后就要开始重定向到授权服务端点了，这里默认的authorizationRedirectStrategy是DefaultRedirectStrategy，重定向的逻辑很简单，通过response.sendRedirect方法使前端页面重定向到指定的授权
-
-   ```java
-   public void sendRedirect(HttpServletRequest request, HttpServletResponse response,
-                            String url) throws IOException {
-       String redirectUrl = calculateRedirectUrl(request.getContextPath(), url);
-       redirectUrl = response.encodeRedirectURL(redirectUrl);
-
-       if (logger.isDebugEnabled()) {
-           logger.debug("Redirecting to '" + redirectUrl + "'");
-       }
-
-       response.sendRedirect(redirectUrl);
-   }
-   ```
-
-   OAuth2AuthorizationRequestRedirectFilter处理逻辑讲完了，下面我们对它处理过程做一个总结
-
-   1. 通过内部的OAuth2AuthorizationRequestResolver解析当前的请求，返回一个OAuth2AuthorizationRequest对象，如果当前请求是授权端点请求，那么就会返回一个构造好的对象，包含我们的client_id、state、redirect_uri参数，如果对象为null的话，那么就说明当前请求不是授权端点请求。注意如果OAuth2AuthorizationRequestResolver不为null的话，OAuth2AuthorizationRequestResolver内部会将其保存在httpsession中这样授权服务器在调用我们的回调地址时我们就能从httpsession中取出请求将state进行对比以防csrf攻击。
-   2. 如果第一步返回的OAuth2AuthorizationRequest对象不为null的话，接下来就会通过response.sendRedirect的方法将OAuth2AuthorizationRequest中的授权端点请求发送到前端的响应头中然后浏览器就会重定向到授权页面，等待用户授权。
-
-### OAuth2LoginAuthenticationFilter
-
-   ```java
-   public class OAuth2LoginAuthenticationFilter extends AbstractAuthenticationProcessingFilter {
-       @Override
-       public Authentication attemptAuthentication(HttpServletRequest request, HttpServletResponse response)
-               throws AuthenticationException {
-
-           MultiValueMap<String, String> params = OAuth2AuthorizationResponseUtils.toMultiMap(request.getParameterMap());
-           // 如果请求参数中没有state和code参数，说明当前请求是一个非法请求
-           if (!OAuth2AuthorizationResponseUtils.isAuthorizationResponse(params)) {
-               OAuth2Error oauth2Error = new OAuth2Error(OAuth2ErrorCodes.INVALID_REQUEST);
-               throw new OAuth2AuthenticationException(oauth2Error, oauth2Error.toString());
-           }
-           // 从httpsession中取出OAuth2AuthorizationRequestRedirectFilter中保存的授权请求，
-           // 如果找不到的话说明当前请求是非法请求
-           OAuth2AuthorizationRequest authorizationRequest =
-                   this.authorizationRequestRepository.removeAuthorizationRequest(request, response);
-           if (authorizationRequest == null) {
-               OAuth2Error oauth2Error = new OAuth2Error(AUTHORIZATION_REQUEST_NOT_FOUND_ERROR_CODE);
-               throw new OAuth2AuthenticationException(oauth2Error, oauth2Error.toString());
-           }
-
-           // 如果当前注册的应用中找不到授权请求时的应用了，那么也是一个不正确的请求
-           String registrationId = authorizationRequest.getAttribute(OAuth2ParameterNames.REGISTRATION_ID);
-           ClientRegistration clientRegistration = this.clientRegistrationRepository.findByRegistrationId(registrationId);
-           if (clientRegistration == null) {
-               OAuth2Error oauth2Error = new OAuth2Error(CLIENT_REGISTRATION_NOT_FOUND_ERROR_CODE,
-                       "Client Registration not found with Id: " + registrationId, null);
-               throw new OAuth2AuthenticationException(oauth2Error, oauth2Error.toString());
-           }
-           String redirectUri = UriComponentsBuilder.fromHttpUrl(UrlUtils.buildFullRequestUrl(request))
-                   .replaceQuery(null)
-                   .build()
-                   .toUriString();
-           OAuth2AuthorizationResponse authorizationResponse = OAuth2AuthorizationResponseUtils.convert(params, redirectUri);
-
-           Object authenticationDetails = this.authenticationDetailsSource.buildDetails(request);
-           OAuth2LoginAuthenticationToken authenticationRequest = new OAuth2LoginAuthenticationToken(
-                   clientRegistration, new OAuth2AuthorizationExchange(authorizationRequest, authorizationResponse));
-           authenticationRequest.setDetails(authenticationDetails);
-
-           // 将未认证的OAuth2LoginAuthenticationToken委托给AuthenticationManager
-           // 选择合适的AuthenticationProvider来对其进行认证，这里的AuthenticationProvider是
-           // OAuth2LoginAuthenticationProvider
-           OAuth2LoginAuthenticationToken authenticationResult =
-               (OAuth2LoginAuthenticationToken) this.getAuthenticationManager().authenticate(authenticationRequest);
-
-           // 将最终的认证信息封装成OAuth2AuthenticationToken
-           OAuth2AuthenticationToken oauth2Authentication = new OAuth2AuthenticationToken(
-               authenticationResult.getPrincipal(),
-               authenticationResult.getAuthorities(),
-               authenticationResult.getClientRegistration().getRegistrationId());
-           oauth2Authentication.setDetails(authenticationDetails);
-
-           // 将客户端注册信息、用户标识和令牌封装为已授权客户端。
-           // 认证完成后保存，供后续请求复用该用户的授权信息。
-           OAuth2AuthorizedClient authorizedClient = new OAuth2AuthorizedClient(
-               authenticationResult.getClientRegistration(),
-               oauth2Authentication.getName(),
-               authenticationResult.getAccessToken(),
-               authenticationResult.getRefreshToken());
-
-           this.authorizedClientRepository.saveAuthorizedClient(authorizedClient, oauth2Authentication, request, response);
-
-           return oauth2Authentication;
-       }
-   }
-   ```
-
-   OAuth2LoginAuthenticationFilter的作用很简单，就是响应授权服务器的回调地址，核心之处在于OAuth2LoginAuthenticationProvider对OAuth2LoginAuthenticationToken的认证，
-
-#### OAuth2LoginAuthenticationToken
-
-##### OAuth2LoginAuthenticationProvider
-
-```java
-public class OAuth2LoginAuthenticationProvider implements AuthenticationProvider {
-
-     ...省略部分代码
-
-    @Override
-	public Authentication authenticate(Authentication authentication) throws AuthenticationException {
-		OAuth2LoginAuthenticationToken authorizationCodeAuthentication =
-			(OAuth2LoginAuthenticationToken) authentication;
-
-		// Section 3.1.2.1 Authentication Request - https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest
-		// scope
-		// 		REQUIRED. OpenID Connect requests MUST contain the "openid" scope value.
-		if (authorizationCodeAuthentication.getAuthorizationExchange()
-			.getAuthorizationRequest().getScopes().contains("openid")) {
-			// This is an OpenID Connect Authentication Request so return null
-			// and let OidcAuthorizationCodeAuthenticationProvider handle it instead
-			return null;
-		}
-
-		OAuth2AccessTokenResponse accessTokenResponse;
-		try {
-			OAuth2AuthorizationExchangeValidator.validate(
-					authorizationCodeAuthentication.getAuthorizationExchange());
-			// 远程调用授权服务器的access_token端点获取令牌
-			accessTokenResponse = this.accessTokenResponseClient.getTokenResponse(
-					new OAuth2AuthorizationCodeGrantRequest(
-							authorizationCodeAuthentication.getClientRegistration(),
-							authorizationCodeAuthentication.getAuthorizationExchange()));
-
-		} catch (OAuth2AuthorizationException ex) {
-			OAuth2Error oauth2Error = ex.getError();
-			throw new OAuth2AuthenticationException(oauth2Error, oauth2Error.toString());
-		}
-
-
-		OAuth2AccessToken accessToken = accessTokenResponse.getAccessToken();
-		Map<String, Object> additionalParameters = accessTokenResponse.getAdditionalParameters();
-
-         // 通过userService使用上一步拿到的accessToken远程调用授权服务器的用户信息
-		OAuth2User oauth2User = this.userService.loadUser(new OAuth2UserRequest(
-				authorizationCodeAuthentication.getClientRegistration(), accessToken, additionalParameters));
-
-		Collection<? extends GrantedAuthority> mappedAuthorities =
-			this.authoritiesMapper.mapAuthorities(oauth2User.getAuthorities());
-
-         // 构造认证成功之后的认证信息
-		OAuth2LoginAuthenticationToken authenticationResult = new OAuth2LoginAuthenticationToken(
-			authorizationCodeAuthentication.getClientRegistration(),
-			authorizationCodeAuthentication.getAuthorizationExchange(),
-			oauth2User,
-			mappedAuthorities,
-			accessToken,
-			accessTokenResponse.getRefreshToken());
-		authenticationResult.setDetails(authorizationCodeAuthentication.getDetails());
-
-		return authenticationResult;
-	}
-    ...省略部分代码
-}
-```
-
-OAuth2LoginAuthenticationProvider的执行逻辑很简单，首先通过code获取access_token，然后通过access_token获取用户信息，这和标准的oauth2授权码模式一致。
-
-## 自动配置
-
-在spring指南的例子中，我们发现只是配置了一个简单oauth2Login()方法，一个完整的oauth2授权流程就构建好了，其实这完全归功于spring-boot的autoconfigure，我们找到spring-boot-autoconfigure.jar包中的security.oauth2.client.servlet包，可以发现spring-boot给我们提供了几个自动配置类
-
-```java
-OAuth2ClientAutoConfiguration
-OAuth2ClientRegistrationRepositoryConfiguration
-OAuth2WebSecurityConfiguration
-```
-
-其中OAuth2ClientAutoConfiguration导入了OAuth2ClientRegistrationRepositoryConfiguration和OAuth2WebSecurityConfiguration的配置
-
-### OAuth2ClientRegistrationRepositoryConfiguration
-
-```java
-@Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(OAuth2ClientProperties.class)
-@Conditional(ClientsConfiguredCondition.class)
-class OAuth2ClientRegistrationRepositoryConfiguration {
-
-    @Bean
-    @ConditionalOnMissingBean(ClientRegistrationRepository.class)
-    InMemoryClientRegistrationRepository clientRegistrationRepository(OAuth2ClientProperties properties) {
-        List<ClientRegistration> registrations = new ArrayList<>(
-            OAuth2ClientPropertiesRegistrationAdapter.getClientRegistrations(properties).values());
-        return new InMemoryClientRegistrationRepository(registrations);
-    }
-
-}
-```
-
-OAuth2ClientRegistrationRepositoryConfiguration将我们在配置文件中注册的client构造成ClientRegistration然后保存到内存之中。这里有一个隐藏的CommonOAuth2Provider类，这是一个枚举类，里面事先定义好了几种常用的三方登录授权服务器的各种参数例如GOOGLE、GITHUB、FACEBOO、OKTA
-
-#### CommonOAuth2Provider
-
-```java
-public enum CommonOAuth2Provider {
-
-	GOOGLE {
-
-		@Override
-		public Builder getBuilder(String registrationId) {
-			ClientRegistration.Builder builder = getBuilder(registrationId,
-					ClientAuthenticationMethod.BASIC, DEFAULT_REDIRECT_URL);
-			builder.scope("openid", "profile", "email");
-			builder.authorizationUri("https://accounts.google.com/o/oauth2/v2/auth");
-			builder.tokenUri("https://www.googleapis.com/oauth2/v4/token");
-			builder.jwkSetUri("https://www.googleapis.com/oauth2/v3/certs");
-			builder.userInfoUri("https://www.googleapis.com/oauth2/v3/userinfo");
-			builder.userNameAttributeName(IdTokenClaimNames.SUB);
-			builder.clientName("Google");
-			return builder;
-		}
-	},
-
-	GITHUB {
-
-		@Override
-		public Builder getBuilder(String registrationId) {
-			ClientRegistration.Builder builder = getBuilder(registrationId,
-					ClientAuthenticationMethod.BASIC, DEFAULT_REDIRECT_URL);
-			builder.scope("read:user");
-			builder.authorizationUri("https://github.com/login/oauth/authorize");
-			builder.tokenUri("https://github.com/login/oauth/access_token");
-			builder.userInfoUri("https://api.github.com/user");
-			builder.userNameAttributeName("id");
-			builder.clientName("GitHub");
-			return builder;
-		}
-	},
-
-	FACEBOOK {
-
-		@Override
-		public Builder getBuilder(String registrationId) {
-			ClientRegistration.Builder builder = getBuilder(registrationId,
-					ClientAuthenticationMethod.POST, DEFAULT_REDIRECT_URL);
-			builder.scope("public_profile", "email");
-			builder.authorizationUri("https://www.facebook.com/v2.8/dialog/oauth");
-			builder.tokenUri("https://graph.facebook.com/v2.8/oauth/access_token");
-			builder.userInfoUri("https://graph.facebook.com/me?fields=id,name,email");
-			builder.userNameAttributeName("id");
-			builder.clientName("Facebook");
-			return builder;
-		}
-	},
-
-	OKTA {
-
-		@Override
-		public Builder getBuilder(String registrationId) {
-			ClientRegistration.Builder builder = getBuilder(registrationId,
-					ClientAuthenticationMethod.BASIC, DEFAULT_REDIRECT_URL);
-			builder.scope("openid", "profile", "email");
-			builder.userNameAttributeName(IdTokenClaimNames.SUB);
-			builder.clientName("Okta");
-			return builder;
-		}
-	};
-
-	private static final String DEFAULT_REDIRECT_URL = "{baseUrl}/{action}/oauth2/code/{registrationId}";
-
-	protected final ClientRegistration.Builder getBuilder(String registrationId,
-															ClientAuthenticationMethod method, String redirectUri) {
-		ClientRegistration.Builder builder = ClientRegistration.withRegistrationId(registrationId);
-		builder.clientAuthenticationMethod(method);
-		builder.authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE);
-		builder.redirectUriTemplate(redirectUri);
-		return builder;
-	}
-
-	public abstract ClientRegistration.Builder getBuilder(String registrationId);
-
-}
-```
-
-这就是为什么我们没有配置github授权端点确能够跳转授权页面的原因。
-
-### OAuth2WebSecurityConfiguration
-
-OAuth2WebSecurityConfiguration配置一些web相关的类，像如何去保存和获取已经授权过的客户端，以及默认的oauth2客户端相关的配置
-
-```java
-@Configuration(proxyBeanMethods = false)
-@ConditionalOnBean(ClientRegistrationRepository.class)
-class OAuth2WebSecurityConfiguration {
-
-	@Bean
-	@ConditionalOnMissingBean
-	OAuth2AuthorizedClientService authorizedClientService(ClientRegistrationRepository clientRegistrationRepository) {
-		return new InMemoryOAuth2AuthorizedClientService(clientRegistrationRepository);
-	}
-
-	@Bean
-	@ConditionalOnMissingBean
-	OAuth2AuthorizedClientRepository authorizedClientRepository(OAuth2AuthorizedClientService authorizedClientService) {
-		return new AuthenticatedPrincipalOAuth2AuthorizedClientRepository(authorizedClientService);
-	}
-
-    // 默认的oauth2客户端相关的配置
-	@Configuration(proxyBeanMethods = false)
-	@ConditionalOnMissingBean(WebSecurityConfigurerAdapter.class)
-	static class OAuth2WebSecurityConfigurerAdapter extends WebSecurityConfigurerAdapter {
-
-		@Override
-		protected void configure(HttpSecurity http) throws Exception {
-			http.authorizeRequests((requests) -> requests.anyRequest().authenticated());
-			http.oauth2Login(Customizer.withDefaults());
-			http.oauth2Client();
-		}
-
-	}
-
-}
-```
-
-## 例子
-
-[集成GitHub和QQ社交登录](https://github.com/allurx/spring-security-oauth2-demo/tree/master/spring-security-oauth2-client)
-
-## 资料来源
-
-- [Spring Boot 2.2.6.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.2.6.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.2.2.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.2.2.RELEASE/reference/htmlsingle/)
-- [当前 OAuth2 参考文档](https://docs.spring.io/spring-security/reference/servlet/oauth2/login/core.html)
+默认 AuthorizationRequestRepository 使用 HttpSession 保存。这个状态用于稍后校验回调，不能把它说成 Resolver 内部顺带完成的存储工作。默认重定向策略调用响应重定向，让**浏览器**转到 GitHub，授权完成后同样由浏览器返回应用回调；这不是 GitHub 在后台直接调用本地 Controller。
+
+该版本解析器还按配置处理 OIDC nonce 和公共客户端的 PKCE 参数。它们的适用条件应读具体源码，不能把历史实现中存在的其他授权模式分支当作今天的推荐方案。
+
+[重定向过滤器 5.2.2 源码](https://github.com/spring-projects/spring-security/blob/5.2.2.RELEASE/oauth2/oauth2-client/src/main/java/org/springframework/security/oauth2/client/web/OAuth2AuthorizationRequestRedirectFilter.java)、[默认解析器 5.2.2 源码](https://github.com/spring-projects/spring-security/blob/5.2.2.RELEASE/oauth2/oauth2-client/src/main/java/org/springframework/security/oauth2/client/web/DefaultOAuth2AuthorizationRequestResolver.java)
+
+## 接收回调：把原请求与授权响应配对
+
+OAuth2LoginAuthenticationFilter 匹配默认 `/login/oauth2/code/*` 回调。它确认参数构成授权响应，从仓库移除此前保存的请求，取得关联 ClientRegistration，再构造 OAuth2AuthorizationExchange 和未认证的 OAuth2LoginAuthenticationToken。
+
+| 检查点 | 失败说明 |
+| --- | --- |
+| 参数不能构成授权响应 | 不是合法回调输入；提供者返回的授权错误也必须按失败路径处理 |
+| 找不到原授权请求 | 会话、仓库存储或重复回调等条件使原请求不可取得 |
+| 找不到 registrationId | 当前注册配置与原请求不一致 |
+| 原请求与响应校验失败 | state 等关联信息不符合要求 |
+
+过滤器随后委托 AuthenticationManager。真正的授权交换检查和令牌请求由提供者完成，而不是只凭 URL 上出现一个 code 就建立登录。[登录过滤器 5.2.2 源码](https://github.com/spring-projects/spring-security/blob/5.2.2.RELEASE/oauth2/oauth2-client/src/main/java/org/springframework/security/oauth2/client/web/OAuth2LoginAuthenticationFilter.java)
+
+## 提供者校验交换信息，再取令牌与用户资料
+
+对普通 OAuth2 登录，OAuth2LoginAuthenticationProvider 先校验授权交换，再通过 OAuth2AccessTokenResponseClient 向令牌端点交换 access token，之后用 OAuth2UserService 读取用户资料。权限经 GrantedAuthoritiesMapper 映射后，提供者返回已认证结果。
+
+如果 scope 包含 `openid`，该提供者返回 null，将处理机会交给 OIDC 提供者；这解释了“支持同一种流程附近的令牌”不等于“当前提供者必须独占处理”。
+
+令牌交换是应用服务端与提供者之间的请求，不能把 client secret 放到浏览器拼出来的授权链接里。读取用户资料也使用服务端持有的访问令牌。[OAuth2LoginAuthenticationProvider 5.2.2 源码](https://github.com/spring-projects/spring-security/blob/5.2.2.RELEASE/oauth2/oauth2-client/src/main/java/org/springframework/security/oauth2/client/authentication/OAuth2LoginAuthenticationProvider.java)
+
+## 保存应用认证与已授权客户端
+
+过滤器把成功结果转换为 OAuth2AuthenticationToken，并构造包含访问、刷新令牌的 OAuth2AuthorizedClient，通过 AuthorizedClientRepository 保存。父类继续执行会话策略和登录成功处理，安全上下文的跨请求持久化由相应外层过滤器负责。
+
+Boot 的默认装配关系如下：
+
+| 配置 | 提供什么 |
+| --- | --- |
+| OAuth2ClientRegistrationRepositoryConfiguration | 从属性创建 ClientRegistration，存入内存注册仓库 |
+| CommonOAuth2Provider | 为 GitHub 等已知提供者补默认端点与属性；自定义提供者仍需自己的配置 |
+| OAuth2WebSecurityConfiguration | 默认已授权客户端服务与仓库；缺少自定义适配器时提供默认 Web 配置 |
+
+本例定义了自己的 WebSecurityConfigurerAdapter，因此默认适配器会退让，但注册和已授权客户端组件仍按各自条件装配。内存服务不等于重启后仍然保存令牌；持久化策略与账号登录状态要分开设计。[Boot 2.2.6 OAuth2WebSecurityConfiguration](https://github.com/spring-projects/spring-boot/blob/v2.2.6.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/oauth2/client/servlet/OAuth2WebSecurityConfiguration.java)
+
+文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
+
+## 按阶段定位故障
+
+发起地址没有跳转，先查 registrationId 和解析器；回调找不到原请求，先查同一浏览器会话与仓库；交换令牌失败，再查 client 凭据、回调与提供者响应；已经登录却不能访问资源，则检查应用自己的授权规则。后续携带访问令牌请求受保护 API 的另一侧，见 [OAuth2 Resource Server](/oauth2-resource-server/)。

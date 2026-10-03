@@ -1,7 +1,7 @@
 ---
 title: "satisfies 为什么既能校验配置又保留具体类型"
 date: 2026-09-27
-updated: 2026-10-02
+updated: 2026-10-03
 domain: "TypeScript"
 tags: ["TypeScript","satisfies","类型推断"]
 ---
@@ -65,7 +65,7 @@ export const frozen = {
 } as const satisfies AppConfig;
 ```
 
-在已有 TypeScript 7.0.2 的项目中执行 `tsc --ignoreConfig config.ts --strict --declaration --emitDeclarationOnly --outDir types`。这里显式传入文件与编译参数，因此使用 7.0 的 `--ignoreConfig` 避免已有 `tsconfig.json` 触发 TS5112。该命令生成的声明文件包含以下导出（省略 `AppConfig`）：
+在已有 TypeScript 7.0.2 的项目中执行 `tsc --ignoreConfig config.ts --strict --declaration --emitDeclarationOnly --outDir types`。这里显式传入文件与编译参数，因此使用 7.0 的 `--ignoreConfig` 避免已有 `tsconfig.json` 触发 TS5112。本节在 Windows、TypeScript 7.0.2 下生成声明文件，包含以下导出（省略 `AppConfig`）：
 
 ```ts
 export declare const annotated: AppConfig;

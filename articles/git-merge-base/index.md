@@ -1,7 +1,7 @@
 ---
 title: "Git 合并为什么需要 Merge Base"
 date: "2026-09-06"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "Git"
 tags: ["Git", "Merge", "版本控制"]
 ---
@@ -9,6 +9,8 @@ tags: ["Git", "Merge", "版本控制"]
 合并两个分支时，只比较末端文件，无法区分某个差异是谁引入的。假设一边的超时值是 `20`，另一边是 `30`：如果共同基线是 `20`，通常应接受后者；如果共同基线是 `10`，则是双方都改了同一设置，需要判断两项改动能否兼容。
 
 Git 的三方合并因此使用 Merge Base、当前分支末端（Ours）和待合并分支末端（Theirs）。它比较两边相对基线的净变化，并不逐个重演历史提交，也不能替开发者理解业务意图。
+
+本文以 Git 2.56 为基线，面向已经会创建提交和分支的读者。图中的字母代表提交，命令片段假定当前仓库已有 `main` 与 `feature`；它们用于解释普通 `git merge` 与 `ort` 策略，不应直接在不相关的工作仓库中执行。本文的三方合并、快进和祖先判断已在 Windows、Git for Windows 2.56.0.windows.1 的隔离仓库中核对。
 
 ## 共同祖先提供变化方向
 
@@ -76,6 +78,20 @@ Theirs: 30
 
 若恢复操作承载了业务决定，审查者仍需确认另一分支是否再次引入了被否定的行为。没有文本冲突，只能说明变化能在文本层面组合。
 
+## 在独立仓库中观察基线与指针变化
+
+下载 [merge-base-demo.sh](./merge-base-demo.sh)，在 Git 2.56 与 Bash 环境中执行 `bash merge-base-demo.sh`。脚本先创建值为 `10` 的共同提交，再让 `main` 修改到 `30` 后恢复到 `10`，让 `feature` 保留 `30`，最后执行合并；第二组再创建包含 `main` 的后继分支观察快进。所有操作都在自动创建并清理的本地临时仓库中完成，不需要真实远端。
+
+在 Windows、Git for Windows 2.56.0.windows.1、Bash 5.2.37 下运行，得到：
+
+```text
+merge-base: matched original baseline
+reverted change: merge restored timeout=30
+fast-forward: main moved to existing commit
+```
+
+脚本分别检查共同祖先的 OID、合并后的文件内容与快进后的分支 OID。这三项观察对应不同层次：变化的参照点、三方内容组合和历史指针移动；不能只凭最终文件相同推断使用了哪种合并方式。
+
 ## 用基线解释差异，再处理冲突
 
 查看功能分支相对共同基线的变化，可以执行：
@@ -85,6 +101,8 @@ git diff main...feature
 ```
 
 这里的三点是有方向的：比较 Merge Base 与右侧 `feature`，并不等同于两边末端的直接比较。后者可写成 `git diff main feature`。要审查 Ours 自己的变化，可以交换参数，但不能把两个结果当作同一个范围。[git diff：三点比较](https://git-scm.com/docs/git-diff)
+
+官方将三点形式描述为先调用 `git merge-base`，再把选出的基线与右侧提交比较。存在多个最佳共同祖先时，应先用 `git merge-base --all` 核对基线；不要把这个差异命令理解成重现 `ort` 合并多个基线树的过程。`git diff` 在这里比较的是两个端点，也不是 `git log` 中三点表示的提交集合。
 
 判断一个提交是否已包含在另一个提交的历史中，可以使用：
 

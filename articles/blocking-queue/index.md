@@ -1,7 +1,7 @@
 ---
 title: BlockingQueue
 date: 2020-01-03
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Collection
@@ -11,167 +11,52 @@ tags:
 domain: Java
 ---
 
-`BlockingQueue` 在基本队列操作之外增加可等待的 `put/take` 和带超时的 `offer/poll`。满队列或空队列时的处理可以选择立即失败、一直等待或限时等待；选择应反映业务的背压和取消规则，而不只是方法名称偏好。
+BlockingQueue 让生产者和消费者通过一个共享队列交接元素，并在“暂时无法插入或取出”时选择立即失败、等待或限时等待。它把等待机制封装进一次操作，但不替业务决定容量、取消和关闭规则。
 
-生产者与消费者通过队列交接任务时，接口禁止 `null` 元素，并保证放入元素前的动作对随后取到该元素的线程可见；它不提供统一的关闭操作，也不能保证批量操作都原子完成。示例中的无限循环需要在真实业务中配套终止与中断策略。
+本文按 Java SE 25 的 BlockingQueue API 说明。基础队头语义见 [Queue](/queue/)；可直接运行的有限生产消费程序在 [LinkedBlockingQueue](/linked-blocking-queue/#用有限任务观察生产与消费)。
 
+## 先选失败方式，再选方法
 
-## 方法定义
+| 操作 | 异常形式 | 立即返回特殊值 | 等待条件满足 | 最多等待给定时间 |
+| --- | --- | --- | --- | --- |
+| 插入 | add | offer | put | offer(timeout) |
+| 移除队头 | remove | poll | take | poll(timeout) |
+| 查看队头 | element | peek | 无此接口 | 无此接口 |
 
-### 新增方法
+有界队列已满时，put 等待容量或响应中断；take 在空队列上等待元素或响应中断。带超时 offer 失败返回 false，带超时 poll 失败返回 null。超时指定等待预算，不保证线程准点获得 CPU。
 
-#### boolean add(E e)
+异常与特殊值的区别只针对相应失败条件。BlockingQueue 禁止 null 元素，插入 null 仍会失败；接口也不保证所有实现都有相同容量。无界实现的 put 通常不会因为业务容量上限等待，但仍受实际内存限制。
 
-重写了Queue中add方法，add方法如果可以立即将指定的元素插入此队列中，同时不会违反容量限制，则在成功时返回true，**如果当前队列没有可用空间，则抛出IllegalStateException。**
+## 容量是生产速度与消费能力之间的约束
 
-#### boolean offer(E e)
+生产速度长期高于消费速度时，无界积压不会凭空消失，只会转化为内存占用和等待延迟。有界队列使调用者必须面对接纳失败或等待，业务再决定超时、拒绝、重试或上游减速。
 
-offer方法同样是往队列中添加元素，只有在不会违反容量限制时，成功插入队列则返回true。与add方法的不同之处在于如果容量已经满了offer方法仅仅返回false而不会抛出异常。
+remainingCapacity 只是查询时刻的值。先检查它再 put/offer 之间，其他线程可能改变容量；是否成功应以实际操作结果为准，不能用查询构造一个没有同步保护的保证。
 
-#### void put(E e) throws InterruptedException
+## 队列交接保证可见性，不冻结可变对象
 
-put方法同样是往队列中添加元素，只不过如果当前队列已满时会阻塞当前线程直到队列空间可用为止。
+线程在放入元素之前的动作，happens-before 另一个线程随后访问或移除该元素之后的动作。因此消费者能够看到交接前已发布的状态。
 
-#### boolean offer(E e, long timeout, TimeUnit unit) throws InterruptedException
+这不意味着生产者可以在放入后继续无同步地修改同一个可变对象。后续修改仍需要自己的同步协议；最容易理解的交接方式通常是不可变消息，或明确转移对象所有权。
 
-offer方法同样是往队列中添加元素，与put方法不同之处在于如果当前队列已满时会使当前线程阻塞指定的时长，如果指定时长后队列依旧是满的，那么则返回false。
+## 中断、关闭和批量转移是独立边界
 
-### 删除方法
+put、take 和定时等待可抛 InterruptedException。取消任务时应按所在层的协议退出或传播，不能捕获后无条件无限重试。BlockingQueue 没有统一 close：有限工作、结束标记、外部取消等方式都需要调用者定义，且要考虑生产者和消费者数量。
 
-####  E take() throws InterruptedException
+drainTo 把当前可移出的元素加入目标集合；目标 add 抛异常时，元素可能已经部分转移，接口不提供通用事务回滚。目标集合也必须满足自己的并发要求。remove(Object)、contains 等查询与删除还要遵守具体实现对参数的约束。
 
-获取队列中的头部元素。如果队列为空则阻塞直到队列不为空为止。
+## 一个最小生产消费协议
 
-#### E poll(long timeout, TimeUnit unit) throws InterruptedException
+生产者调用 put 交付元素；消费者通过 take 取出并处理。真实程序还需确定何时停止、是否等待消费者结束以及异常由谁报告。下面的伪代码只表达交接位置：
 
-获取队列中的头部元素。如果队列为空会使当前线程阻塞指定的时长，如果指定时长后队列依旧为空，那么则返回null。
-
-#### boolean remove(Object o)
-
-从队列中删除指定元素的单个实例（如果存在）。 即如果队列包含一个或多个这样的元素满足`o.equals（e）`则删除元素e。
-
-### 获取方法
-
-BlockingQueue中的获取方法使用的是Queue接口中定义的`E element()`和`E peek()`方法，方法含义保持一致。
-
-### 其它方法
-
-#### int remainingCapacity()
-
-返回当前队列理想情况下（在没有内存或资源限制的情况下）可以无阻塞接受的其他元素的数目，如果没有内部限制，则返回Integer.MAX_VALUE。需要注意的是不要通过检查剩余容量来判断是否能够插入元素，因为此时可能存在另一个线程正在执行插入或删除元素的情况。
-
-#### boolean contains(Object o)
-
-重写了Collection中的contains方法，因为大多数集合中是允许包含null元素的，而Queue通常情况下是不允许存在null元素的，所以重新定义了contains方法。
-
-#### int drainTo(Collection<? super E> c)
-
-将队列中所有元素删除并移动到指定的集合c中
-
-#### int drainTo(Collection<? super E> c, int maxElements)
-
-删除队列中最多maxElements数量个元素并将这些元素移动到指定的集合c中
-
-## 方法汇总
-
-BlockingQueue中的新增、删除、获取元素的方法汇总如下，其中有些方法是定义在Queue接口中的。
-
-<table BORDER CELLPADDING=3 CELLSPACING=1>
-  <caption>阻塞队列方法汇总</caption>
-  <tr>
-    <td></td>
-    <td ALIGN=CENTER>
-      队列已满或者元素不存在时会抛出异常
-    </td>
-    <td ALIGN=CENTER>
-      队列已满或者元素不存在时只返回特定的值
-    </td>
-    <td ALIGN=CENTER>
-      队列已满或者为空则会阻塞当前线程
-    </td>
-    <td ALIGN=CENTER>
-      队列已满或者为空则会阻塞当前线程直到超时
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <b>新增</b>
-    </td>
-    <td>add(e)</td>
-    <td>offer(e)</td>
-    <td>put(e)</td>
-    <td>offer(e, time, unit)</td></tr>
-  <tr>
-    <td>
-      <b>删除</b>
-    </td>
-    <td>remove()</td>
-    <td>poll()</td>
-    <td>take()</td>
-    <td>poll(time, unit)</td></tr>
-  <tr>
-    <td>
-      <b>获取</b>
-    </td>
-    <td>element()</td>
-    <td>peek()</td>
-    <td>
-      不适用
-    </td>
-    <td>
-      不适用
-    </td>
-  </tr>
-</table>
-
-## 例子
-
-BlockingQueue的注释上给出了一个基于生产者-消费者的阻塞队列经典使用场景。伪代码如下：
-
-```java
-// 生产者
-class Producer implements Runnable {
-    private final BlockingQueue queue;
-    Producer(BlockingQueue q) { queue = q; }
-    public void run() {
-        try {
-            while (true) { queue.put(produce()); }
-        } catch (InterruptedException ex) { ... handle ...}
-    }
-    Object produce() { ... }
-}
-// 消费者
-class Consumer implements Runnable {
-    private final BlockingQueue queue;
-    Consumer(BlockingQueue q) { queue = q; }
-    public void run() {
-        try {
-            while (true) { consume(queue.take()); }
-        } catch (InterruptedException ex) { ... handle ...}
-    }
-    void consume(Object x) { ... }
-}
-
-// 使用
-class Setup {
-    void main() {
-        BlockingQueue q = new SomeQueueImplementation();
-        Producer p = new Producer(q);
-        Consumer c1 = new Consumer(q);
-        Consumer c2 = new Consumer(q);
-        new Thread(p).start();
-        new Thread(c1).start();
-        new Thread(c2).start();
-    }
-}
+```text
+生产者：生成元素 → put → 继续生产
+消费者：take → 处理元素 → 继续取出
+关闭：按协议发出结束信息或取消，等待参与者退出
 ```
 
-上面的伪代码中Producer和Consumer共用一个BlockingQueue，Producer通过`while (true)`不停的使用`put(e)`方法（队列已满时则会阻塞当前线程）往队列中新增元素，Consumer通过`while (true)`不停的使用`take()`方法（队列为空则阻塞当前线程）从队列中取元素。一个很典型的阻塞队列使用例子。
-
-## 总结
-
-BlockingQueue是Queue的一种，它的设计目的在于往队列中新增或者获取元素时提供阻塞的需求，例如常见的生产者-消费者模式。生产者往队列中添加元素时如果队列已经满了，那么就会阻塞当前线程直到队列空间变成可用为止。消费者从队列中获取元素时如果队列为空那么就会阻塞当前线程直到队列不为空为止。
+需要查看容量计数、双锁和条件通知怎样协作，继续阅读 LinkedBlockingQueue 的实现分析；不要把伪代码直接当作已经包含完整关闭逻辑的可运行示例。
 
 ## 资料来源
 
-- [BlockingQueue：阻塞方法与内存一致性](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/BlockingQueue.html)
+- [BlockingQueue：等待、内存一致性与批量操作](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/BlockingQueue.html)

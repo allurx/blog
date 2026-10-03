@@ -1,7 +1,7 @@
 ---
 title: "Linux 原子替换为什么不等于掉电持久"
 date: "2026-09-13"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "Linux"
 tags: ["Linux", "文件系统", "持久性"]
 ---
@@ -24,7 +24,7 @@ tags: ["Linux", "文件系统", "持久性"]
 
 在本文同一目录的前提下，顺序如下：
 
-1. 临时文件必须位于本文的目标目录，否则 `rename()` 可能因 `EXDEV` 失败。
+1. 为使用本文的单目录同步顺序，临时文件就在目标目录中创建。`rename()` 的文件系统边界是同一挂载文件系统；跨挂载移动会因 `EXDEV` 失败，同一文件系统内的不同目录则需要额外考虑目录同步。
 2. 先写完并 `fsync` 临时文件，保证被新名字指向的数据已同步。
 3. `rename` 原子切换目录项，使运行中的读者不会读到半成品。
 4. 再 `fsync` 目标目录，使名称替换本身持久化。
@@ -97,9 +97,30 @@ int replace_file(int dir_fd,
 }
 ```
 
-该片段是一个需要调用方提供目录描述符的辅助函数，不包含 `main()`。`dir_fd` 应由调用方打开为目标目录，`temp_name` 和 `target_name` 必须是经过验证的单个文件名，不接受绝对路径或路径分隔符；目录也应由应用控制，避免其他参与者替换临时项。
+该片段是一个需要调用方提供目录描述符的辅助函数，不包含 `main()`。`dir_fd` 应由调用方打开为目标目录，`temp_name` 和 `target_name` 必须是不同的、经过验证的单个文件名，不接受绝对路径或路径分隔符；临时名称在创建前不能已被占用，目录也应由应用控制，避免其他参与者替换临时项。
 
 编译可检查 API 和类型使用，普通替换测试可检查内容变化；两者都不能证明真实掉电后的恢复结果。部署时仍需针对实际文件系统、挂载参数和存储设备验证相应保证。
+
+## 用两个文件描述符观察名称切换
+
+[atomic-replace-demo.c](./atomic-replace-demo.c) 在上述函数之外补齐了调用入口。它用 `mkdtemp()` 在当前目录独占创建实验目录，先写入 `old` 并保持旧文件描述符打开，再把同一路径替换为 `new`，最后分别通过旧描述符和重新打开的描述符读取。程序只操作自己创建的目录，退出后保留 `target.txt` 供检查。[mkdtemp 的创建契约](https://man7.org/linux/man-pages/man3/mkdtemp.3.html)
+
+示例目标为 Linux 6.18 LTS、本地支持目录 `fsync` 的文件系统和 GCC 16.2，使用 C11/POSIX.1-2008 API。Linux 长期维护线与 GCC 稳定版本分别见[内核发布说明](https://www.kernel.org/releases.html)和 [GCC 发布记录](https://gcc.gnu.org/releases.html)。下面给出运行方法与按接口契约推导的预期；该程序尚未经过目标 Linux 环境的编译和实跑：
+
+```sh
+gcc -std=c11 -Wall -Wextra -Wpedantic atomic-replace-demo.c -o atomic-replace-demo
+./atomic-replace-demo
+```
+
+成功完成写入与同步时，程序应报告旧描述符读到 `old`，新描述符读到 `new`：
+
+```text
+directory=./atomic-replace-<随机后缀>
+old-descriptor=old
+new-descriptor=new
+```
+
+第一行的随机后缀由 `mkdtemp` 生成。这个观察只能说明正常运行中的名称与 inode 关系；程序没有模拟断电。内核、文件系统、挂载选项和存储设备的持久性保证仍须在实际部署环境核对。
 
 ## 失败结果必须说明替换是否已经发生
 

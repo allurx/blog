@@ -1,7 +1,7 @@
 ---
 title: "Agent 工具重试为什么会重复执行副作用"
 date: 2026-09-22
-updated: 2026-10-02
+updated: 2026-10-03
 domain: "Agent"
 tags: ["Agent","Idempotency","ToolCalling"]
 ---
@@ -60,14 +60,14 @@ created_at, updated_at, expires_at
 
 最关键的原子性不是“查到没有，然后插入”，而是由唯一约束或条件写让并发请求竞争同一个执行权。否则两个线程都可能先读到不存在，再分别执行副作用。
 
-理想情况是账本和业务变更位于同一数据库事务：
+理想情况是账本和业务变更位于同一数据库事务。下面以 MySQL 9.7 LTS、InnoDB 为目标说明事务边界，省略表定义与参数绑定；冒号开头的是应用参数，不是可直接粘贴执行的 SQL。本文没有运行这组数据库操作：
 
 ```sql
 BEGIN;
 
 INSERT INTO tool_operation(
     principal_id, tool_name, operation_id, request_hash, status
-) VALUES (?, ?, ?, ?, 'RUNNING');
+) VALUES (:principal_id, :tool_name, :operation_id, :request_hash, 'RUNNING');
 -- 唯一键冲突时转入读取并校验旧记录的路径
 
 -- 同一事务内更新业务表
@@ -78,16 +78,19 @@ WHERE account_id = :account_id AND balance >= :amount;
 
 UPDATE tool_operation
 SET status = 'SUCCEEDED', result_json = :result
-WHERE principal_id = ? AND tool_name = ? AND operation_id = ?;
+WHERE principal_id = :principal_id AND tool_name = :tool_name
+  AND operation_id = :operation_id;
 
 COMMIT;
 ```
 
-这样不会出现“扣款成功但幂等记录丢失”或“记录成功但扣款没有发生”的中间状态。AWS 的实践也强调，记录幂等令牌与相关变更需要满足原子、持久的一致性边界。[AWS Builders’ Library](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/)
+这里的 `RUNNING` 与业务更新在同一个尚未提交的事务里；在默认 `REPEATABLE READ` 隔离级别下，其他事务不能把它读作已经提交的接管凭证，并发重复插入还可能先等待唯一键检查。提交后，对外可见的是业务结果与终态记录一起存在。若需要让外部系统调用期间的 `RUNNING` 可查询，就必须先提交账本，再执行外部动作，并另行处理两者之间的失败窗口。
+
+同一数据库事务的方案因此不会出现“扣款成功但幂等记录丢失”或“记录成功但扣款没有发生”的中间状态。AWS 的实践也强调，记录幂等令牌与相关变更需要满足原子、持久的一致性边界。[AWS Builders’ Library](https://aws.amazon.com/builders-library/making-retries-safe-with-idempotent-APIs/)
 
 若工具只是代理外部系统，账本和外部副作用通常无法处于一个本地事务。此时按优先级处理：
 
-1. 把同一个 `operation_id` 传给下游的幂等接口，并保存下游返回的资源 ID和结果。
+1. 把同一个 `operation_id` 传给下游的幂等接口，并保存下游返回的资源 ID 和结果。
 2. 若下游只支持“创建后查询”，把 `operation_id` 作为可查询的业务外部号，再通过对账确认结果。
 3. 若下游既不幂等也不可对账，不要把超时后盲目重试伪装成安全；应转入人工确认、补偿流程，或重新设计边界。
 
@@ -95,7 +98,7 @@ COMMIT;
 
 ## 在单进程中折叠并发尝试并保留未知失败
 
-保存为 `IdempotencyLedgerDemo.java`，使用 Java 17+ 执行 `java IdempotencyLedgerDemo.java`。它固定返回值为收据字符串，使用完整的调用方、工具和操作键，避免通用泛型账本中的不安全类型转换。八个并发尝试共用一个操作键；失败示例故意先产生副作用再抛异常，验证后续调用不会重新执行。
+保存为 `IdempotencyLedgerDemo.java`，使用 JDK 25 LTS 执行 `java IdempotencyLedgerDemo.java`，无需第三方依赖。它固定返回值为收据字符串，使用完整的调用方、工具和操作键，避免通用泛型账本中的不安全类型转换。八个并发尝试共用一个操作键；失败示例故意先产生副作用再抛异常，验证后续调用不会重新执行。
 
 ```java
 import java.util.ArrayList;
@@ -182,7 +185,7 @@ public final class IdempotencyLedgerDemo {
 }
 ```
 
-使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；程序中的检查会核对这些结果。
+在 Windows、Oracle JDK 25.0.2 LTS 下执行上述源文件，得到以下输出；程序中的检查会核对这些结果。
 
 ```text
 concurrent receipts=[rcpt-1]

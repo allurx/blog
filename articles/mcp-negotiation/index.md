@@ -1,7 +1,7 @@
 ---
 title: "MCP 为什么从初始化握手改为每请求协商"
 date: "2026-09-02"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "MCP"
 tags: ["MCP", "协议设计", "Agent"]
 ---
@@ -42,7 +42,7 @@ MCP 中的 Host、Client、Server 是架构角色，不是协议本身：
   └─ 实际方法与参数
 ```
 
-任意 Server 实例只看当前请求，就可以决定如何处理，不必访问此前的握手状态。这就是该版本所说的自包含请求与每请求能力协商。[MCP 基础协议](https://modelcontextprotocol.io/specification/2026-07-28/basic)
+任意 Server 实例都能从当前请求取得协议版本与 Client 能力，不必读取此前握手留下的协商状态；业务数据和授权检查仍按各自的规则处理。这就是该版本所说的自包含请求与每请求能力协商。[MCP 基础协议](https://modelcontextprotocol.io/specification/2026-07-28/basic)
 
 ## 请求元数据、版本错误与能力发现
 
@@ -113,7 +113,7 @@ Server 必须实现 `server/discover`；Client 可以但不必须预先调用它
 
 ## 在 Client 边界统一构造请求
 
-下面的 TypeScript 片段只展示请求形状，能力必须按 Client 实际实现配置；它不是完整 SDK，也没有覆盖传输、响应校验、扩展或重试。示例将请求的标准 `_meta` 交给协议层管理，不接受调用方同名字段覆盖：
+下面的 TypeScript 片段以 TypeScript 7.0.2、`strict` 类型检查和 ES2023 为基线，只展示请求形状，能力必须按 Client 实际实现配置；它不是完整 SDK，也没有覆盖传输、响应校验、扩展或重试。示例将请求的标准 `_meta` 交给协议层管理，不接受调用方同名字段覆盖：
 
 ```typescript
 type JsonRpcId = string | number;
@@ -171,6 +171,10 @@ function createRequest<P extends object>(
 
 const request = createRequest("tools-1", "tools/list", {});
 ```
+
+将代码保存为 `request.ts`，在 TypeScript 7.0.2 环境中执行 `tsc --ignoreConfig request.ts --strict --target ES2023 --noEmit` 可检查类型。片段没有使用 Node.js 或浏览器 API；类型检查不代表已经连接真实 MCP Server 或完成协议互操作验证。
+
+`JsonRpcId` 中的 `number` 对应协议允许的整数 ID，不能据此接受任意小数、`NaN` 或无穷大。完整协议层还应在运行时校验 ID，并确保同一发送方尚未结束的请求不会复用它；TypeScript 类型别名不能代替这些协议约束。[MCP 请求 ID 契约](https://modelcontextprotocol.io/specification/2026-07-28/basic#requests)
 
 工程中不应让每个业务调用手写这些元数据。应在 Transport 或协议 Client 层统一注入，以保持版本切换和能力配置的一致性。
 

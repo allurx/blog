@@ -1,7 +1,7 @@
 ---
 title: AnnotatedType
 date: 2019-11-05
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Reflect
@@ -9,49 +9,30 @@ tags:
 domain: Java
 ---
 
-`AnnotatedType` 描述一次类型使用及其注解，例如 `List<@Sensitive String>` 中的 `String`。它与声明上的注解不同，需要沿着带注解的类型参数、数组组件、通配符边界和类型变量边界读取；`getType()` 则返回相应的普通 `Type` 结构。
+AnnotatedType 描述一次类型使用以及该位置上的注解。它与 AnnotatedElement 描述的声明注解不同：List<@Sensitive String> 中的 Sensitive 属于 String 这次使用，而不是字段声明或 String 类本身。
 
-下面使用 Java 8 的类型注解 API，并结合 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/sun/reflect/annotation/AnnotatedTypeFactory.java) 的反射实现解释类型结构。运行时读取注解需要 RUNTIME 保留策略；业务代码按公开的 AnnotatedType 接口及其子接口处理类型，不依赖内部实现类名。
+本文沿参数化类型、变量边界、通配符与数组四类嵌套结构展开。先了解 [Type 的结构](/reflection-types/) 和 [注解查询范围](/annotated-element/)。下面的完整程序仅依赖 JDK 标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。源码背景采用 [OpenJDK 8u202-b08 的 AnnotatedTypeFactory](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/sun/reflect/annotation/AnnotatedTypeFactory.java)；当前公共 API 按 Java SE 25 理解，内部实现类名不属于稳定契约。
 
+## 从声明对象取得带注解的类型视图
 
-## AnnotatedType
+| 声明入口 | 普通类型视图 | 带注解的类型视图 |
+| --- | --- | --- |
+| 字段 | getGenericType | getAnnotatedType |
+| 方法返回值 | getGenericReturnType | getAnnotatedReturnType |
+| 方法参数 | getGenericParameterTypes | getAnnotatedParameterTypes |
+| 父类声明 | getGenericSuperclass | getAnnotatedSuperclass |
 
-我们先来看一下AnnotatedType的定义：
+运行时读取仍要求 RUNTIME 保留策略，类型使用位置通常要求 TYPE_USE 目标。声明对象与类型视图各自暴露 AnnotatedElement 方法，不能只因为方法名相同就把两处注解混在一起。getType 返回相应的普通 Type，丢失的只是当前视图携带的类型使用注解，不是把整个泛型结构抹掉。
 
-```java
-package java.lang.reflect;
+[![AnnotatedType 的四个公开子接口及历史内部基础实现](./images/annotated-type.png)](./images/annotated-type.png)
 
-public interface AnnotatedType extends AnnotatedElement {
+将下面五个完整类保存为同名 .java 文件，在只含这些源文件的目录执行 `javac -encoding UTF-8 -d out *.java`。每一节给出运行命令与观察结果；字段枚举顺序不属于反射 API 的稳定保证，读取框架应按字段身份组织结果。
 
-    public Type getType();
-}
+## 参数化类型：实参上的注解
 
-```
-
-AnnotatedType 继承 AnnotatedElement，用于读取某次类型使用上的注解；getType 返回不含这些类型使用注解的 Type 表示。声明注解通过 Field 等声明对象读取，两者不能混同。特殊的嵌套结构由下面四个公开子接口继续展开。
-
-![](./images/annotated-type.png)
-
-图中四个公开子接口分别表示参数化类型、类型变量、通配符和数组上的类型使用。AnnotatedTypeBaseImpl 是 OpenJDK 内部的基础实现，不是第五个公开分类；业务代码直接按 AnnotatedType 处理没有上述特殊结构的类型。
-
-### AnnotatedParameterizedType
-
-AnnotatedParameterizedType是指那些**可能**带注解的ParameterizedType类型的数据，例如`List<String> list`是一个ParameterizedType，同时也是一个AnnotatedParameterizedType，只不过此时它本身没有带注解而已，当然啦，它的类型参数`<String>`也是有可能带注解的任何AnnotatedType，所以AnnotatedParameterizedType提供了getAnnotatedActualTypeArguments方法来获取带注解的类型参数。
+getAnnotatedActualTypeArguments 返回带注解的各个实参，实参仍可能是另一个参数化类型，所以例子继续递归读取。字段 List 本身与 String 实参是不同的注解位置。
 
 ```java
-package java.lang.reflect;
-
-public interface AnnotatedParameterizedType extends AnnotatedType {
-
-    AnnotatedType[] getAnnotatedActualTypeArguments();
-}
-
-```
-
-下面看一个例子：
-
-```java
-
 package io.allurx;
 
 import java.lang.annotation.*;
@@ -93,30 +74,17 @@ public class AnnotatedParameterizedTypeTest {
 }
 ```
 
-控制台输出
+执行 `java -cp out io.allurx.AnnotatedParameterizedTypeTest`：
 
-```java
-[@io.allurx.AnnotatedParameterizedTypeTest$MyAnnotation(value=1)]
-[@io.allurx.AnnotatedParameterizedTypeTest$MyAnnotation(value=2)]
-[@io.allurx.AnnotatedParameterizedTypeTest$MyAnnotation(value=3)]
+```text
+[@io.allurx.AnnotatedParameterizedTypeTest.MyAnnotation(1)]
+[@io.allurx.AnnotatedParameterizedTypeTest.MyAnnotation(2)]
+[@io.allurx.AnnotatedParameterizedTypeTest.MyAnnotation(3)]
 ```
 
-在上面的例子中定义两个ParameterizedType的域，然后通过Field的getAnnotatedType方法获取其对应的AnnotatedType，也就是AnnotatedParameterizedType，然后递归打印类型参数上的注解。
+## 类型变量：沿上界读取注解
 
-### AnnotatedTypeVariable
-
-AnnotatedTypeVariable是指那些**可能**带注解的TypeVariable类型的数据，例如`T t`是一个TypeVariable类型的值，同时也是一个AnnotatedTypeVariable类型的值，只不过此时它本身没有带注解而已，当了啦类型变量本身是带边界的，所以它的所有边界都有可能是带注解的任何AnnotatedType，所以AnnotatedTypeVariable提供了getAnnotatedBounds方法来获取所有带注解的边界。
-
-```java
-package java.lang.reflect;
-
-public interface AnnotatedTypeVariable extends AnnotatedType {
-
-    AnnotatedType[] getAnnotatedBounds();
-}
-```
-
-下面看一个例子：
+T 的使用与 T 的声明边界是不同结构。getAnnotatedBounds 返回 Number、Cloneable、Serializable 上的类型使用注解；未显式写上界时，仍有无注解的 Object 上界。
 
 ```java
 package io.allurx;
@@ -150,32 +118,17 @@ public class AnnotatedTypeVariableTest<T extends @MyAnnotation(1) Number & @MyAn
 }
 ```
 
-控制台输出
+执行 `java -cp out io.allurx.AnnotatedTypeVariableTest`：
 
-```java
-[@io.allurx.AnnotatedTypeVariableTest$MyAnnotation(value=1)]
-[@io.allurx.AnnotatedTypeVariableTest$MyAnnotation(value=2)]
-[@io.allurx.AnnotatedTypeVariableTest$MyAnnotation(value=3)]
+```text
+[@io.allurx.AnnotatedTypeVariableTest.MyAnnotation(1)]
+[@io.allurx.AnnotatedTypeVariableTest.MyAnnotation(2)]
+[@io.allurx.AnnotatedTypeVariableTest.MyAnnotation(3)]
 ```
 
-在上面的例子中定义了一个TypeVariable类型的域t，然后通过反射获取该域的AnnotatedType，也就是AnnotatedTypeVariable，然后通过AnnotatedTypeVariable提供的getAnnotatedBounds方法获取T的所有AnnotatedType边界，最后打印所有边界上的注解。
+## 通配符：上下界都可能带注解
 
-### AnnotatedWildcardType
-
-AnnotatedWildcardType是指那些**可能**带注解的WildcardType类型的数据，当然其上限或下限本身可能也是带注解的类型。
-
-```java
-package java.lang.reflect;
-
-public interface AnnotatedWildcardType extends AnnotatedType {
-
-    AnnotatedType[] getAnnotatedLowerBounds();
-
-    AnnotatedType[] getAnnotatedUpperBounds();
-}
-```
-
-下面看一个例子：
+? extends Number 的注解在上界；? super Number 的注解在下界，同时还有无注解的 Object 上界。因此第二个字段先打印空数组，再打印下界注解，不能漏掉这一步。
 
 ```java
 package io.allurx;
@@ -217,31 +170,20 @@ public class AnnotatedWildcardTypeTest {
     }
 }
 ```
-控制台输出
-```java
-[@io.allurx.AnnotatedWildcardTypeTest$MyAnnotation(value=1)]
-[@io.allurx.AnnotatedWildcardTypeTest$MyAnnotation(value=2)]
+
+执行 `java -cp out io.allurx.AnnotatedWildcardTypeTest`：
+
+```text
+[@io.allurx.AnnotatedWildcardTypeTest.MyAnnotation(1)]
+[]
+[@io.allurx.AnnotatedWildcardTypeTest.MyAnnotation(2)]
 ```
 
-在上面的例子中定义了一个AnnotatedParameterizedType类型的域，然后通过反射获取该域的WildcardType的类型参数，同样也就是AnnotatedWildcardType，然后通过AnnotatedWildcardType提供的getAnnotatedUpperBounds和getAnnotatedLowerBounds方法获取上下AnnotatedType边界，最后打印所有边界上的注解。
+## 数组：每一层方括号有自己的位置
 
-### AnnotatedArrayType
-
-AnnotatedArrayType是指那些**可能**带注解的**数组类型**的数据，当然啦其内部元素类型本身也可能是带注解的类型。注意AnnotatedArrayType代表的是所有数组类型（包含普通类型数组和泛型数组），而不是单指Type的子接口GenericArrayType，GenericArrayType只代表那些泛型数组。
+数组类型本身、组件类型以及嵌套数组组件都可以带注解。多维数组要逐层调用 getAnnotatedGenericComponentType；组件是参数化类型或类型变量时，再按相应接口展开。
 
 ```java
-package java.lang.reflect;
-
-public interface AnnotatedArrayType extends AnnotatedType {
-
-    AnnotatedType  getAnnotatedGenericComponentType();
-}
-```
-
-AnnotatedArrayType提供了一个getAnnotatedGenericComponentType方法来获取内部元素带注解的类型。下面看一个例子：
-
-```java
-
 package io.allurx;
 
 import io.allurx.AnnotatedArrayTypeTest.MyAnnotation;
@@ -304,35 +246,30 @@ public class AnnotatedArrayTypeTest<T extends @MyAnnotation(8) Number> {
         int value();
     }
 }
-
 ```
 
-控制台输出
+执行 `java -cp out io.allurx.AnnotatedArrayTypeTest`：
 
-```java
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=2)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=1)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=5)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=3)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=4)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=7)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=6)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=8)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=10)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=11)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=11)]
-[@io.allurx.AnnotatedArrayTypeTest$MyAnnotation(value=9)]
+```text
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(2)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(1)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(5)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(3)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(4)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(7)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(6)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(8)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(10)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(11)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(11)]
+[@io.allurx.AnnotatedArrayTypeTest.MyAnnotation(9)]
 ```
 
-在上面的例子中分别定义了组件类型为普通类型、ParameterizedType、TypeVariable以及数组类型的四个数组，然后通过反射分别打印数组本身上的注解以及数组组件本身上的注解。在这些例子中我们需要明确注解放置的位置代表的不同含义，对于数组本身来说，放置在[]上代表的是其本身上的注解，放置在其类型定义上的注解代表的是其组件类型上的注解。
+## 基础类型：公开接口之外的实现类
 
-### AnnotatedTypeBaseImpl
-
-除了以上四种类型以外的类型，它们都被统一规整为AnnotatedTypeBaseImpl，这是`sun.reflect.annotation`包下的一个私有的内部类，当然了以上四种类型的具体实现也在这个包下，同样它们也都是私有的内部类。下面举一个简单的例子看一下什么样的类型才是AnnotatedTypeBaseImpl。
+这里打印具体实现类只为观察当前 JDK。AnnotatedTypeBaseImpl 是内部实现，不是第五个公开子接口；业务无需导入它，直接使用 AnnotatedType 的公共方法。
 
 ```java
-
-
 package io.allurx;
 
 import java.util.Arrays;
@@ -360,9 +297,9 @@ public class AnnotatedTypeBaseImplTest<T> {
 }
 ```
 
-控制台输出
+执行 `java -cp out io.allurx.AnnotatedTypeBaseImplTest`：
 
-```java
+```text
 class sun.reflect.annotation.AnnotatedTypeFactory$AnnotatedTypeBaseImpl
 class sun.reflect.annotation.AnnotatedTypeFactory$AnnotatedParameterizedTypeImpl
 class sun.reflect.annotation.AnnotatedTypeFactory$AnnotatedTypeVariableImpl
@@ -370,19 +307,16 @@ class sun.reflect.annotation.AnnotatedTypeFactory$AnnotatedArrayTypeImpl
 class sun.reflect.annotation.AnnotatedTypeFactory$AnnotatedArrayTypeImpl
 ```
 
-在本版本的工厂实现中，参数化类型、类型变量、通配符和数组分别产生专用实现，普通的非数组 Class 类型使用基础实现。示例只列出了部分类型，不能因为没有展示通配符就把它归入基础类型。
+## 从结构读取注解，到业务使用规则
 
-## 应用
+AnnotatedType 提供的是声明材料，不规定业务该如何使用这些注解。数据脱敏、校验或序列化框架仍要明确：容器本身与元素上的注解如何组合、变量怎样替换为实际类型、循环边界如何终止，以及缺少运行时保留注解时如何处理。
 
-通过AnnotatedType能够实现很多有趣的事情。我在业余时间编写了一个数据脱敏库，通过AnnotatedType并结合反射api去分析获取那些十分复杂的数据结构中的注解从而达到数据脱敏的目的。
-
-[一个简单易用的数据脱敏库](https://github.com/allurx/desensitization)
-
-## 总结
-
-AnnotatedType是jdk1.8之后新增的**可能被注解的类型**，公开 API 通过 AnnotatedParameterizedType、AnnotatedTypeVariable、AnnotatedWildcardType 和 AnnotatedArrayType 描述特殊类型使用，其他类型使用可直接按 AnnotatedType 处理；AnnotatedTypeBaseImpl 是所引 JDK 中的内部实现类。同时AnnotatedType继承了AnnotatedElement使得我们能够在运行时基于反射api去分析获取那些十分复杂的数据结构中的注解。
+作者的 [Blur 数据脱敏库](https://github.com/allurx/blur/blob/main/README.zh-CN.md) 展示了这一思路。原 desensitization 仓库地址现在指向 Blur；库的依赖、运行要求和 API 以其当前使用文档为准，不是复现本文标准库示例的前置条件。
 
 ## 资料来源
 
-- [AnnotatedType：类型使用上的注解](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedType.html)
-- [AnnotatedParameterizedType：带注解的类型参数](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedParameterizedType.html)
+- [AnnotatedType：类型使用与拥有者](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedType.html)
+- [AnnotatedParameterizedType](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedParameterizedType.html)
+- [AnnotatedTypeVariable](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedTypeVariable.html)
+- [AnnotatedWildcardType](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedWildcardType.html)
+- [AnnotatedArrayType](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedArrayType.html)

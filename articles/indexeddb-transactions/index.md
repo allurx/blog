@@ -1,7 +1,7 @@
 ---
 title: "IndexedDB 事务为什么会在 await 之后失效"
 date: "2026-09-12"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "Web"
 tags: ["IndexedDB", "事务", "异步编程"]
 ---
@@ -39,7 +39,7 @@ store.put(secondBook); // 此时可能已经 inactive 或完成
 
 ## 在一个短事务里保存已准备的数据
 
-运行前提：浏览器已打开数据库 `db`，其中存在 `book` store，`keyPath` 为 `id`。以下为 TypeScript，使用 DOM 类型；接口传入已完成准备的书籍，不在事务内部读取文件或联网。
+运行前提：浏览器已打开数据库 `db`，其中存在 `book` store，`keyPath` 为 `id`。代码以 TypeScript 7.0.2、`strict`、ES2023 与 DOM 类型为基线；接口传入已完成准备的书籍，不在事务内部读取文件或联网。这是接入已有应用的片段，数据库的创建、升级和关闭由调用方管理。
 
 ```ts
 type Book = Readonly<{
@@ -89,7 +89,21 @@ async function importText(db: IDBDatabase, file: File): Promise<void> {
 
 这里所有写请求同步入队；同步入队异常触发主动中止，异步请求错误采用默认的事务中止行为，不调用 `preventDefault()`。Promise 仅在整个事务完成时成功。`crypto.randomUUID()` 需要支持该 API 的安全上下文；示例每次生成新 ID，不实现重复导入去重。
 
-使用这个函数时，应在目标浏览器验证正常批量写入、唯一索引冲突导致整批回滚，以及第二条值不能克隆时第一条写入也被撤销。这里给出的是原生 API 组合，不以 TypeScript 编译成功代替浏览器事务验证。
+## 用完成与回滚事件验证整批结果
+
+将代码保存为 `save-books.ts`，在 TypeScript 7.0.2 环境执行 `tsc --ignoreConfig save-books.ts --strict --target ES2023 --lib ES2023,DOM --noEmit` 可检查类型。事务行为还需要浏览器验证，类型检查本身不能证明请求提交或回滚正确。
+
+打开[可直接运行的浏览器实验](./transaction-demo.html)，点击“运行三个事务场景”，即可复现下面的输入与读回结果。页面包含由上述 TypeScript 生成的 JavaScript，以及建库、唯一索引、异常输入、读回和清理过程；不依赖第三方库。也可以保存这个 HTML，通过自己的 localhost 或 HTTPS 服务打开。每次运行使用新的临时数据库，不读取已有应用数据。
+
+本例在 Windows、Chromium 154.0.8037.93 的本机 HTTP 安全上下文中验证。每个场景使用独立数据库，创建 `book` store 和 `title` 唯一索引，操作完成后再用新事务读取记录数：
+
+| 输入场景 | Promise 结果 | 后续事务读到的记录数 |
+| --- | --- | --- |
+| 两条不同 ID、不同标题的有效书籍 | 在事务完成后成功 | 2 |
+| 两条不同 ID、相同标题的书籍，触发唯一索引冲突 | 异步失败，整批回滚 | 0 |
+| 第二条书籍包含函数值，不能被结构化克隆 | 同步入队失败，主动中止 | 0 |
+
+第三种输入是刻意绕过 TypeScript 类型检查的异常数据，用来检查 JavaScript 调用方或未经校验的外部值进入时的失败路径；不是合法的 `Book`。三个场景连续重复执行得到相同结果。实验确认了该 Chromium 版本中的事务边界，没有据此声称 Firefox、Safari、所有设备或断电场景也已验证。
 
 ## 数据准备与一致性检查不能混为一谈
 

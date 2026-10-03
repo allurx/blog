@@ -1,7 +1,7 @@
 ---
 title: "Redis 锁为什么还需要 Fencing Token"
 date: 2026-09-19
-updated: 2026-10-02
+updated: 2026-10-03
 domain: "分布式"
 tags: ["Redis","分布式锁","FencingToken"]
 ---
@@ -12,7 +12,7 @@ Redis 锁使用随机所有者值并在释放时比较它，可以防止旧客�
 
 ## 条件删除为什么挡不住陈旧写入
 
-常见 Redis 锁会执行：
+下面以 Redis Open Source 8.2.10（8.2 Extended 支持线）为命令基线。这里只说明租约与写入顺序，没有运行 Redis 故障切换实验；后面的资源端模型使用 JDK 25 LTS。常见 Redis 锁会执行：
 
 ```text
 SET order:42:lock <随机所有者值> NX PX 30000
@@ -71,7 +71,7 @@ record Lease(String ownerId, long fencingToken, long expiresAtMillis) {}
 
 ### 2. 资源端原子拒绝旧 token
 
-关系数据库可把 token 与业务行放在一起：
+以 MySQL 9.7 LTS、InnoDB 为目标，关系数据库可把 token 与业务行放在一起。以下是待集成验证的 SQL 片段，`inventory` 表需要预先存在，并让每行的 `last_fence` 从 0 开始：
 
 ```sql
 UPDATE inventory
@@ -89,7 +89,7 @@ Fencing 不替代条件删除。前者阻止旧持有者造成副作用，后者
 
 ## 先复现陈旧覆盖，再加入 fencing
 
-下面程序只隔离资源端的比较规则：假设协调器已在 A 的租约过期后，把 token 2 交给 B。B 先写、A 的旧请求后到。保存为 `FencingTokenDemo.java`，使用 Java 17+ 运行 `java FencingTokenDemo.java`。
+下面程序只隔离资源端的比较规则：假设协调器已在 A 的租约过期后，把 token 2 交给 B。B 先写、A 的旧请求后到。保存为 `FencingTokenDemo.java`，使用 JDK 25 LTS 运行 `java FencingTokenDemo.java`，无需第三方依赖。
 
 ```java
 public final class FencingTokenDemo {
@@ -118,18 +118,29 @@ public final class FencingTokenDemo {
         System.out.println("without fencing: " + unprotected);
         System.out.printf("with fencing: %s, stale A accepted=%s, last token=%d%n",
                 resource.value, staleAccepted, resource.lastToken);
+
+        Resource notYetFenced = new Resource();
+        boolean staleBeforeB = notYetFenced.write(1, "stale-A-arrived-first");
+        if (!staleBeforeB || !notYetFenced.write(2, "written-by-B")) {
+            throw new AssertionError("arrival-order example");
+        }
+        System.out.printf("before B is seen: stale A accepted=%s, final value=%s%n",
+                staleBeforeB, notYetFenced.value);
     }
 }
 ```
 
-使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；程序中的检查会核对这些结果。
+在 Windows、Oracle JDK 25.0.2 LTS 下执行上述源文件，得到以下输出；程序中的检查会核对这些结果。
 
 ```text
 without fencing: written-by-A-after-expiry
 with fencing: written-by-B, stale A accepted=false, last token=2
+before B is seen: stale A accepted=true, final value=written-by-B
 ```
 
-这个实验覆盖一次租约只写一次的简化协议，没有实现 Redis 租约、续约、条件删除或 token 生成器。资源尚未见过 B 的较高 token 时，也不能仅凭 A 的旧 token 判断其已过期；fencing 保证的是拒绝比已接受代次更旧的写入，不是跨系统即时撤销一切过期请求。
+第三行把到达顺序反过来：资源还没有见过 token 2 时，token 1 仍会通过比较，随后 B 用 token 2 覆盖它。这个反例说明，租约是否过期与资源已见的最大代次不是同一个状态。
+
+实验覆盖一次租约只写一次的简化协议，没有实现 Redis 租约、续约、条件删除或 token 生成器。资源尚未见过 B 的较高 token 时，不能仅凭 A 的旧 token 判断其已过期；fencing 保证的是拒绝比已接受代次更旧的写入，不是跨系统即时撤销一切过期请求。
 
 ## 检查 token 覆盖的故障边界
 

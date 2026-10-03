@@ -1,7 +1,7 @@
 ---
 title: "SecurityRequestMatcherProviderAutoConfiguration 源码分析"
 date: 2019-06-26
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -15,9 +15,9 @@ SecurityRequestMatcherProviderAutoConfiguration 根据类路径与容器中的 B
 
 以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SecurityRequestMatcherProviderAutoConfiguration.java)。
 
-## 概述
+## 用条件装配选择匹配器适配方式
 
-SecurityRequestMatcherProviderAutoConfiguration的作用是自动配置一个RequestMatcherProvider，提供一个RequestMatcher
+`RequestMatcherProvider` 把应用使用的 Web 框架与安全请求匹配连接起来。下面代码有两个互斥方向：MVC 分支要求 DispatcherServlet 和 HandlerMappingIntrospector；Jersey 分支要求 ResourceConfig、JerseyApplicationPath，并明确排除 DispatcherServlet。阅读重点是条件组合，不是单看某个类是否出现在依赖中。
 
 
 ## SecurityRequestMatcherProviderAutoConfiguration

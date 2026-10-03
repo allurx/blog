@@ -1,21 +1,20 @@
 ---
 title: "Repeatable 注解"
 date: 2019-10-29
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Annotation
 domain: Java
 ---
 
-`@Repeatable` 让同一种注解可以在同一元素上重复使用，但仍需要声明一个容器注解，其 `value()` 返回该注解数组。反射消费者应使用 `getAnnotationsByType()` 或 `getDeclaredAnnotationsByType()` 展开结果，避免单个注解与容器形式产生不同读取行为。
+@Repeatable 允许同一种注解在同一元素上写多次，编译器用容器注解表示这些重复项。反射读取时应区分“元素上的容器”和“容器里的注解”，否则同一注解写一次与写两次可能得到完全不同的查询结果。
 
-下面沿定义、class 文件中的表示和反射读取三个步骤，说明 Java 8 引入的可重复注解。容器还需满足目标、保留策略等语言约束；运行时读取需要 `RUNTIME` 保留策略。反编译展示的是例子的编译结果，不能把内部表示当作应用直接依赖的唯一入口。
+本文采用 Java 25 注解与反射契约。下面两个 Test 定义只依赖标准库，已在 Oracle JDK 25.0.2 下编译，并使用 javap 确认容器表示；它们用于 class 文件检查，没有 main。
 
+## 容器首先是一个普通注解
 
-## 用法
-
-在jdk1.8之前，如果我们想要实现这个功能，我们不得不定义两个注解，其中一个注解的方法返回值是另一个注解数组。比如下面的这段代码：
+在没有 @Repeatable 语法时，可以显式写出容器。容器的 value 返回元素注解数组：
 
 ```java
 package io.allurx;
@@ -49,19 +48,11 @@ public class Test {
 }
 ```
 
-我们不得不借助这两个注解来组成一个**可重复注解**，在jdk1.8之后情况得到了改善，新增了一个名为`@Repeatable`的注解，先看一下它的定义：
+这段程序可独立保存为 Test.java。它表明容器结构本身不依赖重复书写语法；反射直接查询 RepeatableAnnotation 可以取得容器，再读取 value。
 
-```java
-@Documented
-@Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.ANNOTATION_TYPE)
-public @interface Repeatable {
-	// 需要重复注解的class
-    Class<? extends Annotation> value();
-}
-```
+## @Repeatable 把重复语法连接到容器类型
 
-从注释上我们可以看出要定义一个能够重复的注解，首先我们需要定一个容器注解来包含这个能够重复的注解，并且这个容器注解的必须拥有一个返回需要重复注解数组的value方法。咋一看好像有点绕，其实Repeatable的原理和我们原先的实现方式是一样的，原先我们是在另一个注解的value方法显示的另一个返回注解数组，而使用Repeatable之后，我们则可以直接在元素上重复使用某个注解。接下来我们看一个定义可重复注解的例子，在原先RepeatableAnnotation和MyAnnotation的基础上做了一些小改动：
+下面在 MyAnnotation 上指定容器，使用处便可以重复写 MyAnnotation。另存到独立目录的 Test.java，避免与前一个同名类冲突。
 
 ```java
 package io.allurx;
@@ -97,19 +88,34 @@ public class Test {
 }
 ```
 
-在MyAnnotation上加上Repeatable注解，并指定存放的容器为RepeatableAnnotation之后，现在就可以直接在元素上重复使用MyAnnotation了。在使用和定义上和我们原先使用的方式大相径庭。那么Repeatable的实现原理是什么呢？我们反编译刚刚的Test类，发现在Test类上我们原先的两个MyAnnotation注解被包含到RepeatableAnnotation之中了
+容器还须符合语言规则：value 返回正确的注解数组，其他元素需要默认值，保留策略、目标范围以及 Documented、Inherited 等关系也有限制。不能只添加 @Repeatable 就任意选择一个注解作容器，具体规则见 JLS 9.6.3。
+
+## 编译后观察实际保存的结构
+
+```shell
+javac -encoding UTF-8 -d out Test.java
+javap -v -classpath out io.allurx.Test
+```
+
+在 RuntimeVisibleAnnotations 部分可以看到 RepeatableAnnotation，其 value 包含两个 MyAnnotation，值分别为 1、2。对应的源码表示可写成下面的结构；这是结构示意，不是声称 javap 输出 Java 源代码：
 
 ```java
 @Test.RepeatableAnnotation({@Test.MyAnnotation(1), @Test.MyAnnotation(2)})
 ```
 
-原来Repeatable背后的原理和我一开始实现的方式是一样的，只不过是一个语法糖而已。不过其中有一些需要注意的细节，**可重复注解最终是以另一个注解的value值的数组形式存在于class中的，所以此时 getDeclaredAnnotation(MyAnnotation.class) 不会展开容器，可能返回 null；传入容器类型才能直接获取容器。应使用 getDeclaredAnnotationsByType(MyAnnotation.class) 统一读取。同时如果元素上的可重复注解只有一个时，最终的class中重复注解并不会被存放到容器注解，而是以直接的形式存放在元素上，此时通过反射的getDeclaredAnnotation方法是能获取到该注解的，所以当我们使用反射获取可重复注解时需要额外的关注这些细节。**
+只有一个 MyAnnotation 时通常直接存储该注解，不需要容器。因此“可重复类型”不等于每次使用都会生成容器。
 
-## 总结
+## 消费者用 ByType 统一单个与多个结果
 
-使用Repeatable时，我们需要先定义一个容器注解，在它的value方法中返回一个需要重复的注解的数组，然后再将Repeatable注解注释到我们需要重复的注解上并指明value为容器注解的class。Repeatable实现的原理和我们自己通过组合注解来实现是一样的，只不过是一个语法糖而已。
+| 查询 | 单个直接注解 | 多个注解通过容器表示 |
+| --- | --- | --- |
+| getDeclaredAnnotation(MyAnnotation.class) | 可以取得 | 不展开容器，通常为 null |
+| getDeclaredAnnotationsByType(MyAnnotation.class) | 返回单元素数组 | 展开容器并返回全部元素 |
+
+需要按类继承查找时使用 getAnnotationsByType，并理解 @Inherited 与本类结果覆盖父类搜索的规则。完整运行程序见 [AnnotatedElement](/annotated-element/)，它同时对照六种查询，不需要应用依赖编译器内部实现类。
 
 ## 资料来源
 
-- [Repeatable：容器注解定义](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/annotation/Repeatable.html)
-- [AnnotatedElement：展开可重复注解](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedElement.html)
+- [Repeatable：容器定义](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/annotation/Repeatable.html)
+- [JLS 9.6.3：可重复注解类型的约束](https://docs.oracle.com/javase/specs/jls/se25/html/jls-9.html#jls-9.6.3)
+- [AnnotatedElement：容器展开与继承](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedElement.html)

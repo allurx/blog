@@ -1,0 +1,29 @@
+<style>
+  body {
+    isolation: isolate;
+  }
+
+  @media (min-width: 64rem) {
+    body::before {
+      content: '';
+      position: fixed;
+      inset: -15vmax;
+      z-index: -1;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 20% 30%, rgb(117 154 230 / 20%), transparent 45%),
+        radial-gradient(ellipse at 80% 70%, rgb(126 196 190 / 18%), transparent 45%);
+    }
+  }
+
+  @media (min-width: 64rem) and (prefers-reduced-motion: no-preference) {
+    body::before {
+      animation: allurx-ambient-pan 20s ease-in-out infinite alternate;
+    }
+  }
+
+  @keyframes allurx-ambient-pan {
+    from { transform: translate3d(-2%, -1%, 0); }
+    to { transform: translate3d(2%, 1%, 0); }
+  }
+</style>

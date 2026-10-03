@@ -1,14 +1,14 @@
 ---
 title: "volatile 变量自增为什么仍会丢失更新"
 date: "2026-09-07"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "Java 并发"
 tags: ["Java", "volatile", "原子性"]
 ---
 
 把共享计数器声明成 `volatile` 后，压力测试仍可能少计数。原因不在于写入完全不可见，而在于 `count++` 包含一次读取和一次写回；这两次访问之间，另一个线程仍能读到相同旧值并完成自己的更新。
 
-本文讨论 Java 的单字段自增，代码使用 Java 8 起可用的标准 API。需要准确计数时，`AtomicInteger.incrementAndGet()` 提供原子读改写；需要维护多个字段之间的关系时，则要把整个判断和更新放进同一个同步边界。
+本文以 JDK 25 LTS 为基线讨论 Java 的单字段自增，示例只依赖标准库。需要准确计数时，`AtomicInteger.incrementAndGet()` 提供原子读改写；需要维护多个字段之间的关系时，则要把整个判断和更新放进同一个同步边界。
 
 ## 两次可见写入仍可能覆盖彼此
 
@@ -49,7 +49,7 @@ count = next;        // volatile write
 
 `AtomicInteger.incrementAndGet()` 的公共契约是原子递增并返回更新后的值。JVM 可以用硬件原子指令或等价机制实现，应用不需要假定内部一定存在一段 Java CAS 重试循环。[AtomicInteger 自增契约](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/atomic/AtomicInteger.html)
 
-运行前提：Java 8+。
+先分别看两个计数器的实现；本节片段可用于 JDK 25，完整并发入口见后面的源码附件。
 
 错误实现：
 
@@ -90,6 +90,22 @@ public final class AtomicCounter {
 在两个线程都结束之后读取最终值：如果它们各调用一百万次，`VolatileCounter` 的结果可能小于两百万；`AtomicCounter` 则不会因为并发覆盖而丢失自增。
 
 上述“可能少于两百万”是竞争结果，不是每次运行都必须出现的输出。若一次测试恰好得到两百万，只能说明那次调度没有暴露丢失，不能证明 `volatile` 自增正确。还应通过 `join()` 等手段等待全部写线程完成，再评价最终计数；中途读取值本来就可能尚未达到终值。
+
+下载 [VolatileIncrementDemo.java](./VolatileIncrementDemo.java)，在文件所在目录执行：
+
+```sh
+javac -Xlint:all -d out VolatileIncrementDemo.java
+java -cp out io.allurx.VolatileIncrementDemo
+```
+
+程序让两个平台线程从同一闩锁出发，各自递增一百万次；等待两个 Future 完成后读取结果，并检查原子计数恰好是两百万。在 Windows、Oracle JDK 25.0.2 LTS 下，一次运行得到：
+
+```text
+volatile=804301 expected=2000000
+atomic=2000000 expected=2000000
+```
+
+第一行的 `804301` 是这次调度的观测值，重复运行可能不同，也可能恰好达到两百万；程序没有把“必须丢失更新”写成断言。这个实验不测量吞吐量，正确性的依据仍是前面的读、改、写交错与原子 API 契约。
 
 ## 同步范围应跟随不变量
 

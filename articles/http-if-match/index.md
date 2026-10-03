@@ -1,7 +1,7 @@
 ---
 title: "If-Match 如何阻止并发编辑相互覆盖"
 date: 2026-09-16
-updated: 2026-10-02
+updated: 2026-10-03
 domain: "Web"
 tags: ["HTTP","ETag","乐观并发控制"]
 ---
@@ -33,7 +33,7 @@ ETag 是服务器为某个资源表示生成的、不透明的验证器。客户
 
 **危险点是检查与使用之间的间隙。** 假设两个请求都先读到版本 7，分别执行 `if (version == 7)`；只要写入是后续独立动作，它们就都可能通过，最后写入者仍覆盖前者。给接口加 ETag 但保留这种执行结构，只改变了协议外观。
 
-正确实现应有一个“只有旧状态仍匹配才替换”的提交点。在单进程内可以用同一把锁覆盖检查和写入，或对不可变快照执行 CAS。`AtomicReference.compareAndSet` 按引用身份比较，并原子地完成条件替换。[Java AtomicReference](https://docs.oracle.com/en/java/javase/26/docs/api/java.base/java/util/concurrent/atomic/AtomicReference.html#compareAndSet(V,V))
+正确实现应有一个“只有旧状态仍匹配才替换”的提交点。在单进程内可以用同一把锁覆盖检查和写入，或对不可变快照执行 CAS。`AtomicReference.compareAndSet` 按引用身份比较，并原子地完成条件替换。[Java AtomicReference](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/atomic/AtomicReference.html#compareAndSet(V,V))
 
 下面代码先比较标签，再 CAS 整个快照；如果比较后另一个请求已经提交，CAS 会失败。本例每次成功都产生新对象并递增版本，不复用旧快照，因此不能把失败后的旧修改直接套到新状态上循环重试。
 
@@ -41,7 +41,7 @@ ETag 是服务器为某个资源表示生成的、不透明的验证器。客户
 
 ## 两个旧版本提交只能成功一个
 
-保存为 `ConditionalUpdateDemo.java`，运行 `java ConditionalUpdateDemo.java`。两个线程持有同一个旧标签，竞争替换同一份文档，断言恰有一个成功。
+示例以 JDK 25 LTS 为基线，只依赖标准库。保存为 `ConditionalUpdateDemo.java`，运行 `java ConditionalUpdateDemo.java`。两个线程持有同一个旧标签，竞争替换同一份文档，断言恰有一个成功。
 
 这是条件写入核心的可执行实验，**不是完整 HTTP 服务**。协议适配层应先完成鉴权、请求体校验及标准字段解析；此方法只接收一个具体强 ETag，不处理标签列表、通配符、缺失请求头、资源删除或响应头。完整端点不能把它直接当作通用 `If-Match` 解析器。
 
@@ -105,7 +105,7 @@ public final class ConditionalUpdateDemo {
 }
 ```
 
-使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出 `success=1 conflict=1 version=2`。闩锁提供竞争起点，不保证两次调用都走到 CAS；其中一个也可能在标签检查时就失败。HTTP 字段解析与数据库条件提交需要各自的集成测试。
+在 Windows、Oracle JDK 25.0.2 LTS 下执行源文件，输出为 `success=1 conflict=1 version=2`。闩锁提供竞争起点，不保证两次调用都走到 CAS；其中一个也可能在标签检查时就失败。HTTP 字段解析与数据库条件提交需要各自的集成测试。
 
 ## 让整个编辑流程尊重版本
 

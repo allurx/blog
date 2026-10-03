@@ -1,7 +1,7 @@
 ---
 title: "SecurityFilterAutoConfiguration 源码分析"
 date: 2019-06-27
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -15,9 +15,9 @@ SecurityFilterAutoConfiguration 注册 DelegatingFilterProxyRegistrationBean，�
 
 以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SecurityFilterAutoConfiguration.java)。
 
-## 概述
+## 已有安全链怎样接到 Servlet 容器
 
-SecurityFilterAutoConfiguration的作用是自动配置一个DelegatingFilterProxyRegistrationBean，这个bean通过name找到SecurityAutoConfiguration中往spring容器中添加名称为springSecurityFilterChain的过滤器并进行代理，最终将这个springSecurityFilterChain添加到ServletContext。
+这一步的前提是 Spring 容器已经能提供名为 `springSecurityFilterChain` 的 Bean。`SecurityFilterAutoConfiguration` 创建注册对象，Servlet 容器中实际注册的是 `DelegatingFilterProxy`；代理再按名称委托给 Spring 管理的安全过滤器。它连接了两个容器的生命周期，并不重新构建链内过滤器。
 
 
 ## SecurityFilterAutoConfiguration
@@ -59,12 +59,12 @@ public class SecurityFilterAutoConfiguration {
 }
 ```
 
-1. 在SecurityAutoConfiguration配置完成之后再进行配置，SecurityAutoConfiguration中进行了很多基本配置，其中名称为springSecurityFilterChain的bean就是在其中配置的
-2. 将DelegatingFilterProxyRegistrationBean注册到spring容器中，它代理的过滤器就是springSecurityFilterChain，最终在应用启动时，会将它代理的过滤器注册到ServletContext中
+1. `@AutoConfigureAfter` 让该自动配置排序在 SecurityAutoConfiguration 之后，以便判断此前的 Bean 定义条件；这不是对所有 Bean 实例化时刻的普遍承诺。名为 `springSecurityFilterChain` 的 Bean 由前述导入链中的 WebSecurityConfiguration 构建。
+2. 创建 `DelegatingFilterProxyRegistrationBean`，由它向 ServletContext 注册代理，目标 Bean 名为 `springSecurityFilterChain`。顺序和 dispatcher types 决定代理在 Servlet 请求分派中的参与方式。
 
 ## 总结
 
-SecurityFilterAutoConfiguration将DelegatingFilterProxyRegistrationBean注册到spring容器中，委托它找到spring容器中name为springSecurityFilterChain的过滤器，在应用启动时将该过滤器添加到ServletContext中。
+排查“安全链已创建但请求没有经过它”时，应沿注册对象、Servlet 代理、目标 Bean 这条链检查；排查“已经经过安全链但规则不生效”时，再进入 FilterChainProxy 的链选择和内部过滤器。两类问题位于不同责任边界。
 
 ## 资料来源
 

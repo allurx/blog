@@ -1,14 +1,16 @@
 ---
 title: 用 Git Hook 触发 Hexo 构建与发布
 date: 2018-10-05
-updated: 2026-10-02
+updated: 2026-10-03
 tags: [Hexo, Git, Git-Hook, 自动部署]
 domain: Hexo
 ---
 
 Git 推送可以触发博客构建，但“代码已经保存”和“页面已经发布”是两个不同的结果。可靠的发布流程需要明确构建哪个提交，并在构建成功后才替换线上入口，避免访问者看到生成到一半的目录。
 
-下面面向一台 Linux 服务器：使用 Bash、Git、Node.js 24、npm、GNU coreutils、util-linux 的 `flock`，由 nginx 提供静态文件。部署账号通过 SSH 接收推送，具有专用目录的写权限；仓库中的构建代码由可信维护者提交。
+下面面向 **Ubuntu 26.04 LTS** 这类使用 GNU 工具链的 Linux 服务器。目标软件组合为 **Git 2.56.0、Bash 5.x、Node.js 24.19.0 LTS、npm 12.2.0、nginx 1.30.5 stable**；`mv -T`、`mktemp` 来自 GNU coreutils，`flock` 来自 util-linux，使用发行版仍受维护的包。Hexo 8.1.2 与 NexT 8.29.0 的依赖准备见[入门文章](/hexo-writing/)。这些是部署目标条件，本文没有把 Windows 上的脚本解析或静态构建等同于完整 Linux 部署实测。[Ubuntu 支持周期](https://ubuntu.com/about/release-cycle)、[nginx 发行分支](https://nginx.org/en/download.html)
+
+部署账号通过 SSH 接收推送，具有专用目录的写权限；仓库中的构建代码由可信维护者提交。部署前分别运行 `bash --version`、`git --version`、`node --version`、`npm --version`、`mv --version`、`flock --version` 和 `nginx -v`，确认实际安装包与目标能力。macOS 的 BSD 工具和 Windows Git Bash 不能直接当作这套服务端环境。
 
 ## 保存完整项目，监听准确的分支
 

@@ -1,7 +1,7 @@
 ---
 title: Type
 date: 2019-10-29
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Reflect
@@ -9,48 +9,29 @@ tags:
 domain: Java
 ---
 
-`Type` 描述反射中的类型结构：`Class`、`ParameterizedType`、`TypeVariable`、`WildcardType` 与 `GenericArrayType` 表达不同的信息。解析泛型时应按结构递归处理类型参数、边界、所有者与数组组件，不能把每个 `Type` 强转为 `Class`。
+反射解析泛型时，Type 描述的是声明中的类型结构，不只是一个 Class。List<String>、T、? super Number 和 T[] 保留的信息不同；把所有 Type 都强转为 Class，会在真实的泛型字段上失败。
 
-读取泛型信息需要从保留类型签名的声明入手。类型擦除意味着从普通对象的 `getClass()` 通常不能还原它创建时的所有泛型实参；带有泛型签名的字段、方法和父类声明才是本文示例的入口。普通数组可以由数组 `Class` 表达，泛型组件数组则可能由 `GenericArrayType` 表达。
+本文沿“从声明取出类型，再按结构展开”的路径认识五种标准表示。下面的完整程序仅依赖 JDK 标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。将五个完整类保存为同名 .java 文件，放在一个只含这些源文件的目录，执行 `javac -encoding UTF-8 -d out *.java`；各节给出对应运行命令。
 
+## 先选择能保留签名的入口
 
-## 具体实现
+普通对象的 getClass 只能得到运行时类，通常不能恢复创建该对象时传入的全部泛型实参。泛型信息来自字段、方法参数、返回值、父类和接口等声明保留的 Signature。例如 Field.getGenericType 与 Class.getGenericSuperclass 返回 Type，而 getType、getSuperclass 返回的是较窄的 Class 视图。
 
-实现Type的具体类型一共有五种，分别是Class（原始类型）、ParameterizedType（参数化的类型、泛型类型）、TypeVariable（类型变量）、WildcardType（通配符类型）、GenericArrayType（数组类型）这五种java中的具体类型。
+| 遇到的结构 | 主要读取内容 | 例子 |
+| --- | --- | --- |
+| Class | 普通类、接口、基本类型或可具体表示的数组 | String、int、String[] |
+| ParameterizedType | 类型实参、原始类型、所有者 | List<String> |
+| TypeVariable | 变量名、声明者、上界 | T extends Number |
+| WildcardType | 通配符上下界 | ? super Integer |
+| GenericArrayType | 泛型组件类型 | T[]、List<String>[] |
 
-![](./images/type.png)
+[![标准反射 API 的五种 Type 结构](./images/type.png)](./images/type.png)
 
-### Class
+这些是标准反射返回的主要结构，Type 并不是 sealed 接口，不能据此声称全世界只有五个实现类。解析器应按公开接口处理结构，不依赖 sun.reflect 下的具体实现类名。
 
-```java
-public final class Class<T> implements java.io.Serializable,
-                              GenericDeclaration,
-                              Type,
-                              AnnotatedElement {
-   ......
-}
-```
+## ParameterizedType：实参、原始类型和所有者
 
-java中每一个对象都有一个确定的Class，可以通过Object的getClass()方法或者`类名.class`等方法获取这个Class，拿到这个Class对象后我们就可以通过反射获取对象的一些特殊属性了。例如获取对象的Constructor、Method、Field等等。Class是java反射的基础，相关的方法调用就不再赘述了 。
-
-### ParameterizedType
-
-ParameterizedType表示参数化类型，例如`List<String>、Map<String,String>`就是参数化的的类型，也就是我们平时说的泛型。
-
-```java
-public interface ParameterizedType extends Type {
-
-    // 获取源代码中泛型类型的实际参数
-    Type[] getActualTypeArguments();
-
-	// 获取泛型类型的本身类型
-    Type getRawType();
-
-    // 获取定义该泛型类型的类型，如果该泛型类型是顶级类型（非嵌套类）的话则返回null
-    Type getOwnerType();
-}
-```
-看一个具体的例子：
+getActualTypeArguments 返回实参，但实参本身仍是 Type，可能继续是参数化类型、变量或通配符。getRawType 描述参数化类型对应的原始类；getOwnerType 描述成员类型的所有者，不能用是否为 null 简单判断某个类是不是顶级类。
 
 ```java
 package io.allurx;
@@ -103,23 +84,22 @@ public class ParameterizedTypeTest<T> {
 
 class D extends ParameterizedTypeTest<String> {
 }
-
 ```
 
-控制台输出
+执行 `java -cp out io.allurx.ParameterizedTypeTest`：
 
-```java
+```text
 io.allurx.ParameterizedTypeTest$B[[T],class io.allurx.ParameterizedTypeTest$A,class io.allurx.ParameterizedTypeTest]
 io.allurx.ParameterizedTypeTest$C[[java.util.List<java.lang.String>],class io.allurx.ParameterizedTypeTest$A,class io.allurx.ParameterizedTypeTest]
 io.allurx.D[[class java.lang.String],class io.allurx.ParameterizedTypeTest,null]
 io.allurx.ParameterizedTypeTest$1E[[class java.lang.String],class io.allurx.ParameterizedTypeTest$1F,null]
 ```
 
-在main方法中通过print方法分别打印B、C、D、E这四个类的ParameterizedType的父类，其中getActualTypeArguments方法明确的反映了父类在源码中的类型参数。getRawType方法则反映了ParameterizedType父类的实际类型。getOwnerType方法则反映了ParameterizedType父类所在类的类型，对于B、C来说它们的父类都是ParameterizedTypeTest$A，而ParameterizedTypeTest$A是被定义在ParameterizedTypeTest中的静态内部类，所以getOwnerType方法返回了io.allurx.ParameterizedTypeTest，而对于D、E来说它们的父类ParameterizedTypeTest和F都是单独定义的顶级类（非嵌套类）所以getOwnerType方法最终返回了null。
+B 的实参仍是变量 T，C 的实参是 List<String>，因此需要递归解析。A 是 ParameterizedTypeTest 的成员类，所以有所有者；D 的父类是顶级类，E 的父类 F 是局部类，两者这里都没有成员所有者。局部类依然属于嵌套类，不是顶级类。
 
-由于java类型擦除的原因，我们无法在运行时获取诸如T、O这种类型变量的实际类型，但是我们可以利用ParameterizedType的getActualTypeArguments方法定义一个`TypeToken`，通过new一个匿名的子类然后反射获取被擦出对象的实际类型。实际上很多第三方库例如Gson、guava都是通过这种方式来获取泛型的实际类型的。
+### TypeToken 保存的是匿名子类的签名
 
-#### 一个简单的TypeToken例子
+匿名子类的泛型父类声明可以保留 List<String>，因此可以在构造时读取它。下面是一个只处理直接继承的最小实现；多层泛型继承还需要变量替换规则，不能仅多调用一次 getGenericSuperclass 就保证正确。
 
 ```java
 package io.allurx;
@@ -142,40 +122,24 @@ public abstract class TypeToken<T> {
         }
         runtimeType = ((ParameterizedType) superclass).getActualTypeArguments()[0];
     }
-}
 
+    public final Type getType() {
+        return runtimeType;
+    }
+
+    public static void main(String[] args) {
+        System.out.println(new TypeToken<List<String>>() {}.getType());
+    }
+}
 ```
 
-通过这个TypeToken我们就能够在运行时获取泛型类型的具体类型了
+执行 `java -cp out io.allurx.TypeToken`，实测输出 `java.util.List<java.lang.String>`。它利用声明留下的签名，不是从普通 List 对象内部“反向恢复”被擦除的实参。若写成含未解析变量的 TypeToken<List<T>>，得到的仍可能是 T。
 
-`new TypeToken<List<String>>() {}.getType() => java.util.List<java.lang.String>`
+## TypeVariable：变量属于哪个声明
 
-### TypeVariable
-
-TypeVariable意为类型变量，也就是ParameterizedType中的变量，也就是我们常见的T、O这些泛型参数，例如`List<String>`中的String就是TypeVariable，而整个`List<String>`则代表着ParameterizedType。
+T、O 是类型变量；List<String> 中的 String 是 Class，不是 TypeVariable。变量可以定义在类、方法或构造器上。getBounds 读取上界，未显式声明上界时为 Object；变量声明不能用 super 指定下界。
 
 ```java
-public interface TypeVariable<D extends GenericDeclaration> extends Type, AnnotatedElement {
-
-    // 获取类型变量的所有上边界
-    Type[] getBounds();
-
-    // 获取定义类型变量的对象（Constructor、Class、Method这些能够定义类型变量的对象）
-    D getGenericDeclaration();
-
-    // 类型变量在源代码中的名称，例如T、O，返回的就是T、O
-    String getName();
-
-    // Java 8 引入，通过 AnnotatedType 读取类型使用位置上的注解
-    AnnotatedType[] getAnnotatedBounds();
-}
-
-```
-
-看一个具体的例子：
-
-```java
-
 package io.allurx;
 
 import java.io.Serializable;
@@ -220,40 +184,25 @@ public class TypeVariableTest<T extends Number & Cloneable & Serializable> {
     }
 
 }
-
 ```
-控制台输出：
-```java
+
+执行 `java -cp out io.allurx.TypeVariableTest`：
+
+```text
 class io.allurx.TypeVariableTest[T,[class java.lang.Number, interface java.lang.Cloneable, interface java.io.Serializable]]
 io.allurx.TypeVariableTest(java.lang.Object)[O,[class java.lang.Object]]
-public static void io.allurx.TypeVariableTest.test(java.lang.Object)[T,[class java.lang.Object]]
+private static void io.allurx.TypeVariableTest.test(java.lang.Object)[T,[class java.lang.Object]]
 ```
 
-从结果可以看出getName方法明确的反映了类型变量在定义在源码中的名称，getBounds方法反映了类型变量的按顺序定义的所有上边界，你可能会好奇为什么没有下边界，因为super关键字不能用在类型变量的定义上，只能用在通配符声明上。getGenericDeclaration方法则明确的反映了定义类型变量的对象。并且所有继承GenericDeclaration的对象都可以声明类型变量。
+同名变量不一定是同一个变量：类上的 T 与方法上的 T 有不同的 GenericDeclaration。解析继承关系时，变量映射应同时考虑声明者，不能只用名称字符串当键。
 
-![](./images/generic-declaration.png)
+[![类、方法和构造器的泛型声明关系](./images/generic-declaration.png)](./images/generic-declaration.png)
 
-从上图的GenericDeclaration类图上我们可以看出Class和Executable都继承了它，而Constructor和Method继承了Executable，因此Class、Constructor、Method这三者都可以声明类型变量。
+## WildcardType：隐式 Object 上界也属于结果
 
-### WildcardType
-
-WildcardType表示通配符类型表达式，例如`?`、`? extends Number`、`? super Integer`。
+通配符是一个类型实参表达式。? extends Number 有 Number 上界而无下界；? super Number 的上界为 Object、下界为 Number。无下界返回空数组，不代表 null 类型是一个普通 Class。
 
 ```java
-public interface WildcardType extends Type {
-
-    // 获取通配符的所有上边界（使用extends关键字），目前只能是一个，为了保持扩展返回数组
-    Type[] getUpperBounds();
-
-    // 获取通配符的所有下边界（使用super关键字），目前只能是一个，为了保持扩展返回数组
-    Type[] getLowerBounds();
-}
-```
-
-看一个具体的例子：
-
-```java
-
 package io.allurx;
 
 import java.lang.reflect.ParameterizedType;
@@ -289,36 +238,23 @@ public class WildcardTypeTest<T> {
                 + Arrays.toString(wildcardType.getLowerBounds()));
     }
 }
-
 ```
 
-控制台输出：
+执行 `java -cp out io.allurx.WildcardTypeTest`：
 
-```java
+```text
 UpperBounds：[class java.lang.Number],LowerBounds：[]
 UpperBounds：[class java.lang.Object],LowerBounds：[class java.lang.Number]
 UpperBounds：[T],LowerBounds：[]
 ```
 
-main方法中通过反射将WildcardTypeTest类中的三个ParameterizedType的集合中的WildcardType的类型参数的上边界和下边界分别打印出来了。
+第三个字段的上界仍是 T，说明边界也需要递归解析。获取边界只是读取声明，不会自动证明某个运行时对象满足业务需要的类型约束。
 
-### GenericArrayType
+## GenericArrayType：沿组件继续向内看
 
-GenericArrayType表示那些组件类型为ParameterizedType或TypeVariable的数组。（泛型数组）
-
-```java
-public interface GenericArrayType extends Type {
-
-    // 获取数组内部元素的类型
-    Type getGenericComponentType();
-}
-```
-
-看一个具体的例子：
+String[] 可以由数组 Class 表达；T[]、List<String>[] 的组件保留泛型结构。多维数组还会递归：T[][] 的组件 T[] 本身就是 GenericArrayType，不能只允许组件为变量或参数化类型。
 
 ```java
-
-
 package io.allurx;
 
 import java.lang.reflect.GenericArrayType;
@@ -354,23 +290,26 @@ public class GenericArrayTypeTest<T> {
 }
 ```
 
-控制台输出：
+执行 `java -cp out io.allurx.GenericArrayTypeTest`：
 
-```java
+```text
 class sun.reflect.generics.reflectiveObjects.TypeVariableImpl
 class sun.reflect.generics.reflectiveObjects.GenericArrayTypeImpl
 class sun.reflect.generics.reflectiveObjects.ParameterizedTypeImpl
 class sun.reflect.generics.reflectiveObjects.ParameterizedTypeImpl
 ```
 
-main方法中通过反射将GenericArrayTypeTest类中的四个GenericArrayType的字段的内部元素类型输出到控制台，可以发现getGenericComponentType方法明确的反映了元素的Type。**这里有一点需要注意的是如果数组内部的元素既不是ParameterizedType也不是TypeVariable，那么该数组代表的Type则是一个数组Class，而不是GenericArrayType**。
+这里打印具体类名只是帮助观察当前 JDK 的表示。业务代码应该分别使用 TypeVariable、GenericArrayType、ParameterizedType 等公开接口，避免升级 JDK 后依赖内部类路径。
 
-## 总结
+## 解析真实声明时的边界
 
-Type作为Java编程语言中所有类型的通用超级接口，涵盖Class（原始类型）、ParameterizedType（参数化的类型、泛型类型）、TypeVariable（类型变量）、WildcardType（通配符类型）、GenericArrayType（数组类型），以Class为切入点将所有的类型串联起来了，方便我们通过反射在运行时解析复杂的数据类型。
+完整解析通常需要同时维护结构递归与类型变量映射。递归界限可能循环，例如 T extends Comparable<T>；未经记录就无限展开边界会递归不止。参数化成员类型还可能从 owner 继承变量，数组则要保留维度。
+
+如果目标只是识别某个已知字段类型，不必预先实现通用类型解析框架；先按所需结构处理，并为不支持的类型给出清楚结果。需要类型使用注解时，继续使用 [AnnotatedType](/annotated-type/) 读取平行的注解结构。
 
 ## 资料来源
 
-- [Type：反射类型的公共接口](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/Type.html)
-- [ParameterizedType：类型参数与所有者](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/ParameterizedType.html)
-- [GenericArrayType：泛型数组组件](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/GenericArrayType.html)
+- [Type 的公开接口](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/Type.html)
+- [ParameterizedType：实参、原始类型和所有者](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/ParameterizedType.html)
+- [TypeVariable：声明者和边界](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/TypeVariable.html)
+- [WildcardType 与 GenericArrayType](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/GenericArrayType.html)

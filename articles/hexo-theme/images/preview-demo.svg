@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="title desc">
+  <title id="title">图片预览测试：请求、处理与响应</title>
+  <desc id="desc">三个方框从左到右表示请求、处理和响应，用箭头连接。细节文字用于检查放大后的清晰度。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto"><path d="M0 0 L10 5 L0 10Z" fill="#4868a8"/></marker>
+  </defs>
+  <rect width="1200" height="360" rx="24" fill="#f4f7fc"/>
+  <g font-family="system-ui, sans-serif" text-anchor="middle">
+    <text x="600" y="60" font-size="28" font-weight="700" fill="#20314f">图片预览测试</text>
+    <g fill="#fff" stroke="#b8c9e8" stroke-width="2">
+      <rect x="70" y="112" width="270" height="146" rx="16"/>
+      <rect x="465" y="112" width="270" height="146" rx="16"/>
+      <rect x="860" y="112" width="270" height="146" rx="16"/>
+    </g>
+    <g stroke="#4868a8" stroke-width="4" marker-end="url(#arrow)"><path d="M356 185H445"/><path d="M751 185H840"/></g>
+    <g font-size="32" font-weight="700" fill="#20314f"><text x="205" y="174">请求</text><text x="600" y="174">处理</text><text x="995" y="174">响应</text></g>
+    <g font-size="17" fill="#4f6486"><text x="205" y="213">确认输入内容</text><text x="600" y="213">执行对应逻辑</text><text x="995" y="213">读取返回结果</text></g>
+    <text x="600" y="309" font-size="16" fill="#4f6486">打开、放大、关闭后，检查正文位置与键盘焦点。</text>
+  </g>
+</svg>

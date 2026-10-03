@@ -1,7 +1,7 @@
 ---
 title: "AFTER_COMMIT 监听器为什么可能写不进数据库"
 date: 2026-09-20
-updated: 2026-10-01
+updated: 2026-10-03
 domain: "Spring"
 tags: ["Spring","TransactionalEventListener","事务"]
 ---
@@ -44,7 +44,15 @@ tags: ["Spring","TransactionalEventListener","事务"]
 
 正确边界通常是“监听器 Bean 调用写入 Bean”。`REQUIRES_NEW` 标注在另一个受 Spring 管理的 Bean 的公开方法上，跨 Bean 调用会经过事务代理。若把方法写在同一个类里再用 `this.write()` 调用，代理会被绕过，`REQUIRES_NEW` 也就不会生效。
 
-独立事务意味着监听器写入失败时，订单仍然已经提交。工程上必须决定：失败只记日志、有限重试、进入补偿队列，还是根本不允许这种可靠性缺口。它也意味着外层事务资源仍可能占用，而内层事务需要另一条数据库连接；高并发下，连接池过小会导致等待甚至相互阻塞。Spring 官方建议连接池容量至少比并发线程数多 1，实际还要按嵌套深度和其他连接使用量验证。[`REQUIRES_NEW` 资源影响](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/tx-propagation.html#tx-propagation-requires-new)
+对后面的同步监听器示例，假定投影表原先没有该订单记录，也没有额外重试，按事务边界可以推导出三种不同结果：
+
+| 发生的情况 | 新订单 | 新投影 |
+| --- | --- | --- |
+| 主事务回滚 | 不存在 | 监听器不执行，不存在 |
+| 主事务提交，独立投影事务提交 | 存在 | 存在 |
+| 主事务提交，独立投影事务失败 | 存在 | 不存在 |
+
+最后一行是设计允许的独立失败，不会撤销订单；这张表不是数据库实测记录。工程上必须决定：失败只记日志、有限重试、进入补偿队列，还是根本不允许这种可靠性缺口。独立事务也意味着外层事务资源仍可能占用，而内层事务需要另一条数据库连接；高并发下，连接池过小会导致等待甚至相互阻塞。Spring 官方建议连接池容量至少比并发线程数多 1，实际还要按嵌套深度和其他连接使用量验证。[`REQUIRES_NEW` 资源影响](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/tx-propagation.html#tx-propagation-requires_new)
 
 ### Outbox 解决的是另一层问题
 
@@ -54,7 +62,9 @@ Outbox 的做法是在原业务事务中同时写入业务数据和待投递记�
 
 ## 让投影写入经过独立事务代理
 
-下面是集成到现有 Spring Framework 6.x/7.x 与 Spring Data JPA 应用中的结构示例，省略应用已有的实体、Repository、import 和配置，不能单独作为源文件运行。它展示事务边界，未在本文中提供数据库集成测试结果。
+下面以 JDK 25 LTS、Spring Framework 7.0.9、Spring Data JPA 4.1.1 与 Hibernate ORM 7.4.5.Final 为目标组合；后三者来自 Spring Boot 4.1.1 的依赖管理，JDK 25 在该版本支持范围内。应用采用 Boot 时可沿用这组 BOM，避免独立升级其中一个组件后仍假设组合兼容。[依赖版本](https://docs.spring.io/spring-boot/appendix/dependency-versions/coordinates.html) · [Java 支持范围](https://docs.spring.io/spring-boot/system-requirements.html)
+
+这是接入已有应用的结构示例，省略实体、Repository、import 和事务管理配置，不能单独作为源文件运行。本文没有提供该组合的数据库集成实测结果；代码用于明确事件回调与独立事务的调用边界。
 
 ```java
 public record OrderCommitted(long orderId) {}

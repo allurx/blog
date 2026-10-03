@@ -1,6 +1,7 @@
 ---
 title: record 作为 HashMap 的键，为什么仍会查找失败
 date: 2026-10-02
+updated: 2026-10-03
 domain: Java
 tags: [Java, Record, HashMap, Immutability]
 ---
@@ -115,7 +116,7 @@ record GroupSnapshotKey(List<List<String>> groups) {
 
 ## 用五组输入确认保护边界
 
-下载 [RecordKeyDemo.java](./RecordKeyDemo.java)，在文件所在目录执行以下命令。示例使用 Java 17 已提供的语法与 API，只依赖 JDK，包名为 `io.allurx`，不需要 Maven 或第三方库。
+下载 [RecordKeyDemo.java](./RecordKeyDemo.java)，在文件所在目录执行以下命令。示例以 JDK 25 LTS 为基线，只依赖标准库，包名为 `io.allurx`，不需要 Maven 或第三方库。
 
 ```sh
 javac -Xlint:all -d out RecordKeyDemo.java
@@ -124,7 +125,7 @@ java -cp out io.allurx.RecordKeyDemo
 
 五组场景依次比较：直接保存可变列表、保存不可修改视图、保存字符串列表快照、只保存外层快照，以及固定两层列表。除了输出，程序还检查受保护入口会拒绝修改，并用新建的等价键确认两种有效方案可以命中缓存。
 
-本文在 Linux x86_64、OpenJDK 17.0.20 上实际编译并运行，`-Xlint:all` 未报告警告，输出如下。前文契约核对使用 Java SE 25 文档，源码解释对应 OpenJDK 25 GA；JDK 25 未作运行验证。
+本文在 Windows、Oracle JDK 25.0.2 LTS 上按上述命令编译并运行，`-Xlint:all` 未报告警告，输出如下。契约核对使用 Java SE 25 文档；源码解释定位到 OpenJDK 25 GA，用来说明保存哈希与重新计算哈希之间的关系，不把某次查找失败推广为所有 Map 的保证。
 
 ```text
 mutable: hashChanged=true, sameReference=true, size=1, get=null

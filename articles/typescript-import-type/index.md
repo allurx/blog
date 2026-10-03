@@ -1,14 +1,14 @@
 ---
 title: "import type 为什么不只是代码风格"
 date: "2026-09-05"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "TypeScript"
 tags: ["TypeScript", "ESModules", "类型系统"]
 ---
 
 把普通导入改成 `import type`，通常只影响类型边界；如果被导入模块还有顶层注册或初始化行为，却可能改变运行结果。判断这次修改是否安全，应该看生成的 JavaScript 是否还会加载那个模块。
 
-本文采用 TypeScript 5.0 引入的 `verbatimModuleSyntax` 规则，区分整个类型导入声明、混合导入中的 `type` 修饰符，以及显式副作用导入。构建工具可能进一步做 tree shaking，以下代码先讨论 TypeScript 自身的输出。
+本文以 TypeScript 7.0.2 为编译器基线，解释自 5.0 引入的 `verbatimModuleSyntax`：整个类型导入声明、混合导入中的 `type` 修饰符和显式副作用导入分别会留下什么。读者需了解 ESM 的导入与导出。构建工具可能进一步做 tree shaking，以下先隔离 TypeScript 自身的输出，再用 Node.js 24 LTS 观察模块求值。
 
 ## 类型声明与运行时值
 
@@ -112,6 +112,26 @@ import { createReader } from "./reader.js";
 第一行要求执行模块，第二行只约束类型，第三行需要运行时值。这样更换编译器或调整类型使用时，不会顺带改变注册入口。打包阶段还需让 `sideEffects` 等配置准确反映模块行为，不能用错误的打包声明抵消显式副作用导入。
 
 `import type` 可以消除对应的运行时模块依赖边，但不会消除类型之间的引用，也不会使算法本身更快。它的主要价值是让模块关系可检查、可预测。
+
+## 编译并观察三种导入的模块求值
+
+将 [book.mts](./book.mts)、[type-only.mts](./type-only.mts)、[inline-type.mts](./inline-type.mts) 和 [mixed.mts](./mixed.mts) 下载到同一目录。`book.mts` 同时导出类型和工厂函数，并在模块顶层打印 `book module evaluated`；另外三个入口分别采用前文的三种导入形式。`.mts` 会生成 `.mjs`，因此 Node.js 可以明确按 ESM 执行，不依赖其他项目的 `package.json`。
+
+在 TypeScript 7.0.2 环境中编译：
+
+```sh
+tsc --ignoreConfig book.mts type-only.mts inline-type.mts mixed.mts --strict --target ES2023 --module NodeNext --moduleResolution NodeNext --verbatimModuleSyntax --outDir out
+```
+
+然后使用 Node.js 24 LTS 分别启动三个入口，每次都是独立进程，避免模块缓存影响观察：
+
+```sh
+node out/type-only.mjs
+node out/inline-type.mjs
+node out/mixed.mjs
+```
+
+在 Windows、TypeScript 7.0.2、Node.js 24.19.0 下运行，第一条没有输出，第二条和第三条各输出一次 `book module evaluated`。检查生成文件也能看到：第一条类型导入已消失，第二条保留空导入，第三条保留 `createBook`。这里验证的是模块是否执行，不是打包体积或性能提升。
 
 ## 配置要匹配实际模块宿主
 

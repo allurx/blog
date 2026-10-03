@@ -1,7 +1,7 @@
 ---
 title: AbstractQueue
 date: 2020-01-03
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Collection
@@ -10,24 +10,19 @@ tags:
 domain: Java
 ---
 
-`AbstractQueue` 把子类的 `offer/poll/peek` 结果转换成 `add/remove/element` 的异常形式，并提供 `clear()`、`addAll()` 等基本实现。它减少重复代码，但容量、存储、迭代和线程安全仍由子类决定。
+AbstractQueue 是 Queue 的骨架实现：子类负责真正的入队、出队、查看和迭代，父类把这些基础操作组合为异常形式与批量操作。理解它，重点是哪些契约被复用，哪些仍由子类承担。
 
-这个骨架实现依赖 `null` 表示无元素，适合不允许空元素的队列。`addAll()` 按元素逐个添加，失败前已添加的元素不自动回滚；它也不是一个原子批量操作。
+本文按 Java SE 25 的公开 API 说明；代码是方法摘录，不是一份可直接编译的队列。完整实现见 [JDK 25 AbstractQueue](https://github.com/openjdk/jdk/blob/jdk-25-ga/src/java.base/share/classes/java/util/AbstractQueue.java)。
 
+## 子类提供存储，骨架转换失败形式
 
-## 方法定义
+一个典型子类需要实现 offer、poll、peek，并提供 Collection 所需的 iterator、size 等能力。AbstractQueue 不维护元素数组、链表、容量或锁，也不会因为继承了它而自动获得线程安全。
 
-```java
-public abstract class AbstractQueue<E>
-    extends AbstractCollection<E>
-    implements Queue<E> {
- ......
-}
-```
-
-AbstractQueue定义如上图所示，继承了AbstractCollection提供基本的“收集元素”功能，实现Queue接口，提供 add、remove、element 以及 clear、addAll 等骨架实现，基础存储操作由子类提供
-
-###  boolean add(E e)
+| 子类基础操作 | 骨架提供的方法 | 结果转换 |
+| --- | --- | --- |
+| offer(e) | add(e) | false 转 IllegalStateException |
+| poll() | remove() | null 转 NoSuchElementException |
+| peek() | element() | null 转 NoSuchElementException |
 
 ```java
 public boolean add(E e) {
@@ -37,24 +32,6 @@ public boolean add(E e) {
         throw new IllegalStateException("Queue full");
 }
 ```
-
-add方法是基于offer方法来实现的，其中offer方法需要子类来实现，如果offer方法返回false的话说明此时队列以及满了，那么则直接抛出异常，这和Queue中add方法的定义保持一致。
-
-### E element()
-
-```java
-public E element() {
-    E x = peek();
-    if (x != null)
-        return x;
-    else
-        throw new NoSuchElementException();
-}
-```
-
-element方法是基于peek方法来实现的，其中peek方法需要子类来实现，如果peek方法返回null说明此时队列为空，那么则直接抛出异常，这和Queue中element方法的定义保持一致。
-
-### E remove()
 
 ```java
 public E remove() {
@@ -66,9 +43,19 @@ public E remove() {
 }
 ```
 
-remove方法是基于poll方法来实现的，其中poll方法需要子类来实现，如果poll方法返回null说明此时队列为空，那么则直接抛出异常，这和Queue中remove方法的定义保持一致。
+```java
+public E element() {
+    E x = peek();
+    if (x != null)
+        return x;
+    else
+        throw new NoSuchElementException();
+}
+```
 
-### void clear()
+这套转换依赖 null 表示“没有元素”，因此适用于不允许 null 元素的队列。如果子类对 null 采取不同语义，就必须重新审视是否满足骨架前提，而不是只让类型检查通过。
+
+## clear 通过不断 poll 清空
 
 ```java
 public void clear() {
@@ -77,9 +64,9 @@ public void clear() {
 }
 ```
 
-clear方法的作用是清空队列中的所有元素，是基于poll方法来实现的，其中poll方法需要子类来实现，如果poll方法返回null说明此时队列为空，因此通过while循环调用poll方法直到队列为空为止。
+clear 不直接访问子类存储，而是持续移除队头，直到 poll 返回 null。因此它的成本和并发行为取决于子类；不是一次原子替换内部容器，也不承诺与并发新增互斥。
 
-### boolean addAll(Collection<? extends E> c)
+## addAll 可能部分成功
 
 ```java
 public boolean addAll(Collection<? extends E> c) {
@@ -95,8 +82,15 @@ public boolean addAll(Collection<? extends E> c) {
 }
 ```
 
-addAll方法的作用是将指定Collection中的元素通过迭代的方式全部添加到当前队列中，需要注意的是addAll方法是基于`boolean add(E e)`方法来实现的，AbstractQueue内部默认的add方法实现实在队列已满时会抛出IllegalStateException
+null 集合与把队列自身作为来源会被拒绝。其余情况按来源迭代顺序逐个调用 add；若中途容量不足或元素不合法，此前添加的元素不会自动回滚。
+
+例如一个尚有两个空位的有界队列添加三个元素：前两个可以进入，第三个 add 抛异常，方法并不因此恢复原队列。这是批量循环的契约边界，不应在调用层假定“要么全部成功、要么完全没变”。
+
+## 什么时候适合继承
+
+自定义存储正好满足这些基础操作和 null 约定时，骨架能统一方法之间的关系。若已有 ArrayDeque、优先级队列或阻塞队列满足需求，直接使用现有实现更容易维护。需要事务式批量插入或特殊并发契约时，应明确实现额外语义，不能依赖 addAll 的名称推断。
 
 ## 资料来源
 
-- [AbstractQueue：骨架实现与 addAll 边界](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/AbstractQueue.html)
+- [AbstractQueue：骨架前提与 addAll 边界](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/AbstractQueue.html)
+- [Queue 的基本操作选择](/queue/)

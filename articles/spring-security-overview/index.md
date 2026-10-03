@@ -1,7 +1,7 @@
 ---
 title: "Spring Security 总结"
 date: 2019-07-04
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -15,14 +15,14 @@ FilterChainProxy 选择安全过滤器链，链上的认证过滤器取得凭据
 
 以下分析基于 Spring Boot 2.1.5.RELEASE 与 Spring Security 5.1.5.RELEASE，源码可对照对应版本的[官方实现](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/configuration/WebSecurityConfiguration.java)。
 
-## 概述
+## 把启动配置与请求执行分开
 
 理解 Spring Security，需要把两条流程分开：启动阶段构建安全规则与过滤器链，请求阶段按这些规则认证和授权。下面分别说明两条流程，再连接构建器与配置器的职责。
 
 
 ## 认证
 
-spring-security通过一个名称为**springSecurityFilterChain**的过滤器来保护我们的web安全的，这个过滤器的实际类型是**FilterChainProxy**，在这个过滤器中包含多个**SecurityFilterChain**，然后每一个**SecurityFilterChain**又包含多个**Filter**，当请求来临时，只会匹配第一个**SecurityFilterChain**，这个**SecurityFilterChain**会将这个请求挨个经过内部维护的**Filter**，我们的认证过滤器就包含在其中，最终完成认证。
+`springSecurityFilterChain` 通常是一个 `FilterChainProxy`。它从多条 `SecurityFilterChain` 中选择第一条匹配的链，再由链上的过滤器处理请求；认证过滤器取得凭据后委托 `AuthenticationManager`。过滤器可以完成响应并中断链，因此不是每次请求都会执行所有过滤器，也不是任何请求都必然完成真实用户认证。
 
 ## 授权
 
@@ -36,7 +36,7 @@ spring-security通过一个名称为**springSecurityFilterChain**的过滤器来
 
 ## 总结
 
-下面的示例工程可以配合源码阅读；运行时以工程 POM 中的依赖版本为准。
+最小可运行的历史环境、依赖和登录观察步骤见 [Spring Security 基本概念](/spring-security-basics/)。下面的外部示例工程可作为扩展阅读，但其默认分支可能继续变化；对照本系列时先核对 POM，不能用不同版本的运行结果替代本文 5.1.5.RELEASE 的源码结论。
 
 [**spring-security-demo**](https://github.com/allurx/spring-security-demo)
 

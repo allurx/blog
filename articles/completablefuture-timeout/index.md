@@ -1,14 +1,14 @@
 ---
 title: "CompletableFuture 超时为何不会停止底层任务"
 date: "2026-08-31"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "Java 并发"
 tags: ["Java", "CompletableFuture", "并发"]
 ---
 
 给并行调用加上 `CompletableFuture.orTimeout()`，可以让调用方及时得到超时结果，但后台任务可能仍在执行。若它持有数据库连接或占用线程池，用户已经收到失败，资源压力却不会随之消失。
 
-理解这一行为，需要区分两个对象：一个是计算结果的完成状态，另一个是产生结果的任务。`CompletableFuture` 主要管理前者；停止后者还需要任务或底层 I/O 配合。本文按 Java SE 25 的公共契约解释，示例只使用 Java 9 起已有的 API。
+理解这一行为，需要区分两个对象：一个是计算结果的完成状态，另一个是产生结果的任务。`CompletableFuture` 主要管理前者；停止后者还需要任务或底层 I/O 配合。本文以 JDK 25 LTS 为示例基线，按 Java SE 25 的公共契约解释。`orTimeout()` 自 Java 9 提供，后面会单独说明涉及较新 JDK 的资源关闭写法。
 
 ## 超时争夺的是完成状态
 
@@ -26,7 +26,7 @@ CompletableFuture<String> result = CompletableFuture
 
 ## 把结果超时与任务结束分别观察
 
-下面是完整示例，保存为 `TimeoutDoesNotCancel.java`。工作线程先报告已经启动，然后等待一个闩锁；主线程让 Future 超时，再释放闩锁。这样无需把某个机器上的睡眠时间当作可重复的计时保证。
+下面是完整示例，只依赖 JDK 标准库。保存为 `TimeoutDoesNotCancel.java`，在 JDK 25 下执行 `java TimeoutDoesNotCancel.java`。工作线程先报告已经启动，然后等待一个闩锁；主线程让 Future 超时，再释放闩锁。这样无需把某个机器上的睡眠时间当作可重复的计时保证。
 
 ```java
 import java.util.concurrent.CompletableFuture;
@@ -70,6 +70,7 @@ public final class TimeoutDoesNotCancel {
             release.countDown();
             finished.await();
             System.out.println("释放后任务已结束: " + (finished.getCount() == 0));
+            System.out.println("Future 仍为异常完成: " + future.isCompletedExceptionally());
         } finally {
             release.countDown();
             executor.shutdown();
@@ -78,12 +79,13 @@ public final class TimeoutDoesNotCancel {
 }
 ```
 
-预期输出为：
+在 Windows、Oracle JDK 25.0.2 LTS 下运行，输出为：
 
 ```text
 TimeoutException
 任务已结束: false
 释放后任务已结束: true
+Future 仍为异常完成: true
 ```
 
 闩锁把观察点固定在底层任务尚未结束的时刻。Future 已经超时，工作线程仍能继续运行；即使它后来返回 `"done"`，Future 的异常结果也不会改变。

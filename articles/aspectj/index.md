@@ -1,378 +1,39 @@
 ---
 title: "AOP 概述"
 date: 2019-12-22
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Aop概述
 domain: Java
 ---
 
-AOP 把日志、权限、事务等横切行为从业务代码中集中表达，再按连接点和切点规则执行增强。AspectJ 可以在编译期或类加载期织入字节码；Spring AOP 常用代理拦截方法调用。织入和代理的可拦截范围不同，不能把所有 AOP 都理解为运行时动态代理。
+AOP 把日志、权限、事务等横切行为独立表达，再按连接点规则把它们应用到程序。AspectJ 可以通过编译时或类加载时织入改变字节码；Spring AOP 常用代理拦截方法调用。理解二者边界，比把 AOP 统称为“动态代理”更重要。
 
-下面通过 AspectJ 语法和示例说明连接点、切点、通知与切面如何协作。构建与 IDE 集成方式需要按所用版本核对。将同样的切点表达式用于 Spring AOP 时，需要核对代理边界、自调用以及可见性限制；AspectJ 支持的连接点也不能直接当作 Spring AOP 的能力。
+本文以一个可编译的 AspectJ 示例连接连接点、切点、通知和成员引入，再说明常见选择边界。示例已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）与 AspectJ 1.9.25.1 下完成编译时织入及运行。
 
+## 先区分选中哪里与执行什么
 
-## AspectJ
+| 概念 | 职责 |
+| --- | --- |
+| Join point（连接点） | 程序执行中可被识别的位置，例如调用、执行、字段访问 |
+| Pointcut（切点） | 选择一组连接点的表达式或命名规则 |
+| Advice（通知） | 在选中连接点的前、后或周围执行的代码 |
+| Aspect（切面） | 组织切点、通知及其他切面声明的单元 |
 
-AspectJ 在 Java 语言基础上提供切面语法，并通过字节码织入把切面与目标类组合起来。主要工具包括编译器与织入器 `ajc`、文档生成器 `ajdoc`，以及加载时织入支持；`aspectjtools.jar` 提供工具，`aspectjrt.jar` 提供运行库。[AspectJ 工具介绍](https://eclipse.dev/aspectj/doc/latest/devguide/tools-intro.html)
+call(void Person.eat()) 关注调用位置，execution(void Person.eat()) 关注方法体执行。静态字段、构造器、异常处理器等还具有各自的连接点规则；能否织入也取决于相关字节码是否经过 AspectJ 处理，不能仅写一个表达式就假定全系统都会拦截。
 
-### 术语
+## 准备确定的编译与运行环境
 
-#### Join Points
-连接点是程序执行中定义明确的点。AspectJ中定义的连接点：
+选用 [AspectJ 1.9.25.1 稳定发布](https://github.com/eclipse-aspectj/aspectj/releases/tag/V1_9_25_1) 和 Java 25 LTS。1.9.25 系列支持 Java 25，编译器最低需要 JDK 17；AspectJ 的版本策略独立于 JDK，不能把它的版本号也称为 JDK LTS。
 
-1. Method call（方法调用）
+从 Maven Central 获取 [aspectjtools-1.9.25.1.jar](https://repo.maven.apache.org/maven2/org/aspectj/aspectjtools/1.9.25.1/aspectjtools-1.9.25.1.jar) 与 [aspectjrt-1.9.25.1.jar](https://repo.maven.apache.org/maven2/org/aspectj/aspectjrt/1.9.25.1/aspectjrt-1.9.25.1.jar)，与两个源文件放在同一工作目录。前者提供 ajc 编译器/织入器，后者提供运行库。
 
-   方法被调用时，不包括非静态方法的超级调用。也就是如果父类的某个方法被子类通过super的方式调用则不会被拦截，但是子类直接通过this.父类方法调用则会被拦截。
+## 一个例子同时观察通知与成员引入
 
-2. Method execution（方法执行）
+HelloWorld 调用普通方法，也访问切面引入的新方法和字段。最后故意向 saySomething 传入 null，用于观察通知阻止原方法执行。
 
-   实际方法的代码体被执行时。不管方法以哪种形式被执行了都会被拦截。
-
-3. Constructor call（构造函数调用）
-
-   对象被构建时。也就是如果是子类通过super或者构造器内部通过this调用的则不会被拦截。直接通过new调用的才会被拦截。注意即便是通过反射调用的也不会被拦截。
-
-4. Constructor execution（构造函数执行）
-
-   实际的构造函数的代码体被执行时，不管方法以哪种形式被执行了都会被拦截。正在构造的对象是当前正在执行的对象，因此可以使用`this`切入点进行访问。构造函数执行连接点未返回任何值，因此其返回类型被视为无效。
-
-5. Static initializer execution（静态初始化程序执行）
-
-   类中的静态块初始化。由于没有返回任何值，因此其返回类型被视为无效。
-
-6. Object pre-initialization（对象预初始化）
-
-   在运行特定类的对象初始化代码之前。这包括从其第一个被调用的构造函数开始到其父级的构造	函数开始之间的时间。因此，这些连接点的执行包含`this（）`和 `super（）`构造函数调 用的参数求值的连接点。对象预初始化连接点没有返回任何值，因此其返回类型被认为是无效的。
-
-7. Object initialization（对象初始化）
-
-   当特定类的对象初始化代码运行时。这包括返回其父级的构造函数与返回其第一个被调用的构造函数之间的时间。它包括用于创建对象的所有动态初始化器和构造函数。正在构造的对象是当前正在执行的对象，因此可以使用`this`切入点进行访问 。
-
-8. Field reference（域引用）
-
-   当引用非常量字段时。注意：对常量字段的引用（绑定到常量字符串对象或原始值的静态最终字段）不是连接点。
-
-9. Field set（域被设置值时）
-
-   字段被值关联时（字段被设置值的时候）。由于字段被设置值时没有返回任何值，因此其返回类型被认为是无效的。请注意：常量字段（静态最终字段，其中初始值设定项是常量字符串对象或原始值）的初始化不是连接点。
-
-10. Handler execution（异常被catch时）
-
-    当异常被捕获时。处理程序执行连接点被视为具有一个参数，正在处理异常。该连接点没有返回任何值，因此其返回类型被认为是无效的。
-
-11. Advice execution（advice被执行时）
-
-    当Advice中的代码体执行时。
-
-每个Join Points都可能具有与之关联的三种状态：当前正在执行的对象，目标对象和参数的对象数组。这些分别由`this`， `target`和`args`这三个状态暴露切入点。下表反映了不同的Join Points与之关联的切入点。
-
-  <table border="1">
-   <colgroup>
-    <col />
-    <col />
-    <col />
-    <col />
-   </colgroup>
-   <thead valign="top">
-    <tr>
-     <th><span class="bold"><b>Join Point</b></span></th>
-     <th><span class="bold"><b>Current Object</b></span></th>
-     <th><span class="bold"><b>Target Object</b></span></th>
-     <th><span class="bold"><b>Arguments</b></span></th>
-    </tr>
-   </thead>
-   <tbody>
-    <tr>
-     <td>Method Call</td>
-     <td>executing object</td>
-     <td>target object</td>
-     <td>method arguments</td>
-    </tr>
-    <tr>
-     <td>Method Execution</td>
-     <td>executing object</td>
-     <td>executing object</td>
-     <td>method arguments</td>
-    </tr>
-    <tr>
-     <td>Constructor Call</td>
-     <td>executing object</td>
-     <td>None</td>
-     <td>constructor arguments</td>
-    </tr>
-    <tr>
-     <td>Constructor Execution</td>
-     <td>executing object</td>
-     <td>executing object</td>
-     <td>constructor arguments</td>
-    </tr>
-    <tr>
-     <td>Static initializer execution</td>
-     <td>None</td>
-     <td>None</td>
-     <td>None</td>
-    </tr>
-    <tr>
-     <td>Object pre-initialization</td>
-     <td>None</td>
-     <td>None</td>
-     <td>constructor arguments</td>
-    </tr>
-    <tr>
-     <td>Object initialization</td>
-     <td>executing object</td>
-     <td>executing object</td>
-     <td>constructor arguments</td>
-    </tr>
-    <tr>
-     <td>Field reference</td>
-     <td>executing object</td>
-     <td>target object</td>
-     <td>None</td>
-    </tr>
-    <tr>
-     <td>Field assignment</td>
-     <td>executing object</td>
-     <td>target object</td>
-     <td>assigned value</td>
-    </tr>
-    <tr>
-     <td>Handler execution</td>
-     <td>executing object</td>
-     <td>executing object</td>
-     <td>caught exception</td>
-    </tr>
-    <tr>
-     <td>Advice execution</td>
-     <td>executing aspect</td>
-     <td>executing aspect</td>
-     <td>advice arguments</td>
-    </tr>
-   </tbody>
-  </table>
-
-#### Pointcuts
-
-切入点是一个更加具体的程序运行时明确的元素，它是Join Point的一种更加具体的表现，例如`Method Call`的一个切入点为`call(public void say())`（一个public修饰的名为say的无返回值且无参数的方法被调用时）。也就是说在运行时这个方法将会被拦截。AspectJ中定义原始切入点有以下几种：
-
-1. call(MethodPattern)
-
-   选择签名与MethodPattern匹配的每个方法调用连接点 。
-
-2. execution(MethodPattern)
-
-   选择签名与MethodPattern匹配的每个方法执行连接点 。
-
-3. get(FieldPattern)
-
-   选择签名与FieldPattern匹配的每个字段引用连接点 。注意：对常量字段的引用（绑定到常量字符串对象或原始值的静态最终字段）不是连接点。
-
-4. set(FieldPattern)
-
-   选择签名与FieldPattern匹配的每个字段被设置值连接点 。注意：常量字段（静态最终字段，其中初始值设定项是常量字符串对象或原始值）的初始化不是连接点。
-
-5. call(ConstructorPattern)
-
-   选择签名与ConstructorPattern匹配的每个构造函数调用连接点 。
-
-6. execution(ConstructorPattern)
-
-   选择签名与ConstructorPattern匹配的每个构造函数执行连接点 。
-
-7. initialization(ConstructorPattern)
-
-   选择签名与ConstructorPattern匹配的每个对象初始化连接点 。
-
-8. preinitialization(ConstructorPattern)
-
-   选择签名与ConstructorPattern匹配的每个对象预初始化连接点 。
-
-9. staticinitialization(TypePattern)
-
-   选择签名与TypePattern匹配的每个静态初始化程序执行连接点 。
-
-10. handler(TypePattern)
-
-    选择签名与TypePattern匹配的每个异常处理程序连接点 。即拦截catch语句
-
-11. adviceexecution()
-
-    选择所有建议执行连接点。
-
-12. within(TypePattern)
-
-    挑选出每个执行类型为TypePattern匹配的连接点。
-
-13. withincode(MethodPattern)
-
-    在签名与MethodPattern匹配的方法中，选择定义执行代码的每个连接点 。
-
-14. withincode(ConstructorPattern)
-
-    在签名与ConstructorPattern匹配的构造函数中，选择在其中定义执行代码的每个连接点 。
-
-15. cflow(Pointcut)
-
-    选取Pointcut选取的任何连接点P的控制流中的每个连接点 ，包括P本身。
-
-16. cflowbelow(Pointcut)
-
-    选取Pointcut选取的任何连接点P的控制流中的每个连接点 ，但不包括P本身。
-
-17. this(Type or Id)
-
-    选择当前执行对象（绑定`this`对象）是Type实例或标识符Id类型（必须在封闭建议或切入点定义中进行绑定）的实例的每个连接点。不匹配来自静态上下文的任何连接点。
-
-18. target(Type or Id)
-
-    选取目标对象（应用了调用或域操作的对象）是Type实例或标识符Id类型 （必须在封闭建议或切入点定义中绑定）的实例的每个连接点 。不匹配任何调用，获取或静态成员集。
-
-19. args（Type or Id，...）
-
-    选择每个连接点，其中参数是适当类型的实例（如果使用该表单，则为标识符的类型）。如果参数的静态类型（声明的参数类型或字段类型）与指定的args类型相同或为其子类型，则匹配`null`参数。
-
-20. PointcutId(TypePattern or Id, ...)
-
-    选择由PointcutId命名的用户定义的切入点指示符选择的每个连接点 。
-
-21. if(BooleanExpression)
-
-    选择布尔表达式的计算结果为`true`的每个连接点。使用的布尔表达式只能访问静态成员，封闭的切入点或`advice`暴露的参数以及`thisJoinPoint`形式。特别是，它不能在切面上调用非静态方法，也不能使用返回值或`after advice`暴露的异常。
-
-22. ! Pointcut
-
-    选择与Pointcut未匹配的连接点 。
-
-23. Pointcut0 && Pointcut1
-
-    选择同时匹配Pointcut0和Pointcut1的连接点 。
-
-24. Pointcut0 || Pointcut1
-
-    选择匹配Pointcut0和Pointcut1中任意一个的连接点 。
-
-25. (Pointcut)
-
-    选择匹配Pointcut匹配的每个连接点 。
-
-##### 切点语法匹配汇总
-
-```java
-MethodPattern =
-  [ModifiersPattern] TypePattern
-        [TypePattern . ] IdPattern (TypePattern | ".." , ... )
-        [ throws ThrowsPattern ]
-ConstructorPattern =
-  [ModifiersPattern ]
-        [TypePattern . ] new (TypePattern | ".." , ...)
-        [ throws ThrowsPattern ]
-FieldPattern =
-  [ModifiersPattern] TypePattern [TypePattern . ] IdPattern
-ThrowsPattern =
-  [ ! ] TypePattern , ...
-TypePattern =
-    IdPattern [ + ] [ [] ... ]
-    | ! TypePattern
-    | TypePattern && TypePattern
-    | TypePattern || TypePattern
-    | ( TypePattern )
-IdPattern =
-  Sequence of characters, possibly with special * and .. wildcards
-ModifiersPattern =
-  [ ! ] JavaModifier  ...
-```
-
-- MethodPattern代表的是方法匹配模式
-- ConstructorPattern代表的是构造器匹配模式
-- FieldPattern代表的是域匹配模式
-- ThrowsPattern代表的是throws语句匹配模式
-- TypePattern代表的是类型匹配模式
-- IdPattern代表的是一个具体的字符序列或者带有特定通配符的表达式
-- ModifiersPattern代表的是任意java中的修饰符
-- []代表的是可选的
-- *代表0至任意字符
-- ..发在方法参数中代表任意数量的参数，放在包名后代表当前包及其子包
-- +放在类名后代表当前类及其子类，放在接口后代表当前接口及其实现类
-
-#### Advice
-
-Advice代表的是在Pointcuts匹配时的**某个阶段**需要执行的代码，通俗的讲就是我们给切面类写的增强的功能代码需要在目标方法执行前还是执行后或者是其它**某个阶段**执行。同时每个Advice的定义都遵循以下格式：
-
-```java
-[ strictfp ] AdviceSpec [ throws TypeList ] : Pointcut { Body }
-```
-
-* []中的内容是非必填的
-
-* 被strictfp修饰的方法在执行浮点运算表达式时会完全依照浮点规范IEEE-754
-
-* AdviceSpec为以下其中之一
-
-  - `before( Formals )`：前置通知
-  - `after( Formals ) returning [ ( Formal ) ]`后置通知，finally语句中
-  - `after( Formals ) throwing [ ( Formal ) ]`抛出异常时通知
-  - `after( Formals )`后置通知，return语句前
-  - `Type around( Formals )`在方法执行前后通知，可以控制方法是否执行。
-
-  其中Formal类似于方法的参数的名称，比如`String s`，其中s代表的就是Formal，而Formals则相当于以逗号分割的参数列表。
-
-* throws TypeList代表的是该advice可能抛出的异常，这些异常必须与该Advice的每个匹配的切入点兼容，即Advice申明上如果throws的是CheckedException，则与该Advice匹配的每个方法的签名都必须throws该CheckedException或者该CheckedException的父类异常。当然了抛出的运行时异常是不受限制的，这和java异常申明的语法是保持一致的。
-
-* Pointcut { Body }代表的切入点，可能是已定义的Pointcuts或者是直接定义的切入点表达式
-
-#### Static crosscutting
-
-Advice在运行时动态的改变了切入类的行为，但是不能修改切入类的类型结构。但是通过静态横切，AspectJ能够改变切入类（甚至是其它切面）的数据结构，即能够给切入类新增变量或者方法。
-
-#### Aspect
-
-Aspect是AspectJ添加到Java中的一种与java类类似的新语言元素。它由pointcuts与Advice组成，我们可以基于Aspect来针对程序中某个关注点进行横切和加强。通俗的讲就是由Advice组成的一个增强功能，比如在每个方法执行前打印参数，**匹配方法的规则就是Pointcuts**，**在匹配到的方法中执行前编写打印参数的代码就是Advice**，**不同的Advice就组成了不同的Aspect**。
-
-##### Aspect定义
-
-Aspect定义与java类的定义和很相似，java用`class`关键字申明一个类，AspectJ使用`aspcet`关键字申明一个Aspect，当然Aspect与java类也有很多不同之处：
-
-* 除了常规的方法和字段定义之外，Aspect还可以申明Advice，pointcuts和inter-type这几种特殊的元素。
-* Aspect不能通过new关键字、克隆、序列化这几种方式实例化。并且只能定义一个无参构造函数
-* 嵌套的Aspect必须使用static关键字修饰
-
-##### Aspect继承
-
-* Aspect可以继承类或实现接口
-* 类不能继承Aspect
-* Aspect可以继承其它抽象的Aspect（使用abstract修饰），在这种情况下不仅继承其它Aspect的字段和方法同时也继承了切入点。注意不能继承非抽象的Aspect。
-
-##### Aspect实例化
-
-由于Aspect不能通过new关键字实例化，因此每个Aspect都提供了一个aspectOf方法来获取该Aspect的实例。
-
-##### 具有特权的Aspect
-
-通常情况下Aspect访问类的成员遵循java的访问规则，但是特殊情况下如果需要访问某个类的私有的成员或者方法等，此时可以使用privileged关键字修饰Aspect即可访问类中的所有成员。
-
-
-## 使用AspectJ
-
-下面以 AspectJ 安装器与 IntelliJ IDEA 的集成为例。先在 [AspectJ 下载页](https://www.eclipse.org/aspectj/downloads.php#stable_release)选择与项目 JDK 兼容的版本，下载相应安装器 JAR，通过 `java -jar` 运行并完成安装。不同版本的安装方式及 IDE 菜单可能不同，应以所用版本的文档为准。
-
-用 `ASPECTJ_HOME` 表示实际安装目录。例如 Windows 中可以是 `C:\Users\allurx\tools\aspectj`；这是示例路径，需要替换为自己的目录。安装后的配置有两个不同用途：
-
-- 将 `ASPECTJ_HOME/lib/aspectjrt.jar` 加入项目类路径，提供 AspectJ 运行库。
-- 需要从命令行调用 `ajc` 时，将 `ASPECTJ_HOME/bin` 加入 `PATH`。
-
-在 IntelliJ IDEA 中使用切面语法需要安装 AspectJ 插件，安装入口见 [IntelliJ IDEA 的 AspectJ 支持说明](https://www.jetbrains.com/help/idea/aspectj.html)。
-
-![](./images/intellij-aspectj-plugin.png)
-
-项目类路径应包含实际的 `ASPECTJ_HOME/lib/aspectjrt.jar`；使用 IDE 编译时，将 AspectJ 编译器指向 `ASPECTJ_HOME/lib/aspectjtools.jar`。也可以直接使用安装目录中的 `ajc` 编译 `.java` 与 `.aj` 文件，参数见 [ajc 编译器文档](https://eclipse.dev/aspectj/doc/latest/devguide/ajc.html)。
-
-这两项 JAR 配置分别服务于项目运行库和编译器。目录必须指向本机实际安装位置；完成配置后，再编译下面的示例检查织入结果。
-
-## 例子
-
-首先我们先编写一个HelloWorld类，在其中定义一些方法和域
+保存为 HelloWorld.java：
 
 ```java
 package io.allurx;
@@ -410,7 +71,7 @@ public class HelloWorld {
 }
 ```
 
-HelloWorld类很简单，只包含一个私有的静态域以及几个公共的方法，接下来我们编写aspect来对HelloWorld各个维度进行横切。忘记AspectJ语法的可以回到上面重新回顾一下。
+保存为 HelloWorldAspect.aj：
 
 ```java
 package io.allurx;
@@ -485,7 +146,18 @@ public privileged aspect HelloWorldAspect {
 }
 ```
 
-调用 HelloWorld 的 main 方法，可以观察以下输出结构。示例使用 `io.allurx` 包；编译器生成的织入方法后缀和堆栈行号取决于实际编译结果，下面省略该后缀。
+aspect 是 AspectJ 语法，不能交给普通 javac 单独编译；HelloWorld 还依赖切面引入的成员，所以两个源文件要一起交给 ajc。privileged 允许切面访问目标的私有成员，是这个演示访问 privateField 的前提，不是所有切面必须开启的选项。
+
+## 按顺序编译、运行并解释结果
+
+以下命令用于 Windows PowerShell；Linux、macOS 的运行时类路径分隔符改为冒号：
+
+```powershell
+java -cp aspectjtools-1.9.25.1.jar org.aspectj.tools.ajc.Main -25 -encoding UTF-8 -classpath aspectjrt-1.9.25.1.jar -d out HelloWorld.java HelloWorldAspect.aj
+java -cp "out;aspectjrt-1.9.25.1.jar" io.allurx.HelloWorld
+```
+
+本例是编译时织入，不需要 javaagent。实际输出依次包含 privateField、before、Hello World、after、新方法文本、新字段文本和捕获的异常信息；最后 NullPointerException 来自切面主动拒绝空参数，运行退出码为 1 是预期结果。
 
 ```text
 I'm a private field on HelloWorld
@@ -496,31 +168,51 @@ I'm a new method on HelloWorld
 I'm a new field on HelloWorld
 发生了NPE！！！
 Exception in thread "main" java.lang.NullPointerException
-	at io.allurx.HelloWorldAspect.ajc$before$io_allurx_HelloWorldAspect$...(HelloWorldAspect.aj:40)
-	at io.allurx.HelloWorld.main(HelloWorld.java:16)
 ```
 
-可以看到HelloWorldAspect分别从以下几个方面对HelloWorld进行了横切：
+生成的织入方法名和堆栈行号取决于编译结果，不作为稳定 API。如果只有编译通过，却没有观察到 before/after，仍不能宣称织入结果正确；应检查源文件是否一起参与编译，以及运行时是否使用刚生成的 class。
 
-1. 在HelloWorld构造函数被执行时访问了其私有的域
-2. 在say方法调用前打印信息
-3. 在say方法调用后打印信息
-4. 给HelloWorld类添加新的方法
-5. 给HelloWorld类添加新的域
-6. 在NullPointerException异常被catch的时候进行拦截
-7. 在saySomething方法调用前检查其参数是否为null，如果为null则抛出NullPointerException
+## 切点表达式选择的是什么
 
-当然AspectJ能做的事情远远不止与这些，上面只是一个很简单的例子，通过这个例子我们现在应该能够更好的理解aop与oop之间的关系，aop对oop进行了极大的增强，对于实现某个功能时，我们可以将这个功能看成一个数据流，使用aop对这个数据流在不同的方面进行横切增强，以便实现对功能更为细致和优雅的控制。
+| 表达式 | 关注的范围 |
+| --- | --- |
+| call / execution | 方法或构造器的调用位置/执行位置 |
+| get / set | 非常量字段的读取/写入 |
+| within / withincode | 声明类型或词法代码范围 |
+| this / target / args | 当前执行对象、目标对象和参数类型或绑定 |
+| cflow / cflowbelow | 指定连接点的动态控制流，后者排除起点本身 |
+| handler | 异常处理器执行 |
+| &&、||、! | 合取、析取和排除 |
 
-## 参考
+this 与 target 在静态上下文不一定存在；call 与 execution 也不总有相同的当前对象。重用表达式时必须检查连接点种类，不能把“同一个方法名”当作上下文完全相同。
 
-[AspectJ编程指南](https://www.eclipse.org/aspectj/doc/released/progguide/index.html)
+类型模式中的 * 匹配名称片段，.. 可表示包层级或参数数量，+ 表示子类型关系。完整语法和各连接点允许的状态见官方编程指南，文章不再复制一份容易与版本分叉的语法手册。
 
-[AspectJ开发者笔记](https://www.eclipse.org/aspectj/doc/released/adk15notebook/index.html)
+## 三种 after 与 around 的完成语义
 
-[AspectJ常见问题](https://www.eclipse.org/aspectj/doc/released/faq.php)
+| 通知 | 何时执行 |
+| --- | --- |
+| before | 进入选中连接点之前 |
+| after returning | 仅正常返回之后 |
+| after throwing | 抛出匹配异常之后 |
+| 普通 after | 正常或异常完成之后，类似 finally |
+| around | 包围或替代连接点，通过 proceed 决定是否继续 |
+
+在 after returning 中改写绑定到局部变量的返回值，不等于修改调用者收到的结果；需要替换结果通常应由 around 返回新值。通知抛出异常也可能改变原调用结果，因此通用日志或统计逻辑不能随意引入新的失败行为。
+
+## 织入与代理的选择边界
+
+AspectJ 可作用于比普通方法代理更广的连接点，但需要构建或类加载链参与。Spring AOP 的代理机制不因此自动获得字段访问、构造器等全部能力；目标内部自调用与外部经过代理的调用也不同。
+
+只有接口方法边界需要共享行为时，可以先考虑较简单的代理方案；需要字节码级连接点时，再评估织入对构建、调试和部署的影响。下面保留旧 IntelliJ IDEA 插件截图作为历史界面材料，当前集成按官方 IDE 文档配置，不作为本例复现前提。
+
+[![历史 IntelliJ IDEA 的 AspectJ 插件设置](./images/intellij-aspectj-plugin.png)](./images/intellij-aspectj-plugin.png)
 
 ## 资料来源
 
-- [AspectJ 编程指南](https://eclipse.dev/aspectj/doc/released/progguide/index.html)
-- [Spring AOP：代理机制与自调用边界](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html)
+- [AspectJ 编程指南](https://eclipse.dev/aspectj/doc/latest/progguide/index.html)
+- [Advice 的完成、返回和异常语义](https://eclipse.dev/aspectj/doc/released/progguide/semantics-advice.html)
+- [ajc 编译器选项](https://eclipse.dev/aspectj/doc/latest/devguide/ajc.html)
+- [AspectJ 与 Java 版本兼容表](https://github.com/eclipse-aspectj/aspectj/blob/master/docs/release/JavaVersionCompatibility.adoc)
+- [Spring AOP 的代理边界](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html)
+- [IntelliJ IDEA 的 AspectJ 集成](https://www.jetbrains.com/help/idea/aspectj.html)

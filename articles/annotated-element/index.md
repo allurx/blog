@@ -1,7 +1,7 @@
 ---
 title: AnnotatedElement
 date: 2019-11-04
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Reflect
@@ -9,200 +9,39 @@ tags:
 domain: Java
 ---
 
-读取注解前，需要明确是读取本元素、展开可重复注解，还是按 `@Inherited` 查找父类。`getDeclaredAnnotation()` 只读直接存在的单个注解；`getDeclaredAnnotationsByType()` 可以展开容器；`getAnnotationsByType()` 还按契约处理类继承。选择方法比笼统地“获取所有注解”更重要。
+读取注解时，首先要回答三个问题：只读当前元素吗，是否展开可重复注解的容器，是否按 @Inherited 查父类？AnnotatedElement 把这三件事组合成不同方法，选错方法会出现“明明写了注解却读不到”的现象。
 
-`@Inherited` 只作用于类的父类查找，不把接口、方法或字段的注解自动继承过来。单个可重复注解可能直接存在，多个则可能通过容器间接存在；后面的反编译例子用于说明这一差异。
+本文用同一组注解比较查询结果。下面的完整程序仅依赖 JDK 标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。需要先了解 [可重复注解与容器](/repeatable-annotations/)。反射读取要求 RUNTIME 保留策略，@Inherited 只影响类的父类链，不把接口、方法或字段注解自动继承过来。
 
+## 四种关系解释查询范围
 
-## 存在术语
+| 关系 | 含义 |
+| --- | --- |
+| 直接存在 | 元素直接携带该注解 |
+| 间接存在 | 元素直接携带容器，容器 value 数组包含该可重复注解 |
+| 存在 | 本元素直接存在；或者本元素没有直接结果，按类继承和 @Inherited 规则从父类继承 |
+| 关联 | 本元素直接或间接存在；本元素都没有结果时，再按继承规则查父类 |
 
-在分析AnnotatedElement方法中的方法前我们必须要明确注解有几种方式存在于元素之上，这样才能便于我们更好的理解其中方法的含义。
+单个可重复注解通常直接存在，重复写多个时编译器使用容器表示。因此“可重复注解”不等于“间接存在”。父类搜索也不是无条件合并：getAnnotationsByType 在本类已经找到结果时，不再拼接父类的同类注解。
 
-###  直接存在
+## 六种查询方法如何选择
 
-**直接存在**这种形式可能是我们再写代码时经常遇到的形式，简单的说就是某个元素直接被某个注解标注了。
+| 方法 | 查询关系 | 展开容器 |
+| --- | --- | --- |
+| getAnnotation(Class&lt;T&gt;) | 存在 | 否 |
+| getAnnotations() | 存在 | 否 |
+| getAnnotationsByType(Class&lt;T&gt;) | 关联 | 是 |
+| getDeclaredAnnotation(Class&lt;T&gt;) | 直接存在 | 否 |
+| getDeclaredAnnotations() | 直接存在 | 否 |
+| getDeclaredAnnotationsByType(Class&lt;T&gt;) | 直接或间接存在 | 是 |
 
-```java
-@MyAnnotation
-public class Test{}
-```
+isAnnotationPresent 按“存在”判断，不等价于 getAnnotationsByType 的结果非空。容器类型也是一个注解类型，查询容器与查询它包含的元素注解会得到不同结果。
 
-在上面的例子中，类Test被注解MyAnnotation直接标注了，这种形式就称为**直接存在**，所以此时MyAnnotation是**直接存在**于Test之上。
+## 用一个程序观察容器与继承
 
-### 间接存在
+A 和 B 都重复使用 MyAnnotation，编译后分别携带 RepeatableAnnotation 容器。两种注解都使用 RUNTIME 与 @Inherited，容器 value 返回 MyAnnotation 数组。
 
-**间接存在**这种形式是指在我们使用`@Repeatable`注解标记一个可重复注解时，将这个可重复注解标注在元素之上时，这个可重复注解就是**间接存在**于元素之上的。对`@Repeatable`底层实现原理不清楚的同学可以翻阅我之前写的文章，其本质上只是一个语法糖而已。
-
-```java
-package io.allurx;
-
-import java.lang.annotation.*;
-import java.util.Arrays;
-
-/**
- * @author allurx
- */
-@MyAnnotation(1)
-@MyAnnotation(2)
-public class Test {
-
-    @Target(ElementType.TYPE)
-    @Retention(RetentionPolicy.RUNTIME)
-    @Documented
-    public @interface RepeatableAnnotation {
-
-        MyAnnotation[] value();
-    }
-
-    @Target(ElementType.TYPE)
-    @Retention(RetentionPolicy.RUNTIME)
-    @Repeatable(RepeatableAnnotation.class)
-    @Documented
-    public @interface MyAnnotation {
-
-        int value();
-    }
-
-}
-
-```
-
-在上面的例子中，MyAnnotation是一个可重复注解，Test类被标注了MyAnnotation，这种形式就称为**间接存在**，你可能会好奇为什么这种形式称为间接存在，其实通过反编译这个Test类，你会发现Test类上实际被标注的是RepeatableAnnotation注解，只不过是通过value数组指定了MyAnnotation，因此这种形式被称为**间接存在**。所以此时MyAnnotation是**间接存在**于Test之上，RepeatableAnnotation是**直接存在**于Test之上。
-
-### 存在
-
-**存在**这种形式是指满足以下任一条件，则代表元素上**存在**某个注解
-
-1.  元素上**直接存在**某个注解
-2. 某个被`@Inherited`标注的注解（能够继承的注解）**存在**于该元素的父类上
-
-**简单的说就是某个元素上直接存在某个注解或者只要在该元素代表类的所有父类中找到一个直接标注该注解的父类，则代表该注解存在于元素之上。**
-
-```java
-
-
-package io.allurx;
-
-import java.lang.annotation.*;
-import java.util.Arrays;
-
-/**
- * @author allurx
- */
-public class Test {
-
-    @Target(ElementType.TYPE)
-    @Retention(RetentionPolicy.RUNTIME)
-    @Inherited
-    @Documented
-    public @interface RepeatableAnnotation {
-
-        MyAnnotation[] value();
-    }
-
-    @Target(ElementType.TYPE)
-    @Retention(RetentionPolicy.RUNTIME)
-    @Repeatable(RepeatableAnnotation.class)
-    @Inherited
-    @Documented
-    public @interface MyAnnotation {
-
-        int value();
-    }
-
-    @MyAnnotation(1)
-    @MyAnnotation(2)
-    static class A extends B {
-
-    }
-
-    @MyAnnotation(3)
-    static class B{
-
-    }
-
-}
-```
-
-在上面的例子中可重复注解MyAnnotation注释在类A上（编译后的class中其实是被RepeatableAnnotation注释了），类A继承了类B，而类B也被可重复注解MyAnnotation注释了，注意类B上只有一个可重复注解，因此编译后的类B的class中是被MyAnnotation注释了。因此这里类A上**存在**注解RepeatableAnnotation和MyAnnotation这两个注解，而类B上**存在**MyAnnotation注解。
-
-### 关联的
-
-**关联的**这种形式是指满足以下任一条件，则代表元素与该注解是**关联的**
-
-1. 元素上**直接存在**或者**间接存在**某个注解
-2. 某个被`@Inherited`标注的注解（能够继承的注解）与该元素的父类是**关联的**
-
-**简单点说就是元素上直接存在或者间接存在某个注解或者只要在该元素代表类的所有父类中找到一个直接存在或者间接存在该注解的父类，则代表元素与该注解是关联的。**
-
-还是以上面**存在**中的例子作为解释，类A是与RepeatableAnnotation和MyAnnotation注解关联的，类B是与MyAnnotation注解关联的。
-
-### 小结
-
-AnnotatedElement中的方法都是基于**注解以何种形式存在于对象上**获取元素上的注解的， 下表总结了此接口中各方法获取元素注解的范围：
-<table border>
-        <tr align=center>
-            <th colspan=2></th>
-            <th colspan=4>注解存在的形式</th>
-        <tr align=center>
-            <th colspan=2>方法</th>
-            <th>直接存在</th>
-            <th>间接存在</th>
-            <th>存在</th>
-            <th>关联的</th>
-        <tr align=center>
-            <td>T</td>
-            <td>getAnnotation(Class<T> annotationClass)
-            <td></td>
-            <td></td>
-            <td>√</td>
-            <td></td>
-        </tr>
-        <tr align=center>
-            <td >Annotation[]</td>
-            <td>getAnnotations()
-            <td></td>
-            <td></td>
-            <td>√</td>
-            <td></td>
-        </tr>
-        <tr align=center>
-            <td>T[]</td>
-            <td>getAnnotationsByType(Class<T> annotationClass)
-            <td></td>
-            <td></td>
-            <td></td>
-            <td>√</td>
-        </tr>
-        <tr align=center>
-            <td>T</td>
-            <td>getDeclaredAnnotation(Class<T> annotationClass)
-            <td>√</td>
-            <td></td>
-            <td></td>
-            <td></td>
-        </tr>
-        <tr align=center>
-            <td>Annotation[]</td>
-            <td>getDeclaredAnnotations()
-            <td>√</td>
-            <td></td>
-            <td></td>
-            <td></td>
-        </tr>
-        <tr align=center>
-            <td>T[]</td>
-            <td>getDeclaredAnnotationsByType(Class<T> annotationClass)
-            <td>√</td>
-            <td>√</td>
-            <td></td>
-            <td></td>
-        </tr>
- </table>
-
- 上面的表格中展现了AnnotatedElement中的方法获取元素上的注解时所探测的范围，其中打钩的范围代表该方法会探测以该种形式存在于元素上的注解。
-
-## 例子
+保存为 Test.java，执行 `javac -encoding UTF-8 -d out Test.java`、`java -cp out io.allurx.Test`：
 
 ```java
 package io.allurx;
@@ -282,39 +121,34 @@ public class Test {
 }
 ```
 
-控制台输出
+下面是 JDK 25 的实际输出；toString 的标点和类名排版不是 API 保证，应对照每行查询的语义：
 
-```java
+```text
 false
 true
 null
-@io.allurx.Test$RepeatableAnnotation(value=[@io.allurx.Test$MyAnnotation(value=1), @io.allurx.Test$MyAnnotation(value=2)])
-[@io.allurx.Test$RepeatableAnnotation(value=[@io.allurx.Test$MyAnnotation(value=1), @io.allurx.Test$MyAnnotation(value=2)])]
-[@io.allurx.Test$MyAnnotation(value=1), @io.allurx.Test$MyAnnotation(value=2)]
-[@io.allurx.Test$RepeatableAnnotation(value=[@io.allurx.Test$MyAnnotation(value=1), @io.allurx.Test$MyAnnotation(value=2)])]
-[@io.allurx.Test$RepeatableAnnotation(value=[@io.allurx.Test$MyAnnotation(value=1), @io.allurx.Test$MyAnnotation(value=2)])]
+@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})
+[@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})]
+[@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)]
+[@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})]
+[@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})]
 null
-@io.allurx.Test$RepeatableAnnotation(value=[@io.allurx.Test$MyAnnotation(value=1), @io.allurx.Test$MyAnnotation(value=2)])
-[@io.allurx.Test$MyAnnotation(value=1), @io.allurx.Test$MyAnnotation(value=2)]
-[@io.allurx.Test$RepeatableAnnotation(value=[@io.allurx.Test$MyAnnotation(value=1), @io.allurx.Test$MyAnnotation(value=2)])]
+@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})
+[@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)]
+[@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})]
 ```
 
-要理解AnnotatedElement接口中的这些方法并不难，只要理解**直接存在**、**间接存在**、**存在**、**关联的**这些词的含义，在需要获取元素上的元素时，我们就能选择合适的方法了。
+前两行 false、true 表明 A 上存在的是容器，而不是一个可直接读取的 MyAnnotation。getAnnotation(MyAnnotation.class) 也不会展开父类的容器，所以返回 null；ByType 方法则展开 A 上的 1、2，不合并 B 上的 3、4。
 
-## 总结
+如果把 B 改为只标注一个 MyAnnotation(3)，B 上便直接存在该注解。按 API 规则，A 的 getAnnotation(MyAnnotation.class) 可以沿继承链读到 3，而 getAnnotationsByType(MyAnnotation.class) 仍使用 A 自己容器里的 1、2。这个对照说明“存在”和“关联”解决的是不同查询问题，不能把两个结果互相代替。
 
-注解可能会以各种形式存在于元素之上，一共分成以下四种形式：
+## 声明注解与类型使用注解不要混读
 
-1. **直接存在**
-   某个注解直接标注在元素上
-2. **间接存在**
-   被`@Repeatable`注解标注的注解注释在元素上时，该注解就是间接存在于元素上的
-3. **存在**
-   某个**元素上直接存在**某个注解或者只要在该元素代表类的所有**父类中找到一个直接存在**该注解的父类，则代表该注解存在于元素之上
-4. **关联的**
-   **元素上直接存在或者间接存在**某个注解或者只要在该元素代表类的所有**父类中找到一个直接存在或者间接存在**该注解的父类，则代表元素与该注解是关联的
+Field.getDeclaredAnnotations 读取字段声明上的注解；List<@Sensitive String> 中 String 的注解属于类型使用，要从 Field.getAnnotatedType 递归进入参数化类型读取。方法返回值、数组维度与通配符边界也有同样的区别，见 [AnnotatedType](/annotated-type/)。
+
+解析框架应先确定自己的继承和重复注解政策，再选择对应方法；不要先把所有注解平铺到一个 Map，之后才试图恢复容器、声明位置和覆盖关系。
 
 ## 资料来源
 
-- [AnnotatedElement：四种注解存在关系与查询表](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedElement.html)
-- [Inherited：类继承范围](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/annotation/Inherited.html)
+- [AnnotatedElement：四种关系与查询方法表](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/AnnotatedElement.html)
+- [Inherited：类继承的适用范围](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/annotation/Inherited.html)

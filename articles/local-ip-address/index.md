@@ -1,158 +1,107 @@
 ---
 title: "获取本机 IP 地址"
 date: 2019-06-22
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - InetAddress
 domain: Java
 ---
 
-`InetAddress.getLocalHost()` 根据本机主机名解析地址，不能保证返回业务所需的内网地址。枚举 `NetworkInterface` 可以得到各接口绑定的地址，但多网卡、多地址场景仍需按目标网络和路由选择，不能把“第一个非回环地址”当成通用答案。
+“本机 IP”不是一个在所有场景下都唯一的值。主机名解析、网卡绑定地址、某条连接的本地端点以及 NAT 后的公网出口，回答的是不同问题。先明确用途，才能选择正确 API。
 
-下面比较主机名解析与网卡枚举的结果。Windows、Linux 的配置观察来自特定实验环境，不能推导出所有系统都只依赖某个 hosts 文件。接口列表也不能单独确定访问某个远端时实际使用的源地址。
+本文比较主机名解析与接口枚举，并保留一个历史 Windows 多地址实验。完整 Java 示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）运行；本次没有修改本机网络配置。
 
+## getLocalHost 返回主机名的解析结果
 
-## InetAddress
+InetAddress.getLocalHost 获取本机主机名，再通过名称服务解析地址。hosts 文件可能参与解析，也可能使用 DNS、缓存和系统配置。返回回环地址不表示没有其他网卡；返回某个内网地址也不证明它是访问任意远端时使用的源地址。
 
-常见调用 `InetAddress.getLocalHost().getHostAddress()` 先取得本机主机名，再由名称服务解析地址。解析路径受操作系统、名称服务与缓存配置影响，hosts 文件可能参与其中，也可能使用 DNS 等机制。下面的 Linux 实验把 hostname 映射到 127.0.0.1 后返回了回环地址，这说明该调用不能保证得到业务所需的内网地址；它不是对所有 Windows 或 Linux 环境的统一结论。
+因此，某次修改 Linux hosts 后得到指定地址，只能说明那次环境中的解析路径。不能把它写成所有 Windows 或 Linux 系统都只依赖一个文件的固定规则。
 
-## NetworkInterface
+## 枚举候选地址时保留接口关系
 
-通过网上查阅资料，最终可以确定通过获取机器上的所有网络设备，根据其中的网卡接口绑定的ip地址来确定本机的ip地址，具体实现代码如下
+同一接口可能有多个 IPv4 或 IPv6 地址，机器也可能有物理、VPN、容器等多个接口。下面列出已启用、非回环接口中的非回环、非通配地址，并同时打印接口名；不把虚拟接口一律当作无效接口。
+
+保存为 Ip.java，执行 `javac -encoding UTF-8 -d out Ip.java`、`java -cp out io.allurx.Ip`：
 
 ```java
-import lombok.extern.slf4j.Slf4j;
+package io.allurx;
 
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
-import java.net.UnknownHostException;
 import java.util.Enumeration;
 
 /**
  * @author allurx
  */
-@Slf4j
 public class Ip {
 
-    /**
-     * 首先遍历本机上所有可用的网络设备接口,获取第一个可用的网络地址.
-     * 如果没有可用的地址则尝试调用{@link InetAddress#getLocalHost}
-     * 方法来获取本机地址.
-     *
-     * @return 本机上第一个可用的网络地址
-     */
-    private static InetAddress getLocalIpAddress() {
-        InetAddress inetAddress = null;
-        try {
-            // 获取本机上的所有网络设备接口
-            Enumeration<NetworkInterface> netInterfaces = NetworkInterface.getNetworkInterfaces();
-            while (netInterfaces.hasMoreElements()) {
-                NetworkInterface networkInterface = netInterfaces.nextElement();
-                // 过滤一些不正确的网络设备接口
-                if (!isValidNetworkInterface(networkInterface)) {
-                    continue;
-                }
-                // 绑定到该网络接口的所有网络地址
-                Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
-                while (addresses.hasMoreElements()) {
-                    inetAddress = addresses.nextElement();
-                    if (isValidAddress(inetAddress)) {
-                        return inetAddress;
-                    }
+    public static void main(String[] args) throws SocketException {
+        Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+        if (interfaces == null) {
+            return;
+        }
+
+        while (interfaces.hasMoreElements()) {
+            NetworkInterface network = interfaces.nextElement();
+            if (!network.isUp() || network.isLoopback()) {
+                continue;
+            }
+            Enumeration<InetAddress> addresses = network.getInetAddresses();
+            while (addresses.hasMoreElements()) {
+                InetAddress address = addresses.nextElement();
+                if (!address.isLoopbackAddress() && !address.isAnyLocalAddress()) {
+                    System.out.println(network.getName() + " " + address.getHostAddress());
                 }
             }
-        } catch (Exception e) {
-            log.error(e.getMessage(), e);
         }
-        // 本机网络接口没有可用的网络地址
-        try {
-            inetAddress = InetAddress.getLocalHost();
-        } catch (UnknownHostException e) {
-            log.error(e.getMessage(), e);
-        }
-        return inetAddress;
-    }
-
-    /**
-     * @param networkInterface 本机网络设备接口
-     * @return 网络设备接口是否有效
-     * @throws SocketException SocketException
-     */
-    private static boolean isValidNetworkInterface(NetworkInterface networkInterface) throws SocketException {
-        return  // 不是环回接口
-                !networkInterface.isLoopback() &&
-                        // 已启动并且正在运行
-                        networkInterface.isUp() &&
-                        // 不是虚拟接口
-                        !networkInterface.isVirtual();
-    }
-
-    /**
-     * @param address 网络地址
-     * @return 网络地址是否有效
-     */
-    private static boolean isValidAddress(InetAddress address) {
-        return
-                // 不是环回地址
-                !address.isLoopbackAddress() &&
-                        // 不是通配符地址
-                        !address.isAnyLocalAddress();
-    }
-
-    public static void main(String[] args) throws Exception {
-        System.out.println(getLocalIpAddress().getHostAddress());
     }
 }
-
 ```
 
-通过以上方法就能获取到本机ip地址了，执行以上代码，控制台输出了192.168.100.116，和我本机的内网ip一致，接下来我们测试一下一个网卡多个ip的情况。
+每个地址输出一行，实际内容由机器配置决定；本次执行确实枚举出同一接口上的多个地址。顺序不保证稳定，不能把“第一个非回环地址”当作通用答案。SocketException 直接传播，避免枚举失败后悄悄改用另一种选址语义。
 
-### 一个网卡多个ip地址
+链路本地 IPv6 地址还依赖作用域标识，输出中的接口关系不能随意去掉。枚举只得到当前绑定的候选地址，不会自动查询 NAT 后的公网地址。
 
-#### 本机ip配置
+## 历史实验：同一 Windows 接口绑定两个 IPv4 地址
 
-由于我本机没有物理网卡，使用的是一个无线usb连接的家里的无线网，所以我本机的网卡就是下图中的无线局域网适配器，接下来我们给网卡添加一个额外的ip地址，首先看一下本机的ip配置信息，命令行输入`ipconfig/all`，
+以下截图来自 2019 年的 USB 无线网卡实验。它用于说明一个接口可以有多个地址，不是当前 Windows 菜单布局的保证，也不能照抄其中地址到其他网络。
 
-![](./images/ipconfig-before-additional-address.png)
+先执行 `ipconfig /all` 记录原配置。截图中接口通过 DHCP 获得 192.168.100.116：
 
-#### 配置多个ip
+[![2019 年 Windows 接口的初始 ipconfig 配置](./images/ipconfig-before-additional-address.png)](./images/ipconfig-before-additional-address.png)
 
-打开网络和共享中心-更改适配器设置，找到对应的网络连接，右击属性
+通过网络适配器属性进入 IPv4 设置：
 
-![](./images/wireless-adapter-properties.png)
+[![历史无线网卡属性中的 IPv4 设置入口](./images/wireless-adapter-properties.png)](./images/wireless-adapter-properties.png)
 
-选中Internet协议版本4（TCP/IPv4），点击属性按钮
+[![历史 IPv4 属性页中的手动地址配置](./images/ipv4-properties.png)](./images/ipv4-properties.png)
 
-![](./images/ipv4-properties.png)
+这个实验后续采用手动地址配置，所以前后截图的 DHCP 状态也改变了，不是仅添加一个地址而其他配置完全不动。地址、子网掩码、网关和 DNS 都需符合所在网络规划。
 
-点击高级按钮，添加一个新ip为192.168.100.117
+在高级设置中保留 192.168.100.116，并增加 192.168.100.117：
 
-![](./images/advanced-ip-addresses.png)
+[![同一接口上的两个手动 IPv4 地址](./images/advanced-ip-addresses.png)](./images/advanced-ip-addresses.png)
 
-查看ip是否添加成功，命令行输入`ipconfig/all`
+再次执行 `ipconfig /all`，对照接口名称确认两个 IPv4 条目：
 
-![](./images/ipconfig-after-additional-address.png)
+[![历史 ipconfig 输出中同时出现两个 IPv4 地址](./images/ipconfig-after-additional-address.png)](./images/ipconfig-after-additional-address.png)
 
-新的ip添加成功，运行获取ip地址代码，发现控制台输出了两个ip，包含了刚刚添加的192.168.100.117
+Java 枚举程序对每个绑定地址逐行输出，因此能对应这些条目。若实现是在找到第一个地址后立即 return，则不可能由同一次调用输出两个地址；验证结果必须与真正运行的代码对应。
 
-### 多个网卡多个ip地址
+## 从候选地址到实际连接的本地端点
 
-公司现在恰好就有一台机器配置了2个网卡，把上面的代码编译一下在这台双网卡的机器上跑一下，对比ip配置，和预期的结果是一致的。
+| 需求 | 入口 | 不能据此推出 |
+| --- | --- | --- |
+| 主机名解析到的地址 | InetAddress.getLocalHost | 全部绑定地址或任意目的地的出口地址 |
+| 当前接口绑定地址 | NetworkInterface 枚举 | 路由一定选择其中哪一个 |
+| 已建立连接的本地端点 | 对应 Socket/Channel 的本地地址 | 其他目的地也使用同一个地址 |
 
-## 总结
-
-1. linux系统上如果在/etc/hosts文件中配置了hostname和ip的映射关系，`InetAddress.getLocalHost().getHostAddress()`的方法返回值就是对应的ip值
-2. 实际生活中，机器的网络配置情况是很复杂的，很有可能肯存在一个网卡配置了多个ip、多个网卡配置了多个ip等情况，此时通过遍历筛选本机的网络接口来获取本机的ip地址才是比较正确的做法
-
-通过以上的实践，其实还有一些问题没有解决
-
-1. windows下是如何根据hostname获取对应的ip地址的，我尝试修改了C:\Windows\System32\drivers\etc\hosts文件，发现即便我将计算机名称映射到另一个内网ip上，最终返回的还是本机的实际内网ip地址，这和linux上的表现不一致
-2. 一个网卡多个ip地址，多个网卡多个ip地址的情况下，如何确定本次网络访问使用的本机ip地址是哪一个？这依赖于本次网络访问的目的地址和本机的路由策略，如何获取到本机ip地址还没有找到好的解决方法
+已经连接的 Socket 可通过 getLocalAddress/getLocalSocketAddress 观察实际本地端点；这是那条连接的结果。多网卡时还要考虑目标地址、路由、接口状态及应用是否显式绑定，不能由一个全局“获取本机 IP”方法替所有场景作决定。
 
 ## 资料来源
 
-- [InetAddress：主机名与地址解析](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/net/InetAddress.html)
-- [NetworkInterface：接口与绑定地址](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/net/NetworkInterface.html)
+- [InetAddress：本机主机名与地址解析](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/net/InetAddress.html)
+- [NetworkInterface：接口和绑定地址](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/net/NetworkInterface.html)
+- [Socket：连接的本地地址](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/net/Socket.html)

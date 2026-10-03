@@ -1,14 +1,14 @@
 ---
 title: "Redis TTL 到期为什么不等于立即删除"
 date: "2026-09-08"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "Redis"
 tags: ["Redis", "TTL", "缓存"]
 ---
 
 一个 Redis Key 已经读不到，内存却没有在截止时刻同步下降，这两个观察并不冲突。TTL 定义的是数据何时逻辑失效，删除与内存回收则由后续处理完成；应用不能把它当成每个 Key 都有的精确定时回调。
 
-本文讨论 Redis Key 级过期，命令示例需要 Redis 6.0+，因为使用了 `SET ... KEEPTTL`。过期算法的抽样参数随版本变化，以下只依赖命令与复制的公开语义。
+本文讨论 Redis Key 级过期，命令以 Redis Open Source 8.2.10 为目标；8.2 属于 Extended 支持线。`SET ... KEEPTTL` 自 6.0 提供。本文没有运行 Redis 实例，返回值按命令契约说明；过期算法的抽样参数随版本变化，不作为应用保证。[Redis 支持线](https://redis.io/docs/latest/operate/oss_and_stack/install/version-mgmt/) · [8.2.10 发布说明](https://github.com/redis/redis/releases/tag/8.2.10)
 
 ## 到期后的访问与回收
 
@@ -67,7 +67,7 @@ Redis 通常为带 TTL 的 Key 维护额外的过期时间信息。
 
 ### 原子设置值和 TTL
 
-推荐在写入缓存时一次完成值与 TTL 设置：
+以下命令可在独立测试实例的 `redis-cli` 8.2.10 交互会话执行，会写入文中给出的示例键。推荐在写入缓存时一次完成值与 TTL 设置：
 
 ```redis
 SET user:42 '{"name":"Alice"}' EX 300
@@ -106,10 +106,12 @@ TTL counter
 如果覆盖值时需要保留 TTL，可显式使用：
 
 ```redis
+SET counter 0 EX 60
 SET counter 1 KEEPTTL
+TTL counter
 ```
 
-该行为由当前 [`EXPIRE`](https://redis.io/docs/latest/commands/expire/) 与 [`SET`](https://redis.io/docs/latest/commands/set/) 官方文档确认。
+这组命令先重新建立 TTL，再覆盖值，便于与上一组对照；若对已经没有 TTL 的键使用 `KEEPTTL`，它不会凭空补回期限。该行为由当前 [`EXPIRE`](https://redis.io/docs/latest/commands/expire/) 与 [`SET`](https://redis.io/docs/latest/commands/set/) 官方文档确认。
 
 ### 正确解释 TTL 返回值
 

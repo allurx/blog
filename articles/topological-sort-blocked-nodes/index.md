@@ -1,6 +1,7 @@
 ---
 title: 拓扑排序失败后，剩下的节点都是环吗
 date: 2026-10-03
+updated: 2026-10-03
 domain: 图算法
 tags: [拓扑排序, Kahn, 循环依赖, 任务调度]
 ---
@@ -19,7 +20,7 @@ tags: [拓扑排序, Kahn, 循环依赖, 任务调度]
 
 下面这张图包含六个节点，边是 `A → B`、`B → C`、`C → B`、`C → D` 和 `E → F`。颜色区分的是算法最终的状态，不是额外的依赖规则。
 
-![B 与 C 构成有向环，D 只在环的下游，A、E、F 可以被输出](./images/cycle-and-blocked-node.svg)
+[![B 与 C 构成有向环，D 只在环的下游，A、E、F 可以被输出](./images/cycle-and-blocked-node.svg)](./images/cycle-and-blocked-node.svg)
 
 B、C 构成循环；A 虽然指向这个循环，但它没有前置依赖；E、F 则是一条独立的任务链。D 只有入边，没有出边，所以它不可能位于任何有向环上。
 
@@ -90,7 +91,7 @@ return { order, blocked };
 
 `head` 表示队首位置，追加的节点会在后续迭代中处理。这样不必反复对数组执行 `shift()`，也不需要每轮重新扫描所有节点寻找零入度节点。
 
-每个节点最多入队一次，每条去重后的边最多在其起点输出时访问一次。在将 `Map`、`Set` 的查询和更新视为平均常数时间的常用实现模型下，建图及排序需要 `O(V + E)` 时间和空间；这里 `E` 按输入边记录数计算，重复记录仍然需要读取。图分析本身不包含真实任务的运行时间。
+每个节点最多入队一次，每条去重后的边最多在其起点输出时访问一次。在将 `Map`、`Set` 的查询和更新视为平均常数时间的常用实现模型下，建图及排序需要 `O(V + E)` 时间和空间；这里 `V`、`E` 分别按输入节点记录数和输入边记录数计算，重复记录仍然需要读取。图分析本身不包含真实任务的运行时间。
 
 下载附件后，在其所在目录运行：
 
@@ -98,7 +99,7 @@ return { order, blocked };
 node topological-sort-demo.mjs
 ```
 
-示例只依赖 Node.js 标准库。在 Linux、Node.js 24.19.0 下，输出如下：
+示例只依赖 Node.js 标准库，使用 [Node.js 24 LTS](https://nodejs.org/en/about/previous-releases) 系列。在 Windows、Node.js 24.19.0 下运行，输出如下：
 
 ```text
 cyclic: order=A,E,F; blocked=B,C,D
@@ -126,7 +127,7 @@ Kahn 算法回答了能否形成完整顺序，也给出了无法消除的范围
 
 示例中的“输出节点、消除出边”是同步的图计算步骤，没有执行实际任务。如果系统要求整个计划合法后才能产生任何副作用，应先检查 `blocked` 为空，再开始执行；不要一边枚举部分结果一边运行任务，最后才发现整体无法完成。
 
-若允许在有环时仍推进互不受阻的任务，也必须明确这是业务策略。Python 3.12 的 [`graphlib.TopologicalSorter`](https://docs.python.org/zh-cn/3.12/library/graphlib.html)支持在检测到 `CycleError` 后继续获取能够就绪的节点；异常提供的是一个被发现的环，并不等于全部受阻节点。
+若允许在有环时仍推进互不受阻的任务，也必须明确这是业务策略。Python 3.14 的 [`graphlib.TopologicalSorter`](https://docs.python.org/zh-cn/3.14/library/graphlib.html)支持在检测到 `CycleError` 后继续获取能够就绪的节点；异常提供的是一个被发现的环，并不等于全部受阻节点。
 
 并行调度还需要把“已经派发”与“已经完成”分开。派发任务 U 后，应等它真正完成并满足依赖要求，再解除 `U → V`，而不是一派发就让 V 开始。上述接口也将 `get_ready()` 与 `done()` 分开表达这两个阶段。
 

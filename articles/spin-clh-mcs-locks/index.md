@@ -1,7 +1,7 @@
 ---
 title: 锁算法
 date: 2019-07-27
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Concurrent
@@ -10,14 +10,11 @@ tags:
 domain: Java
 ---
 
-简单自旋锁让所有竞争者反复争用同一状态；CLH 在前驱节点上等待，MCS 则在自身节点上等待并由前驱交接。队列结构改变了竞争和通信方式，但自旋仍会消耗 CPU，是否合适取决于持锁时间、竞争程度与硬件，不能只凭算法名称判断性能。
+自旋锁让获取失败的线程继续读取或修改共享状态，而不是挂起等待。简单自旋、CLH 和 MCS 的关键区别，是竞争者在什么位置等待、前驱怎样把获取机会交给后继。队列结构能改变通信成本，但不能消除自旋占用 CPU 的代价。
 
-下面比较三类自旋锁的等待与交接过程。代码用于解释算法，未实现重入、超时、中断、取消与完整的错误使用检查，不能作为通用生产锁。`AtomicReference` 保证原子操作和内存语义，不能独立保证整个自定义锁协议正确；常规业务优先使用成熟同步工具。
+本文用 Java 25 标准库表达协议，并对照 [原作者维护的 MCS、CLH 伪代码](https://www.cs.rochester.edu/research/synchronization/pseudocode/ss.html)。三个实现已在 Oracle JDK 25.0.2 下编译；它们不提供重入、超时、取消和完整的错误使用检查，也没有进行硬件性能测试，不应直接替代通用生产锁。
 
-
-## 自旋锁（spin lock）
-
-自旋锁是指当一个线程尝试获取某个锁时，如果该锁已被其他线程占用，就一直循环检测锁是否被释放，而不是进入线程挂起或睡眠状态。自旋锁适用于锁保护的临界区很小的情况，临界区很小的话，锁占用的时间就很短。
+## 简单自旋：竞争同一个 owner
 
 ```java
 package io.allurx;
@@ -42,14 +39,11 @@ public class SpinLock {
 }
 ```
 
-SpinLock是一个简单的自旋锁的实现（CAS操作），上锁时通过AtomicReference原子性的设置当前拥有锁的线程，如果设置失败当前线程就会一直自旋（通过死循环不停的尝试设置，直到成功为止），解锁时通过AtomicReference原子性的清除当前拥有锁的线程。这种实现很简单，但是它存在很明显的缺点
+获取通过 CAS 把 null 改为当前线程，释放通过 CAS 清除自己拥有的 owner。失败者不断竞争同一个位置，没有排队顺序保证；持锁线程被调度出去时，其他线程仍可能继续消耗 CPU。
 
-1. 非公平锁，不能保证线程获取锁的顺序
-2. 频繁的CAS操作，系统开销很大
+它适合说明原子获取的最小结构，不保证总比阻塞锁快。持锁时间、竞争数量、CPU 核心数和线程调度都影响实际成本，不能只凭“没有系统调用”得出性能结论。
 
-## CLH锁
-
-CLH指的是设计锁算法的三位作者：Craig、Landin和Hagersten名字首字母的缩写。CLH锁是一种基于链表的可伸缩、高性能、FIFO、公平的自旋锁。申请锁的线程只在局部变量上自旋，它不断轮询前驱的状态，如果发现前驱释放了锁就结束自旋。
+## CLH：在前驱节点上等待
 
 ```java
 package io.allurx;
@@ -108,19 +102,11 @@ public class ClhLock {
 }
 ```
 
-### lock
+每次获取创建一个 locked=true 的节点，并通过 getAndSet 原子加入队尾。返回值给出前驱；线程只要观察到前驱 unlocked，就可以进入。释放只把自身 locked 改为 false，让后继观察到交接。
 
-1. 构造当前线程关联的Node，设置到ThreadLocal中
-2. 通过CAS设置当前线程的Node到链表尾部并返回前一个在尾部的Node（前一个线程关联的Node）
-3. 当前线程在前驱节点上自旋
+这里的前驱保存在局部引用中，但反复读取的是前驱节点的 volatile 字段，不是一个线程私有布尔变量。示例每轮分配新节点，避免节点重用协议的额外复杂度；原始算法可以安排重用，不能不加分析地把旧节点直接再次入队。
 
-### unlock
-
-设置自身的`locked = false`，相当于通知下一个线程开始运行
-
-## MCS锁
-
-MCS指的是设计锁算法的两位作者：John Mellor-Crummey and Michael Scott名字的字母的缩写。MCS锁同样是一种基于链表的可伸缩、高性能、FIFO、公平的自旋锁。
+## MCS：在自身节点上等待，由前驱通知
 
 ```java
 package io.allurx;
@@ -205,35 +191,25 @@ public class McsLock {
         volatile Node next;
     }
 }
-
 ```
 
-### lock
+MCS 显式建立 next 链。后继先设置自己的 locked，再把自己链接到前驱；前驱释放时写后继的 locked=false。等待者反复读取自己的节点，改变了等待期间共享内存通信的位置。
 
-1. 构造当前线程关联的Node，设置到ThreadLocal中
-2. 通过CAS设置当前线程的Node到链表尾部并返回前一个在尾部的Node（前一个线程关联的Node）
-3. 判断是否已经有其它线程往尾部添加过Node了，如果有的话设置当前线程locked为true使其自旋，然后将前驱节点的next属性指向当前线程的Node形成链表结构
-4. 当前线程在自身的局部变量上自旋
+释放时 next 为 null 不足以断言无人排队：另一个线程可能已经更新 tail，却还没有写入前驱.next。因此先 CAS 尝试把 tail 清空；CAS 失败说明后继已经存在，再等待 next 连接完成。省掉这个等待会丢失交接。
 
-### unlock
+## 比较的是交接机制，不是一个通用速度排名
 
-1. 拿到当前线程Node中的next属性（指向下一个线程的Node）
-2. 判断是否有下一个节点（有没有其它线程往链表尾部设置过Node）
-   * 如果next为null，说明这个时候当前线程的Node在链表尾部，接着调用CAS清空链表尾部，注意如果CAS成功说明当前线程Node的确就在链表尾部那么解锁方法立即返回。但如果CAS失败意味着这个时候有其它线程调用了`Node previousThreadNode = tail.getAndSet(currentThreadNode);`这行代码，但是有可能这个线程仅仅只是执行到这一步还没来得及执行下一步的` previousThreadNode.next = currentThreadNode;`这行代码将前驱节点的next指向自己的Node，所以这个时候解锁方法需要自旋等待其它线程设置next的值（形成链表结构）。所以最终在并发的情况下可能会发生以下两种情况
-     * next节点的确为null，说明当前只有一个线程在运行，解锁方法直接返回
-     * 有其它线程往链表尾部添加Node，那么就自旋直到其它线程把前驱节点的next设置好（while自旋）
-   * 如果next不为null也有以下两种情况
-     * next节点的确不为null，说明此时其它线程已经设置好前驱节点的next了，那么直接设置`next.locked = false`通知下一个线程运行即可
-     * next节点一开始为null后来通过while自旋被设置的
+| 实现 | 等待位置 | 释放动作 | 主要代价 |
+| --- | --- | --- | --- |
+| 简单自旋 | 共同 owner | 清除 owner | 竞争集中，获取顺序不保证 |
+| CLH | 前驱节点 | 清除自身 locked | 需要正确管理节点生命周期 |
+| MCS | 自身节点 | 写后继 locked | 需处理入队已发布、next 尚未连接的窗口 |
 
-## CLH锁和MCS锁对比
+原始论文区分缓存一致与非一致机器上的局部自旋能力；NUMA、缓存一致性和对称多处理并不是一组可以直接互换的分类。不能简单规定“CLH 只适合 SMP，MCS 只适合 NUMA”。本例在 JVM 上还受到对象布局、GC 和调度影响，具体结论必须测量。
 
-1. MCS锁每个Node都持有实际指向下一个链表节点的引用，CLH锁没有实际的链表引用，它是通过CAS的返回值拿到上一个节点引用的。
-2. MCS锁加锁时是在自身节点的局部变量上自旋，解锁时在线程竞争激烈的情况下会发生自旋。CLH锁加锁时是在前驱节点的属性上自旋，解锁时不会发生自旋。
-3. CLH相比较于MCH锁的实现比较简单。
-4. CLH锁适合SMP（Symmetric Multi-Processor）系统架构。MCS锁适合NUMA(Non-Uniform Memory Access)系统架构。关于这两个架构的不同之处感兴趣的同学可以自己去查阅相关资料。
+将三个类保存为 SpinLock.java、ClhLock.java、McsLock.java，可执行 `javac -encoding UTF-8 -d out SpinLock.java ClhLock.java McsLock.java` 检查语法与类型。这些是锁实现类，没有独立 main；编译成功不等于并发协议已经穷尽验证。实际业务优先使用 [ReentrantLock](/reentrant-lock/) 等具有完整等待、取消和诊断能力的实现。
 
 ## 资料来源
 
-- [AtomicReference：原子比较与交换](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/atomic/AtomicReference.html)
-- [ReentrantLock：成熟锁的功能与契约](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/locks/ReentrantLock.html)
+- [Mellor-Crummey、Scott 等：可扩展同步算法与 CLH 补充](https://www.cs.rochester.edu/research/synchronization/pseudocode/ss.html)
+- [AtomicReference：原子交换与内存语义](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/atomic/AtomicReference.html)

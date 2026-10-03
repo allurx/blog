@@ -1,7 +1,7 @@
 ---
-title: "Spring Security OAuth 2.0 Resource Server"
+title: "Spring Security 5.2 的 JWT 资源服务器流程"
 date: 2020-04-04
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Spring
   - Spring-Security
@@ -11,37 +11,47 @@ tags:
 domain: Spring
 ---
 
-资源服务器负责验证访问令牌并建立认证信息。JWT 路径由 BearerTokenAuthenticationFilter 提取令牌，认证提供者调用 JwtDecoder 完成解码、验签和声明校验，再把权限转换到 Authentication；不透明令牌则通常通过自省确认状态。通过验签不等于所有资源都已获准访问，最终还要检查权限规则。
+资源服务器先验证访问令牌并建立认证信息，再由资源授权规则决定是否允许调用。JWT 的 Base64url 解码、JWS 验签、声明校验和最终授权是不同步骤；只看到一个结构正确的 JSON，不能说明令牌可信。
 
-下面以 RSA 签名 JWT 为例，使用 Spring Boot 2.2.6.RELEASE 与其默认管理的 Spring Security 5.2.2.RELEASE。公钥和签名算法的装配可对照 [OAuth2ResourceServerJwtConfiguration](https://github.com/spring-projects/spring-boot/blob/v2.2.6.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/oauth2/resource/servlet/OAuth2ResourceServerJwtConfiguration.java)。JWT 验签与 JWE 解密是不同操作，私钥只属于令牌签发端。
+本文研究 **Spring Boot 2.2.6.RELEASE / Spring Security 5.2.2.RELEASE** 的历史 Servlet JWT 路径。完整例子采用 **Eclipse Temurin JDK 11.0.32.1+1、Maven 3.10.0**，本地测试签发使用 **Node.js 24.19.0 LTS** 标准库。JDK 11 位于旧 Boot 的 Java 8—13 兼容范围；保留旧依赖是为了对照源码，不作为当前新项目推荐。[Boot 运行要求](https://docs.spring.io/spring-boot/docs/2.2.6.RELEASE/reference/html/getting-started.html#getting-started-system-requirements)
 
-## 概述
+这个固定组合用于解释旧实现的过滤器、提供者和解码器怎样协作。新应用应查阅 [当前 JWT 资源服务器文档](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)与 [Spring Boot 当前文档](https://docs.spring.io/spring-boot/)，重新选择受支持依赖及组件配置，不把历史适配器作为当前默认入口。
 
-在上一篇的Spring-Security-OAuth2-Client文章中我们详细讲解了一个客户端应用是如何通过OAuth2的标准授权协议请求授权服务器获取token的流程，那么当客户端获取到token之后，肯定是要拿着这个token去请求资源服务器获取资源的，也就是说资源服务器先验证访问令牌并建立认证信息，再依据资源上的授权规则判断能否访问；令牌有效不代表拥有所有资源的权限，这样client和resource-server就衔接起来了，接下来我们就来对spring-security的resource-server的解析流程一探究竟。
+## 先把签发端与资源服务器分开
 
+本例用 RSA 私钥签发 RS512 JWS，资源服务器只得到公钥。它没有实现完整 OAuth2 授权服务器，也没有把私钥放进应用配置。JWT 是令牌内容格式，JWS 提供签名；JWE 的加密语义不在这个实验中。[RFC 7515](https://www.rfc-editor.org/rfc/rfc7515.html)、[RFC 7519](https://www.rfc-editor.org/rfc/rfc7519.html)
 
-## 例子
+下载 [POM](./pom.xml)、[应用入口](./ResourceServerApplication.java) 和 [本地签发脚本](./create-test-token.mjs)，按下面的目录放置：
 
-资源服务器的验证方式取决于令牌格式。签名 JWT 需要验证签名与声明；不透明令牌通常由自省端点确认状态；JWE 还涉及解密。它们取得认证信息之后，都要继续执行资源授权，不能把令牌有效等同于允许所有操作。
-
-下面选择静态 RSA 公钥验证 JWS：签发端用私钥签名，资源服务器仅持有公钥。使用 Spring Boot 2.2.6.RELEASE 的 parent 或 BOM 管理版本，在已有 Web 工程中添加以下依赖：
-
-```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
-</dependency>
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-security</artifactId>
-</dependency>
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-web</artifactId>
-</dependency>
+```text
+experiment/
+├─ issuer/
+│  └─ create-test-token.mjs
+└─ resource-server/
+   ├─ pom.xml
+   └─ src/main/
+      ├─ java/io/allurx/ResourceServerApplication.java
+      └─ resources/
+         ├─ application.yml
+         └─ key.public
 ```
 
-在配置文件中加上下面的配置
+### 生成自己的测试输入
+
+在空的 issuer 目录运行：
+
+```sh
+node --version
+node create-test-token.mjs
+```
+
+脚本生成 2048 位 RSA 密钥、`key.private`、`key.public` 和 `access-token.txt`；已有同名文件时拒绝覆盖。令牌的 sub 是 `allurx`，iat 是生成时刻，exp 是 10 分钟后。脚本分别把头和载荷编码成 Base64url，再对两段带点号的输入执行 RSA-SHA512 签名。[Node.js 密钥与签名 API](https://nodejs.org/docs/latest-v24.x/api/crypto.html)
+
+只复制 key.public 到资源服务器的 resources 目录。私钥与测试令牌留在本地签发目录；真实业务由授权服务器负责密钥管理。重新生成密钥后，要同步新的公钥并重启服务器，不能把新令牌与旧公钥混用。
+
+### 配置公钥与算法并启动
+
+POM 使用 Boot parent 统一管理 Web 和 OAuth2 Resource Server starter。`application.yml` 为：
 
 ```yaml
 spring:
@@ -51,113 +61,54 @@ spring:
         jwt:
           public-key-location: classpath:key.public
           jws-algorithm: RS512
-logging:
-  level:
-    org.springframework.security: debug
 ```
 
-在独立的本地测试目录中，用 OpenSSL 3 生成一对仅供本次示例使用的 RSA 密钥：
+在 resource-server 目录运行：
 
 ```sh
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out key.private
-openssl pkey -in key.private -pubout -out key.public
+java -version
+mvn -version
+mvn package
+java -jar target/historical-resource-server-demo-1.0.0.jar
 ```
 
-把 `key.public` 复制到资源服务器的 `src/main/resources/`，与上面的 `classpath:key.public` 对应。`key.private` 只用于本地测试签发令牌，不放进资源服务器或版本库；真实授权服务器应自行管理签名密钥。这样每位读者都会生成自己的测试密钥，命令参数见 [OpenSSL genpkey](https://docs.openssl.org/3.0/man1/openssl-genpkey/) 与 [OpenSSL pkey](https://docs.openssl.org/3.0/man1/openssl-pkey/)。
-
-测试签发端需要使用 `key.private` 签发算法为 `RS512`、`sub` 为 `allurx` 且未过期的 JWT，与资源服务器的 `jws-algorithm` 对应。下面的 `YOUR_SIGNED_ACCESS_TOKEN` 是输入占位符，需要替换为该令牌；修改载荷后必须重新签名。实际应用中，客户端通过 OAuth2 授权流程取得授权服务器签发的访问令牌。
-
-```
-YOUR_SIGNED_ACCESS_TOKEN
-```
-
-新建一个controller用来获取当前认证的信息
+应用没有自定义 WebSecurityConfigurerAdapter，所以能观察 Boot 的默认装配。完整入口的 Controller 核心是：
 
 ```java
-@RestController
-public class UserController {
-
-    @GetMapping("/")
-    public String index(@AuthenticationPrincipal Jwt jwt) {
-        return String.format("Hello, %s!", jwt.getSubject());
-    }
+@GetMapping("/")
+public String index(@AuthenticationPrincipal Jwt jwt) {
+    return String.format("Hello, %s!", jwt.getSubject());
 }
 ```
 
-最后启动springboot工程（可以不需要写一个类继承WebSecurityConfigurerAdapter），访问`localhost:8080`，记得在请求头中带上我们刚刚创建的token值
+## 用成功和失败输入观察边界
 
-```
+使用 HTTP 客户端向 `http://localhost:8080/` 发送 GET，把 access-token.txt 的完整内容替换下面的占位符：
+
+```http
 Authorization: Bearer YOUR_SIGNED_ACCESS_TOKEN
 ```
 
-响应成功返回我们jwt中的认证主体信息
+| 输入 | 本地例子的结果 |
+| --- | --- |
+| 对应公钥签发、未过期的令牌 | 200，正文 `Hello, allurx!` |
+| 不带 Authorization | 401 |
+| 保留签名但修改载荷 | 401 |
+| 签名正确，但 exp 已超过允许的时钟偏差 | 401 |
 
-```
-Hello, allurx!
-```
+这些路径已在上文完整版本组合的 Windows 11 x64 本地环境验证。实验过期输入使用了超出默认时钟偏差的时间，不能用刚跨过 exp 的一瞬间推断校验器忽略过期。它验证的是认证边界，不证明业务的 issuer、audience 或权限规则已经正确。
 
-只需要很简的几个配置参数就完成了资源服务器对token的解析，背后的原理是什么呢？我们看一下控制台的输出，从刚刚启动的信息中我们可以发现spring-security过滤链中多出来了一个BearerTokenAuthenticationFilter过滤器，从这个过滤器的名字我们大概就能知道这个过滤器就是用来解析带Bearer前缀的token的。下面我们来看一下这个过滤器的过滤逻辑
+## BearerTokenAuthenticationFilter 提取令牌并交给管理器
 
-### BearerTokenAuthenticationFilter
+过滤器先用 BearerTokenResolver 读取令牌。没有令牌时继续链，交由后续授权决定是否允许匿名访问；令牌格式错误时立即进入认证入口。存在令牌时，构造未认证的 BearerTokenAuthenticationToken，选择 AuthenticationManager 并委托认证。
 
-```java
-@Override
-protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
-    throws ServletException, IOException {
+成功后创建新的 SecurityContext、放入认证结果，再继续下游链；AuthenticationException 则清理上下文并交给失败处理器。可以从 [BearerTokenAuthenticationFilter 5.2.2 源码](https://github.com/spring-projects/spring-security/blob/5.2.2.RELEASE/oauth2/oauth2-resource-server/src/main/java/org/springframework/security/oauth2/server/resource/web/BearerTokenAuthenticationFilter.java) 对照这些分支。
 
-    final boolean debug = this.logger.isDebugEnabled();
+## JwtDecoder 负责的不只是文本解码
 
-    String token;
-
-    try {
-        // 尝试从请求中解析出bearer token值
-        token = this.bearerTokenResolver.resolve(request);
-    } catch ( OAuth2AuthenticationException invalid ) {
-        this.authenticationEntryPoint.commence(request, response, invalid);
-        return;
-    }
-	// 不是bearer token认证请求的话继续让其它过滤器执行
-    if (token == null) {
-        filterChain.doFilter(request, response);
-        return;
-    }
-
-    // 构造一个未认证的BearerTokenAuthenticationToken
-    BearerTokenAuthenticationToken authenticationRequest = new BearerTokenAuthenticationToken(token);
-
-    authenticationRequest.setDetails(this.authenticationDetailsSource.buildDetails(request));
-
-    try {
-        // 找出能够对BearerTokenAuthenticationToken进行认证管理的AuthenticationManager
-        AuthenticationManager authenticationManager = this.authenticationManagerResolver.resolve(request);
-
-        // 委托给这个AuthenticationManager进行认证
-        Authentication authenticationResult = authenticationManager.authenticate(authenticationRequest);
-
-        // 认证成功之后将认证信息保存到安全上下文中
-        SecurityContext context = SecurityContextHolder.createEmptyContext();
-        context.setAuthentication(authenticationResult);
-        SecurityContextHolder.setContext(context);
-
-        filterChain.doFilter(request, response);
-    } catch (AuthenticationException failed) {
-        SecurityContextHolder.clearContext();
-
-        if (debug) {
-            this.logger.debug("Authentication request for failed!", failed);
-        }
-
-        this.authenticationFailureHandler.onAuthenticationFailure(request, response, failed);
-    }
-}
-```
-
-BearerTokenAuthenticationFilter的认证逻辑与常见的认证过滤器差不多，最终都是委托给AuthenticationManager进行认证。而AuthenticationManager内部则寻找能够对BearerTokenAuthenticationToken进行认证的AuthenticationProvider，这里默认实现是JwtAuthenticationProvider，我们继续看它内部的认证逻辑
-
-### JwtAuthenticationProvider
+JwtAuthenticationProvider 的核心步骤是：
 
 ```java
-@Override
 public Authentication authenticate(Authentication authentication) throws AuthenticationException {
     BearerTokenAuthenticationToken bearer = (BearerTokenAuthenticationToken) authentication;
 
@@ -176,121 +127,26 @@ public Authentication authenticate(Authentication authentication) throws Authent
 }
 ```
 
-JwtDecoder 不只解码文本，还负责签名与声明校验。这里的 NimbusJwtDecoder 使用配置的 RSA 公钥与签名算法，并应用默认的时间校验；业务若要求特定 issuer 或 audience，还需配置对应校验器。校验通过后，JwtAuthenticationConverter 将 Jwt 转为 Authentication，之后的授权规则才决定它能访问哪些资源。
+这里的 JwtDecoder 使用配置的公钥与签名算法，并执行声明校验；失败被转换成认证异常。静态公钥配置默认应用时间相关校验，业务若要求固定 issuer、audience 或其他声明，必须配置对应验证器，不能因为验签通过就省略这些约束。[JwtAuthenticationProvider 5.2.2 源码](https://github.com/spring-projects/spring-security/blob/5.2.2.RELEASE/oauth2/oauth2-resource-server/src/main/java/org/springframework/security/oauth2/server/resource/authentication/JwtAuthenticationProvider.java)
 
-### JwtAuthenticationConverter
+## 从 scope 得到权限，再进入资源授权
 
-```java
-@Override
-public final AbstractAuthenticationToken convert(Jwt jwt) {
-    Collection<GrantedAuthority> authorities = extractAuthorities(jwt);
-    return new JwtAuthenticationToken(jwt, authorities);
-}
-```
+JwtAuthenticationConverter 把 Jwt 转成 Authentication。默认 JwtGrantedAuthoritiesConverter 先找 `scope` 或 `scp` 声明，接受空格分隔字符串或集合，再给权限添加 `SCOPE_` 前缀。
 
-#### extractAuthorities
+| 令牌内容 | 默认得到的权限示例 |
+| --- | --- |
+| `scope: "message:read message:write"` | `SCOPE_message:read`、`SCOPE_message:write` |
+| `scp: ["message:read"]` | `SCOPE_message:read` |
+| 两项都没有 | 空权限集合，仍可能建立有效认证 |
 
-继续委托给内部的JwtGrantedAuthoritiesConverter转换器获取jwt对象claim中的权限信息
+因此，认证成功和拥有某项权限必须分开。本例令牌没有 scope，而默认接口规则只要求 authenticated，所以可以成功返回主体；若接口要求 `SCOPE_message:read`，就还需要令牌与授权规则配套。自定义 claims 或角色前缀需要配置转换器，不能假定任何名为 roles 的数组都会自动被识别。[权限转换器源码](https://github.com/spring-projects/spring-security/blob/5.2.2.RELEASE/oauth2/oauth2-resource-server/src/main/java/org/springframework/security/oauth2/server/resource/authentication/JwtGrantedAuthoritiesConverter.java)
 
-```java
-@Deprecated
-protected Collection<GrantedAuthority> extractAuthorities(Jwt jwt) {
-    return this.jwtGrantedAuthoritiesConverter.convert(jwt);
-}
-```
+## Boot 为什么不需要额外适配器也能启动
 
-获取claim中权限的方法
+Boot 根据 `public-key-location` 创建使用 RSA 公钥的 NimbusJwtDecoder，并应用指定 jws-algorithm。没有自定义安全适配器且存在 JwtDecoder 时，默认配置要求所有请求认证，并启用 `oauth2ResourceServer().jwt()` 对应能力。
 
-```java
-private Collection<String> getAuthorities(Jwt jwt) {
-    String claimName = getAuthoritiesClaimName(jwt);
+静态公钥、issuer-uri 和 jwk-set-uri 属于不同解码器装配路径；密钥轮换、授权服务发现和网络可用性边界也不同，不能由这个本地公钥实验推断全部部署行为。[OAuth2ResourceServerJwtConfiguration 2.2.6 源码](https://github.com/spring-projects/spring-boot/blob/v2.2.6.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/oauth2/resource/servlet/OAuth2ResourceServerJwtConfiguration.java)
 
-    if (claimName == null) {
-        return Collections.emptyList();
-    }
+文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
-    Object authorities = jwt.getClaim(claimName);
-    if (authorities instanceof String) {
-        if (StringUtils.hasText((String) authorities)) {
-            return Arrays.asList(((String) authorities).split(" "));
-        } else {
-            return Collections.emptyList();
-        }
-    } else if (authorities instanceof Collection) {
-        return (Collection<String>) authorities;
-    }
-
-    return Collections.emptyList();
-}
-```
-
-先找权限属性的名称，然后将claim中这个属性拿出来放到集合中。
-
-最后JwtAuthenticationConverter通过JwtAuthenticationToken的另一个已认证的构造函数构造认证信息
-
-```java
-public JwtAuthenticationToken(Jwt jwt, Collection<? extends GrantedAuthority> authorities) {
-    super(jwt, authorities);
-    this.setAuthenticated(true);
-    this.name = jwt.getSubject();
-}
-```
-
-最终经过我们的controller后被`@AuthenticationPrincipal`的参数Jwt会从当前安全上下文拿出JwtAuthenticationToken的Jwt对象。整个解析流程就结束了。
-
-## 自动配置
-
-在上面的例子中我们仅仅只在配置文件中配置了私钥和公钥等信息，没有对spring-security进行任何额外的配置，最终却能完成资源服务区的token解析，这背后的原理同样也是通过spring-boot-autoconfigure自动完成的，我们找到spring-boot-autoconfigure.jar包中的security.oauth2.resource.servlet包，可以发现spring-boot给我们提供了几个自动配置类
-
-```java
-OAuth2ResourceServerAutoConfiguration
-OAuth2ResourceServerJwtConfiguration
-OAuth2ResourceServerOpaqueTokenConfiguration
-```
-
-### OAuth2ResourceServerJwtConfiguration
-
-```java
-@Bean
-@Conditional(KeyValueCondition.class)
-JwtDecoder jwtDecoderByPublicKeyValue() throws Exception {
-    RSAPublicKey publicKey = (RSAPublicKey) KeyFactory.getInstance("RSA")
-        .generatePublic(new X509EncodedKeySpec(getKeySpec(this.properties.readPublicKey())));
-    return NimbusJwtDecoder.withPublicKey(publicKey)
-        .signatureAlgorithm(SignatureAlgorithm.from(this.properties.getJwsAlgorithm())).build();
-}
-
-@Configuration(proxyBeanMethods = false)
-	@ConditionalOnMissingBean(WebSecurityConfigurerAdapter.class)
-	static class OAuth2WebSecurityConfigurerAdapter {
-
-		@Bean
-		@ConditionalOnBean(JwtDecoder.class)
-		WebSecurityConfigurerAdapter jwtDecoderWebSecurityConfigurerAdapter() {
-			return new WebSecurityConfigurerAdapter() {
-
-				@Override
-				protected void configure(HttpSecurity http) throws Exception {
-					http.authorizeRequests((requests) -> requests.anyRequest().authenticated());
-					http.oauth2ResourceServer(OAuth2ResourceServerConfigurer::jwt);
-				}
-
-			};
-		}
-
-	}
-```
-
-主要关注其中这两个配置，第一个JwtDecoder配置会根据我们配置文件中的public-key-location、jwt.issuer-uri、jwk-set-uri"来确定最终的jwt解码器。第二个WebSecurityConfigurerAdapter由于我们没有编写额外的spirng-security配置，所以最终会注入一个默认的WebSecurityConfigurerAdapter子类，如果想要知道资源服务器的配置原理你只需要去OAuth2ResourceServerConfigurer类中的init和configure方法中看一下就能明白内部配置的原理了以及BearerTokenAuthenticationFilter是什么时候添加到过滤器链中的。
-
-## 例子
-
-[使用jwt令牌访问受保护的资源](https://github.com/allurx/spring-security-oauth2-demo/tree/master/spring-security-oauth2-resourceserver)
-
-## 资料来源
-
-- [RFC 7515：JSON Web Signature](https://www.rfc-editor.org/rfc/rfc7515.html)
-- [RFC 7519：JSON Web Token](https://www.rfc-editor.org/rfc/rfc7519.html)
-- [Spring Boot 2.2.6.RELEASE 依赖版本表](https://docs.spring.io/spring-boot/docs/2.2.6.RELEASE/reference/html/appendix-dependency-versions.html)
-- [Spring Security 5.2.2.RELEASE 参考文档](https://docs.spring.io/spring-security/site/docs/5.2.2.RELEASE/reference/htmlsingle/)
-- [当前 OAuth2 参考文档](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/index.html)
+排查 401 时，沿令牌提取、算法与公钥、声明校验逐步定位；排查已认证后的拒绝，则检查权限转换与资源规则。不透明令牌通常通过自省取得状态，属于另一条认证路径，不能套用 JWT 本地验签过程。

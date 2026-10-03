@@ -1,7 +1,7 @@
 ---
 title: "截止时间为什么必须沿调用链递减"
 date: 2026-09-17
-updated: 2026-10-02
+updated: 2026-10-03
 domain: "分布式"
 tags: ["Deadline","Timeout","可靠性"]
 ---
@@ -27,7 +27,7 @@ childTimeout = max(0, remaining - responseReserve)
 
 ### 本地计时要用单调时间源
 
-墙上时钟用于表达日历时间，可能因时钟同步、管理员调整或虚拟化环境而跳变。持续时间计算更适合使用单调时间源。Java 的 `System.nanoTime()` 返回当前 JVM 的高分辨率时间源；它与墙上时间无关，起点任意，只有同一 JVM 内两次读数的差值有意义。[Java SE 27 `System.nanoTime()`](https://docs.oracle.com/en/java/javase/27/docs/api/java.base/java/lang/System.html#nanoTime())
+墙上时钟用于表达日历时间，可能因时钟同步、管理员调整或虚拟化环境而跳变。持续时间计算更适合使用单调时间源。Java 的 `System.nanoTime()` 返回当前 JVM 的高分辨率时间源；它与墙上时间无关，起点任意，只有同一 JVM 内两次读数的差值有意义。[Java SE 25 `System.nanoTime()`](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/System.html#nanoTime())
 
 因此，以下做法有两个不同边界：
 
@@ -55,7 +55,7 @@ childTimeout = max(0, remaining - responseReserve)
 
 ## 用两个时钟起点演示跨进程转换
 
-将完整代码保存为 `DeadlineBudgetDemo.java`，使用 Java 17+ 运行 `java DeadlineBudgetDemo.java`。可控时钟固定每一步耗时：网关从 1 秒中消耗 250 ms，把 750 ms 传给下游；下游使用不同的时钟起点，处理 600 ms 后剩 150 ms，再预留 20 ms。为隔离预算计算，示例把网络传输耗时设为零。
+将完整代码保存为 `DeadlineBudgetDemo.java`，使用 JDK 25 LTS 运行 `java DeadlineBudgetDemo.java`，无需第三方依赖。可控时钟固定每一步耗时：网关从 1 秒中消耗 250 ms，把 750 ms 传给下游；下游使用不同的时钟起点，处理 600 ms 后剩 150 ms，再预留 20 ms。为隔离预算计算，示例把网络传输耗时设为零。
 
 ```java
 import java.time.Duration;
@@ -115,7 +115,7 @@ public final class DeadlineBudgetDemo {
 }
 ```
 
-使用 JDK 25.0.2，以 `javac --release 17` 编译后运行，预期输出如下；程序中的检查会核对这些结果。
+在 Windows、Oracle JDK 25.0.2 LTS 下执行上述源文件，得到以下输出；程序中的检查会核对这些结果。
 
 ```text
 wire=750ms remaining=150ms database=130ms

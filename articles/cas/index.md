@@ -1,7 +1,7 @@
 ---
 title: CAS
 date: 2019-07-23
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Concurrent
@@ -9,48 +9,23 @@ tags:
 domain: Java
 ---
 
-CAS 原子地完成一次“比较预期值并更新”的操作，失败时由调用方决定是否重试。自增循环必须从同一次读取的值计算预期值和更新值；`volatile` 的可见性不能把两次读取合并成一个快照。CAS 也不天然比锁更快，高竞争下重试会消耗 CPU。
+CAS 原子地比较当前位置与预期值，相等时写入新值，不相等时报告失败。它只完成一次比较更新；是否重试、怎样重新读取、能否取消，属于调用者的协议。
 
-下面以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/sun/misc/Unsafe.java) 的 Unsafe 实现解释 CAS 重试，再用公开的 AtomicInteger 演示共享计数。单变量 CAS 不自动解决多个字段的一致性，应用应使用公开原子类，而不是直接依赖 Unsafe。
+本文用计数器说明 CAS 循环需要维护的一致快照，再区分单变量原子性与更大的业务不变量。完整程序使用 Java 25 标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）运行；底层命名参考 [OpenJDK 8u202-b08 Unsafe](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/sun/misc/Unsafe.java)，业务无需直接依赖内部 Unsafe。
 
+## 一次比较更新如何避免覆盖别人刚写入的值
 
-## CAS原理
+假设值为 1。A 读取 1 后暂停，B 也读取 1，把它 CAS 为 2；A 再用预期值 1 更新时会失败，因为当前值已经是 2。A 重新读取 2，计算新值 3，再尝试 CAS，才不会覆盖 B 的更新。
 
-CAS全称为Compare and Swap，意为比较然后交换的意思。那么比较的是什么？交换的又是什么呢？它究竟是怎么通过无锁的方式去更新共享资源的呢？在之前我们先了解一下CAS中的几个概念：
+这段推演依赖更新值与预期值来自同一次读取。若分别调用两次 get 拼出 expected 和 update，第二次读取可能看到别人的新值，协议就不再等价于“在我读取的那个值上加一”。volatile 的可见性不能把两个读取合并为同一个快照。
 
-* 内存值
-* 预期值
-* 更新值
+## 用 AtomicInteger 实现并核对计数
 
-**一次 CAS 操作在当前值等于预期值时原子地设置更新值，否则报告失败。循环重试属于调用者实现的更新协议，不是 CAS 操作本身。**
-例如线程A和线程B此时都在尝试修改变量`a=1`的值加一。此刻线程A开始执行，获取变量a在内存中的值为1，接下来即将执行CAS操作，此时cpu进行调度B线程获取执行权，依旧先获取变量a此刻在内存中的值为1，执行CAS操作，将预期值1与内存值1做比较发现是相同的，CAS成功，将变量a自增，此时内存中的a值为2，线程B运行结束退出。cpu调度线程A获取执行权，继续执行上一步的CAS操作，将预期值1与内存值2做比较发现不相同（被线程B修改了），CAS失败，继续下一次循环，继续获取变量a在内存中的值为2，执行CAS操作，此时预期值2和内存值2相同，CAS成功，将变量a自增，最终变量a的值变为3。
-
-## Unsafe
-
-OpenJDK 8u202-b08 使用 Unsafe 提供底层比较更新操作。getAndAddInt 在 CAS 之外增加重试循环；应用直接使用公开的原子类即可。
+保存为 CasCounter.java，执行 `javac -encoding UTF-8 -d out CasCounter.java`、`java -cp out io.allurx.CasCounter`：
 
 ```java
-public final native boolean compareAndSwapInt(Object o, long offset,
-                                              int expected, int x);
+package io.allurx;
 
-public native int getIntVolatile(Object o, long offset);
-
-public final int getAndAddInt(Object o, long offset, int delta) {
-    int v;
-    do {
-        v = getIntVolatile(o, offset);
-    } while (!compareAndSwapInt(o, offset, v, v + delta));
-    return v;
-}
-```
-
-利用CAS实现自增用到了以上两个方法，第一个compareAndSwapInt方法是jvm底层实现的native方法，它保证了在执行比较以及交换时的原子性，如果预期值和内存值一致，这个方法会将变量修改为更新值，然后返回true，否则的话直接返回false。getIntVolatile方法保证拿到的变量是内存中的最新的值。而getAndAddInt方法我们可以发现它通过一个while死循环，不断地从内存中获取到变量的最新值，然后将这个最新值（预期值）通过compareAndSwapInt方法进行CAS操作。
-
-## 例子
-
-下面的完整例子只使用标准库。三个线程分别自增 1000、10000、100000 次，结束后的值应为 111000；失败次数会随调度变化。
-
-```java
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -90,13 +65,29 @@ public class CasCounter {
 }
 ```
 
-`expected` 保存一次读取的快照，更新值从这个快照计算。比较失败时重新读取，不能分别读取共享值来拼出预期值和更新值。业务只需要自增时，直接调用 `incrementAndGet()` 即可；这里保留循环是为了展示协议。
+三个线程分别执行 1000、10000、100000 次自增，join 后实测为 111000。CAS 失败次数随调度变化；统计失败本身也引入额外原子更新，所以它不是无扰动的性能测量。
 
-## 总结
+失败时循环重新读取，不复用旧 expected。业务只需要标准自增时，直接使用 incrementAndGet；这里保留显式循环是为了观察比较更新的协议。
 
-CAS 提供一次原子比较更新；自增算法在失败后重新读取并计算。是否重试、如何取消以及如何处理高竞争，仍由调用者的协议决定。
+## CAS 不自动提供的保证
+
+| 问题 | CAS 的边界 |
+| --- | --- |
+| 多字段一致性 | 一次 CAS 只更新一个位置，多个字段仍需共同协议 |
+| ABA | 值先变走又变回时，单纯相等比较不能识别中间历史 |
+| 公平性与饥饿 | 某次 CAS 成功不保证每个竞争者都能及时成功 |
+| 取消与时限 | 无限重试循环必须另行定义停止条件 |
+| 算术溢出 | 原子性不会阻止 int 自增越界 |
+
+ABA 是否构成问题取决于业务：只关心当前数值的计数器，和需要证明节点未被移除再复用的链表协议，不具有相同要求。确实需要识别版本时，应把版本与状态纳入一次原子比较，不能先比较值再单独写一个版本号。
+
+## 什么时候直接使用锁更清楚
+
+多个字段需要一起验证和修改，或失败后要维护复杂关系时，一把锁可能更容易表达正确边界。CAS 在高竞争下反复失败也会消耗 CPU；是否更快需要同负载、同硬件和同语义下测量，不能把“无锁”当作通用性能结论。
+
+Java 8 的 getAndAddInt 内部同样是读取、计算和 CAS 重试。现代业务使用公开原子类，让运行时选择适用实现；不要为了模仿历史底层代码而反射访问 Unsafe。
 
 ## 资料来源
 
 - [AtomicInteger：compareAndSet 与原子更新](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/atomic/AtomicInteger.html)
-- [java.util.concurrent.atomic：原子访问契约](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/atomic/package-summary.html)
+- [java.util.concurrent.atomic：原子操作与内存语义](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/atomic/package-summary.html)

@@ -1,18 +1,20 @@
 ---
 title: "Spring 事务为什么会在同类方法调用时失效"
 date: "2026-09-03"
-updated: "2026-10-01"
+updated: 2026-10-03
 domain: "Spring"
 tags: ["Spring", "Transaction", "AOP"]
 ---
 
 订单保存和库存扣减都能单独执行，不代表 Service 上的事务已经生效。一个常见故障是：同一对象内部调用带 `@Transactional` 的方法，数据库写入看起来正常，多步失败时却没有按预期一起回滚。
 
-本文讨论 Spring 的命令式事务和默认 `proxy` 模式，方法可见性规则按 Spring Framework 6.x 说明。事务注解由代理拦截器解释；目标对象的普通内部调用不再次经过该代理，因此内层方法的传播、隔离、只读、超时和回滚规则不会被独立应用。[Spring：声明式事务注解](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)
+本文以 JDK 25 LTS、Spring Framework 7.0.9 为基线，讨论命令式事务和默认 `proxy` 模式。事务注解由代理拦截器解释；目标对象的普通内部调用不再次经过该代理，因此内层方法的传播、隔离、只读、超时和回滚规则不会被独立应用。[Spring：声明式事务注解](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)
+
+这个版本组合处在 Spring 官方列出的兼容范围内；升级已有项目时，还应一起核对 Jakarta API 与持久化实现。[Spring 版本与兼容范围](https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-Versions)
 
 ## 事务注解取决于调用经过哪里
 
-以下片段假定 Repository 与业务类型已由应用提供。外部调用 `createOrder()` 后，`saveItem()` 上的注解不会为它单独建立事务边界：
+以下是接入现有应用的结构片段，假定已启用事务管理，Repository 与业务类型已由应用提供。本文没有运行数据库集成实验，后面的回滚与传播结果按代理契约推导。外部调用 `createOrder()` 后，`saveItem()` 上的注解不会为它单独建立事务边界：
 
 ```java
 @Service
@@ -135,9 +137,30 @@ public class PaymentService {
 
 ### 方法可见性仍存在边界
 
-Spring Framework 6.x 的规则是：从 Spring Framework 6.0 开始，class-based proxy 默认可以处理 `protected` 和 package-visible 的事务方法；但 interface-based proxy 的事务方法仍需为 `public` 且定义在代理接口上。
+本文使用的 Spring Framework 7.0.9 延续了从 6.0 开始的规则：class-based proxy 默认可以处理 `protected` 和 package-visible 的事务方法；但 interface-based proxy 的事务方法仍需为 `public` 且定义在代理接口上。
 
 无论方法是否可见，self-invocation 限制仍然存在。因此把内部方法从 `private` 改成 `public` 并不能解决调用未经过代理的问题。
+
+## 同一个业务事务应放在外部入口
+
+回到开头的订单例子：如果保存订单和扣减库存本来就应该同成同败，最小修复是把事务放在外部调用的入口，不必为了经过代理而拆出另一个 Bean。下面是同一个 `OrderService` 内的方法：
+
+```java
+@Transactional
+public void createOrder(Order order) {
+    validate(order);
+    saveItem(order);
+}
+
+private void saveItem(Order order) {
+    orderRepository.save(order);
+    inventoryRepository.deduct(order.productId());
+}
+```
+
+调用方通过 Spring Bean 进入 `createOrder()`，代理先建立事务；内部普通调用随后使用已绑定的事务资源。这里没有要求 `saveItem()` 的注解再次生效，也没有独立提交需求。异常必须按回滚规则传播，两个 Repository 也必须参与同一个事务管理器；后文的异常捕获边界仍然适用。
+
+只有需求变成“每条记录独立提交”或“审计不随主事务回滚”时，才需要下面的独立事务边界。不能用一个统一的拆 Bean 方案替代对业务提交单位的判断。
 
 ## 为逐条导入建立可见的事务边界
 

@@ -1,7 +1,7 @@
 ---
 title: Queue
 date: 2020-01-03
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Collection
@@ -10,84 +10,38 @@ tags:
 domain: Java
 ---
 
-`Queue` 为入队、出队、查看队头各提供两类失败处理：`add/remove/element` 抛出异常，`offer/poll/peek` 返回特殊值。队列不必一定按 FIFO 排序，接口也不保证线程安全；调用方应按实现的容量、排序与并发契约选择。
+Queue 把一个集合中的“下一项”定义为队头，并为新增、移除队头和查看队头提供两种失败处理方式。选择方法前，要先确定队列怎样排序、是否有容量上限以及操作能否并发。
 
-`poll()` 和 `peek()` 的 `null` 用来表示队列为空，因此不宜向队列放入 `null`。阻塞、优先级或并发行为由具体实现或子接口提供，不能仅凭 `Queue` 类型推断。
+本文按 Java SE 25 的 Queue 公共契约说明方法选择，不涉及某个实现的内部存储，也没有需要安装依赖的独立程序。
 
+## 队头由实现的顺序规则决定
 
-## 方法定义
+FIFO 队列的队头通常是最早进入的元素；优先级队列按比较规则决定队头。Queue 本身既不要求所有实现都是 FIFO，也不保证线程安全。变量声明为 Queue，并不能推出底层队列会阻塞、能并发或按插入顺序处理。
 
-Queue中定义了一些与java集合框架中新增、删除、获取语义相同但实现不同的方法，下面我们就来看一看这些方法的含义。
+例如任务必须按优先级取出，应选合适的优先级实现；只需要两端操作，则应了解 Deque 的契约。不要把“看起来像一个队列”当作容量和顺序设计已经确定。
 
-### 新增方法
+## 同一种操作有两类失败接口
 
-#### boolean add(E e)
+| 操作 | 异常形式 | 特殊返回值形式 |
+| --- | --- | --- |
+| 新增元素 | add(e)：容量限制使插入失败时抛 IllegalStateException | offer(e)：无法接纳时返回 false |
+| 移除队头 | remove()：空队列抛 NoSuchElementException | poll()：空队列返回 null |
+| 查看队头 | element()：空队列抛 NoSuchElementException | peek()：空队列返回 null |
 
-重写了Collection中add方法，add方法如果可以立即将指定的元素插入此队列中，同时不会违反容量限制，则在成功时返回true，**如果当前队列没有可用空间，则抛出IllegalStateException。**
+“特殊返回值”只替代相应的容量或空队列失败，不意味着方法不会抛任何异常。元素类型、null 或其他实现限制仍可能使 offer 抛异常。
 
-#### boolean offer(E e)
+如果空队列是正常业务分支，poll 通常更直接；如果调用前置条件保证有元素，remove 的异常可以暴露被破坏的约定。选择依据是失败是否属于正常控制流，而不是偏好短名字。
 
-offer方法同样是往队列中添加元素，只有在不会违反容量限制时，成功插入队列则返回true。**与add方法的不同之处在于如果容量已经满了offer方法仅仅返回false而不会抛出异常。**
+## null 与先检查再操作的两个陷阱
 
-### 删除方法
+poll、peek 用 null 表示空队列，所以即使某个实现允许存入 null，也不适合依赖这个做法表达业务值；否则调用者无法区分“队列为空”和“队头就是 null”。需要空值语义时，用独立的业务对象表示。
 
-#### E remove()
+并发环境中，先 isEmpty 再 remove 不是一个原子动作。其他线程可能在两步之间取走元素。应使用与具体并发实现匹配的一次操作，并按返回结果处理，或在共同同步边界内完成检查与修改。
 
-删除并返回队列中的头部元素。 **如果队列为空，则会抛出NoSuchElementException**。
+## 接口、骨架与阻塞队列各负责什么
 
-#### E poll()
-
-poll方法同样是删除并返回队列中的头部元素。与remove方法的不同之处在于，**如果此时队列为空则会返回null而不会抛出异常。**
-
-### 获取方法
-
-#### E element()
-
-获取队列中的头部元素。**如果队列为空则会抛出NoSuchElementException。**
-
-#### E peek()
-
-peek方法同样是获取队列中的头部元素。，与element方法的不同之处在于**如果此时队列为空则会返回null而不会抛出异常。**
-
-## 方法汇总
-
-Queue中的新增、删除、获取元素的方法汇总如下
-
-<table BORDER CELLPADDING=3 CELLSPACING=1>
-  <caption>队列方法汇总</caption>
-  <tr>
-    <td></td>
-    <td ALIGN=CENTER>
-      队列已满或者元素不存在时会抛出异常
-    </td>
-    <td ALIGN=CENTER>
-      队列已满或者元素不存在时只返回特定的值
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <b>新增</b>
-    </td>
-    <td>add(e)</td>
-    <td>offer(e)</td></tr>
-  <tr>
-    <td>
-      <b>删除</b>
-    </td>
-    <td>remove()</td>
-    <td>poll()</td></tr>
-  <tr>
-    <td>
-      <b>获取</b>
-    </td>
-    <td>element()</td>
-    <td>peek()</td></tr>
-</table>
-
-## 总结
-
-Queue是java集合框架的一部分，它除了提供基本的“收集元素”功能之外，主要目的是提供一种FIFO（先进先出）的数据结构。当然也存在不是FIFO的队列，这不在本文的探讨之中，但是大部分队列都是FIFO的。同时队列提供了与集合框架中的新增、删除、获取语言相同但执行逻辑不同的6个方法，以便我们在操作无界或者有界队列选择合适的方法。
+Queue 定义队头及失败契约；[AbstractQueue](/abstract-queue/) 把 offer/poll/peek 的特殊结果转换成异常形式，减少重复实现；[BlockingQueue](/blocking-queue/) 进一步增加等待和超时操作。容量、存储和并发仍由具体实现提供。
 
 ## 资料来源
 
-- [Queue：排序与六个基本操作](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/Queue.html)
+- [Queue：顺序、null 和六个基本操作](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/Queue.html)

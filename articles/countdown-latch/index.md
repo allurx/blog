@@ -1,7 +1,7 @@
 ---
 title: "CountDownLatch 源码分析"
 date: 2019-09-11
-updated: 2026-10-02
+updated: 2026-10-03
 tags:
   - Java
   - Concurrent
@@ -9,14 +9,15 @@ tags:
 domain: Java
 ---
 
-`CountDownLatch` 让等待者在计数降至零后继续执行。计数的是 `countDown()` 调用次数，未必等于线程数量；到零后不能重置。需要等待一组工作完成时，应保证成功、失败等约定路径都会完成相应的计数，否则等待者可能一直无法通过。
+CountDownLatch 是一次性计数门闩：调用 countDown 让计数递减，await 等待计数归零。计数代表约定的事件次数，不一定等于线程数；归零后不能重置，也不自动收集每项工作的结果或异常。
 
-下面从开工信号与完成信号的配合入手，再分析 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/CountDownLatch.java) 中的 AQS 共享模式实现。CountDownLatch 是一次性计数器，不自动收集结果或异常；需要限制等待时间时使用带超时的 await。
+本文先演示开工与完成两个信号，再分析 [OpenJDK 8u202-b08 的 AQS 共享实现](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/CountDownLatch.java)。完整示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。
 
+## 两个门闩分别控制开始与结束
 
-## 例子
+startSignal 初始为 1，用于统一放行；doneSignal 初始为 2，表示两个 Worker 结束后 main 才能继续。Worker 在 finally 中 countDown，避免已结束的失败路径忘记报告完成。
 
-在分析CountDownLatch原理前，我们先来看一下它是如何使用的，下面是类似CountDownLatch类注释上的一个例子
+保存为 DemoApplication.java，执行 `javac -encoding UTF-8 -d out DemoApplication.java`、`java -cp out io.allurx.DemoApplication`：
 
 ```java
 package io.allurx;
@@ -67,55 +68,25 @@ public class DemoApplication {
 }
 ```
 
-控制台输出
+实测两个 Worker 在开工信号后开始，main 在两项工作都结束后打印结束信息。具体时间戳和 Worker 之间的输出顺序不固定。finally 计数只报告“这一项已结束”，不把失败改成成功；需要结果时另存结果或使用 Future 等工具。
 
-```java
-main线程开始运行：15:02:52.695
-Worker1开始运行：15:02:54.697
-Worker2开始运行：15:02:54.697
-Worker1运行结束：15:02:56.697
-Worker2运行结束：15:02:56.697
-main线程运行结束：15:02:56.697
-```
+## state 直接保存剩余次数
 
-在上面的例子中，首先定义了两个CountDownLatch，它们的计数值分别为1和2，然后在主线程中开启两个Worker线程，在run方法中调用startSignal的await方法阻塞Worker线程（因为此刻startSignal的计数值为1），然后主线程睡眠2秒后调用startSignal的countDown方法使计数器减一，最终startSignal的计数值为0，唤醒两个Worker开始运行，接着调用doneSignal的方法阻塞主线程（因为此刻doneSignal的计数值为2），在Worker线程运行结束后调用doneSignal的countDown方法使计数器减一，最终doneSignal的计数值为0，然后主线程被唤醒开始运行。从这上面的例子我们大概能够知道CountDownLatch的使用方法了，通过构造函数传入的计数值来阻塞调用await方法的线程直到计数值被其它线程改变为0，调用await方法的线程才能继续执行。下面我们就来分析一下CountDownLatch内部实现的原理。
-
-## 构造函数
-
-```java
-public CountDownLatch(int count) {
-    if (count < 0) throw new IllegalArgumentException("count < 0");
-    this.sync = new Sync(count);
-}
-```
-
-CountDownLatch只有一个构造函数其中参数count代表在线程可以通过await之前必须调用countDown的次数。然后构造了一个Sync对象。
-
-## Sync
+内部 Sync 继承 AQS。共享获取在 state 为零时成功，否则失败；释放则用 CAS 把非零计数减一，只有刚刚降到零的线程报告需要传播通知。
 
 ```java
 private static final class Sync extends AbstractQueuedSynchronizer {
     private static final long serialVersionUID = 4982264981922014374L;
-	// AQS中的state就是CountDownLatch构造函数传入的数值
     Sync(int count) {
         setState(count);
     }
-
     int getCount() {
         return getState();
     }
-    // 在AQS的acquireSharedInterruptibly方法中我们知道方法返回负数代表
-    // 获取锁失败，当前线程需要排队，放到CountDownLatch中代表的就是还未调用countDown
-    // 的次数
     protected int tryAcquireShared(int acquires) {
         return (getState() == 0) ? 1 : -1;
     }
-
-    // 在AQS的releaseShared方法中我们知道该方法返回true则代表需要唤醒队列中头部的下一个节点，
-    // 每调用一次CountDownLatch的countDown方法，都会通过cas将state值减一，知道state值被某个线程
-    // 减到0的时候，这个方法就会返回true，然后AQS中的releaseShared方法就会开始尝试唤醒头部节点的下一个叫节点
     protected boolean tryReleaseShared(int releases) {
-        // Decrement count; signal when transition to zero
         for (;;) {
             int c = getState();
             if (c == 0)
@@ -128,32 +99,21 @@ private static final class Sync extends AbstractQueuedSynchronizer {
 }
 ```
 
-Sync重写了AQS中的tryAcquireShared和tryReleaseShared方法，以共享模式获取和释放共享资源。
+到零后再次 countDown 不会产生负数，也不会重新关闭门闩。构造器拒绝负计数，零计数则使 await 可以立即通过。
 
-## await
+## await 等待条件，不占用一份许可
 
-```java
-public void await() throws InterruptedException {
-    sync.acquireSharedInterruptibly(1);
-}
-```
+await 调用 AQS.acquireSharedInterruptibly。它响应等待线程的中断；计数尚未归零时排队，归零后等待者通过共享获取继续传播通知。与信号量不同，等待者通过门闩不会把计数重新加回去或消耗一份许可。
 
-如果调用该方法的线程中断标记已经被设置，那么会立即抛出InterruptedException，否则导致当前线程等待锁存器倒计数到零。如果当前计数为零，则此方法立即返回。如果当前计数大于零，则当前线程将被禁用以进行线程调度。其实现依赖的是AQS的acquireSharedInterruptibly方法。
+带超时 await 返回 false 只说明等待者没有在预算内看到归零，不会自动取消仍在运行的工作。无超时等待则可能因为某项工作永不结束、遗漏 countDown 或约定次数错误而一直等待。
 
-## countDown
+## 完成信号同时发布先前的写入
 
-```java
-public void countDown() {
-    sync.releaseShared(1);
-}
-```
+countDown 之前的动作，happens-before 另一个线程从相应 await 成功返回后的动作。因此可以先保存结果，再 countDown，最后在 await 成功后读取；不能先 countDown 再写结果并假定这部分写入也被同一个信号发布。
 
-减少锁存器的计数，如果计数值达到零则唤醒所有等待的线程。如果当前计数值为0，则无任何响应，其实现依赖的是AQS的releaseShared方法。
-
-## 总结
-
-CountDownLatch是基于AQS以共享模式获取和释放锁的一个同步工具类，使用它可以实现基于开关控制的锁流程，调用await方法的线程将会被阻塞直到其它线程调用countDown方法使计数值为0，调用await方法的线程才会继续执行。
+需要重复的多轮同步时，CountDownLatch 的一次性语义通常不合适，应根据参与者和阶段规则选择其他同步工具。不要通过反射重置其内部 state 来模拟新一轮。
 
 ## 资料来源
 
-- [CountDownLatch：一次性计数与内存一致性](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/CountDownLatch.html)
+- [CountDownLatch：一次性计数、超时与内存一致性](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/CountDownLatch.html)
+- [AQS 的共享获取与通知传播](/aqs/)
