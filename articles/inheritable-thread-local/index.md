@@ -1,5 +1,5 @@
 ---
-title: InheritableThreadLocal
+title: InheritableThreadLocal 继承的是哪个时刻的值
 date: 2019-07-22
 updated: 2026-10-03
 tags:
@@ -9,19 +9,25 @@ tags:
 domain: Java
 ---
 
-InheritableThreadLocal 在创建子线程时，根据父线程当前的绑定初始化子线程的值。它不是父子线程持续同步的通道，也不是提交到线程池时自动传播上下文的机制。
+父线程把请求 ID 设为 `A`，创建一个 Thread 对象，然后把请求 ID 改为 `B`，最后才启动子线程。子线程继承的是哪个值？对允许继承线程局部值的普通平台线程，答案是创建 Thread 时的 `A`。
+
+这个时刻决定了 InheritableThreadLocal 的用途：它适合为新线程提供初始上下文。若要在每次提交线程池任务时传递请求 ID，就必须另外安排任务级的传播，因为复用线程不会重新执行一次继承。
 
 本文先比较绑定复制和对象复制，再分析 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/InheritableThreadLocal.java) 中的线程构造路径。示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。示例使用普通平台线程，当前 Thread API 还允许通过构造或构建选项控制是否继承线程局部值。
 
-## 继承发生在构造子线程时
+## 从父线程绑定到子线程初始值
+
+### 构造 Thread 时复制，start 时不再复制
 
 父线程对普通 ThreadLocal 的绑定存于 threadLocals，对 InheritableThreadLocal 的绑定存于 inheritableThreadLocals。Java 8 的 Thread.init 在允许继承且父 Map 非空时，调用 ThreadLocal.createInheritedMap 创建子线程自己的 Map。
 
 复制发生在创建 Thread 对象的阶段，不是 start 时刻。若创建对象后父线程再 set 新值，不能据此期待已创建子线程自动更新；线程池复用已有 Worker 时，也不会因为一次新提交而再次构造该 Worker。
 
-## 默认 childValue 返回同一对象引用
+### 新 Map 不等于新对象
 
-子线程 Map 是新 Map，但默认 childValue(parentValue) 原样返回参数。因此复制的是绑定关系：两个 Map 可以指向同一个可变对象。要隔离对象状态，必须自己定义复制语义或使用不可变值，不能把“每线程一个 Map”误认为深复制。
+子线程 Map 是新 Map，但默认 `childValue(parentValue)` 原样返回参数。若父值是一个可变 List，父子两份绑定就指向同一个 List；修改其中元素会作用于同一对象。若父线程执行 `set(另一个 List)`，改变的则只是自己的绑定，子线程仍持有原来的引用。
+
+需要不同初始值时，可以重写 `childValue`。下面用不可变的 Integer 和 String 展示默认继承与定制继承：
 
 ```java
 package io.allurx;
@@ -55,7 +61,7 @@ public class DemoApplication {
 }
 ```
 
-保存为 DemoApplication.java，执行 `javac -encoding UTF-8 -d out DemoApplication.java`、`java -cp out io.allurx.DemoApplication`。本次输出为：
+保存为 DemoApplication.java，执行 `javac -encoding UTF-8 -d out DemoApplication.java`、`java -cp out io.allurx.DemoApplication`。该示例的输出为：
 
 ```text
 main:1
@@ -99,7 +105,9 @@ private ThreadLocalMap(ThreadLocalMap parentMap) {
 
 ## 在线程池中显式传递任务上下文
 
-工作线程可能在第一次请求时创建，也可能提前创建；后续请求复用它时，继承值可能缺失或来自较早的创建者。需要“每次提交时的上下文”，应在任务边界明确捕获、安装并清理或恢复，或者直接把所需数据作为参数传入。
+假设 Worker 因请求 A 第一次提交任务而创建，它可能继承 A 的请求 ID。请求 B 后来使用同一个 Worker，线程构造过程不会再运行，B 也就不会自动替换那份绑定。如果 Worker 在任何请求到来前就已启动，它甚至可能没有请求 ID。
+
+所以，传播请求上下文应围绕一次任务完成：提交时捕获，执行前安装，执行后清理或恢复。只传几个参数时，直接把它们作为任务参数更容易看清数据来自哪里。
 
 同样要考虑对象是否可变、嵌套任务是否需要恢复外层绑定。InheritableThreadLocal 只规定初始化行为，不替应用决定请求身份、数据生命周期或取消后的清理政策。
 

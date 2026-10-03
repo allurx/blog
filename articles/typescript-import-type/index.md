@@ -6,16 +6,17 @@ domain: "TypeScript"
 tags: ["TypeScript", "ESModules", "类型系统"]
 ---
 
-把普通导入改成 `import type`，通常只影响类型边界；如果被导入模块还有顶层注册或初始化行为，却可能改变运行结果。判断这次修改是否安全，应该看生成的 JavaScript 是否还会加载那个模块。
+一个模块在顶层注册自定义元素，另一个模块从它导入配置类型。把这条导入改成 `import type` 后，类型检查通过了，页面里的自定义元素却可能不再注册。
+
+原因藏在编译输出里：类型导入会被擦除，原本伴随模块加载发生的初始化也可能消失。下面把类型需要、运行时值和模块副作用分开，再实际比较三种导入形式生成的 JavaScript。
 
 本文以 TypeScript 7.0.2 为编译器基线，解释自 5.0 引入的 `verbatimModuleSyntax`：整个类型导入声明、混合导入中的 `type` 修饰符和显式副作用导入分别会留下什么。读者需了解 ESM 的导入与导出。构建工具可能进一步做 tree shaking，以下先隔离 TypeScript 自身的输出，再用 Node.js 24 LTS 观察模块求值。
 
-## 类型声明与运行时值
+## 先判断代码到底需要导入什么
 
-TypeScript 中存在两个基本空间：
+编译器需要的信息与运行中的 JavaScript 需要的信息并不完全相同。`interface`、类型别名和泛型参数用于检查代码；变量、函数、对象和 class 构造器则真实存在于运行时。TypeScript 分别称它们所在的范围为类型空间（type space）和值空间（value space）。
 
-* Type space：`interface`、`type` alias、泛型参数等，只用于静态检查。
-* Value space：变量、函数、对象和 class 构造器等，真实存在于 JavaScript 运行时。
+### interface 只参与类型检查
 
 `interface` 只存在于 Type space：
 
@@ -28,10 +29,12 @@ export interface Book {
 因此以下导入只能用于类型位置：
 
 ```typescript
-import type { Book } from "./book";
+import type { Book } from "./book.js";
 ```
 
-而 class 同时存在于两个空间：
+### class 还提供运行时构造器
+
+class 同时存在于两个空间：
 
 ```typescript
 export class Book {}
@@ -53,6 +56,8 @@ export class Book {}
 }
 ```
 
+### 整条类型导入会消失
+
 整个类型导入会被删除：
 
 ```typescript
@@ -71,6 +76,8 @@ export function read(book) {
 }
 ```
 
+### 混合导入只移除类型项
+
 如果同一模块同时提供值和类型，可以逐项标记：
 
 ```typescript
@@ -83,7 +90,9 @@ import { createBook, type Book } from "./book.js";
 import { createBook } from "./book.js";
 ```
 
-这里有一个容易遗漏的边界：**删除导入项不等于删除整条导入声明**。
+### 所有导入项都带 type，仍可能加载模块
+
+前面的规则逐项删除类型导入。如果一条普通导入恰好只包含类型项，会发生什么？
 
 ```typescript
 import { type Book } from "./book.js";
@@ -115,6 +124,8 @@ import { createReader } from "./reader.js";
 
 ## 编译并观察三种导入的模块求值
 
+### 编译三个独立入口
+
 将 [book.mts](./book.mts)、[type-only.mts](./type-only.mts)、[inline-type.mts](./inline-type.mts) 和 [mixed.mts](./mixed.mts) 下载到同一目录。`book.mts` 同时导出类型和工厂函数，并在模块顶层打印 `book module evaluated`；另外三个入口分别采用前文的三种导入形式。`.mts` 会生成 `.mjs`，因此 Node.js 可以明确按 ESM 执行，不依赖其他项目的 `package.json`。
 
 在 TypeScript 7.0.2 环境中编译：
@@ -130,6 +141,8 @@ node out/type-only.mjs
 node out/inline-type.mjs
 node out/mixed.mjs
 ```
+
+### 从顶层输出判断是否求值
 
 在 Windows、TypeScript 7.0.2、Node.js 24.19.0 下运行，第一条没有输出，第二条和第三条各输出一次 `book module evaluated`。检查生成文件也能看到：第一条类型导入已消失，第二条保留空导入，第三条保留 `createBook`。这里验证的是模块是否执行，不是打包体积或性能提升。
 

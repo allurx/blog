@@ -11,11 +11,11 @@ tags:
 domain: Spring
 ---
 
-资源服务器先验证访问令牌并建立认证信息，再由资源授权规则决定是否允许调用。JWT 的 Base64url 解码、JWS 验签、声明校验和最终授权是不同步骤；只看到一个结构正确的 JSON，不能说明令牌可信。
+客户端带着一个 JWT 请求接口，服务器要回答的并不只是“能不能解析出用户名”。任何人都可以编码出一段看起来正确的 JSON；服务器还要确认签名来自受信任的密钥、声明符合要求，并判断这个主体能否访问当前资源。
 
-本文研究 **Spring Boot 2.2.6.RELEASE / Spring Security 5.2.2.RELEASE** 的历史 Servlet JWT 路径。完整例子采用 **Eclipse Temurin JDK 11.0.32.1+1、Maven 3.10.0**，本地测试签发使用 **Node.js 24.19.0 LTS** 标准库。JDK 11 位于旧 Boot 的 Java 8—13 兼容范围；保留旧依赖是为了对照源码，不作为当前新项目推荐。[Boot 运行要求](https://docs.spring.io/spring-boot/docs/2.2.6.RELEASE/reference/html/getting-started.html#getting-started-system-requirements)
+下面用同一个本地接口对比有效令牌、被篡改令牌和过期令牌，再沿过滤器、提供者与解码器追踪这些结果怎样产生。
 
-这个固定组合用于解释旧实现的过滤器、提供者和解码器怎样协作。新应用应查阅 [当前 JWT 资源服务器文档](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)与 [Spring Boot 当前文档](https://docs.spring.io/spring-boot/)，重新选择受支持依赖及组件配置，不把历史适配器作为当前默认入口。
+源码与配置以 **Spring Boot 2.2.6.RELEASE / Spring Security 5.2.2.RELEASE** 的 Servlet JWT 路径为准。完整例子采用 **Eclipse Temurin JDK 11.0.32.1+1、Maven 3.10.0**，本地测试签发使用 **Node.js 24.19.0 LTS** 标准库。JDK 11 位于该 Boot 版本的 Java 8—13 兼容范围内。[Boot 运行要求](https://docs.spring.io/spring-boot/docs/2.2.6.RELEASE/reference/html/getting-started.html#getting-started-system-requirements)
 
 ## 先把签发端与资源服务器分开
 
@@ -69,7 +69,7 @@ spring:
 java -version
 mvn -version
 mvn package
-java -jar target/historical-resource-server-demo-1.0.0.jar
+java -jar target/resource-server-demo-1.0.0.jar
 ```
 
 应用没有自定义 WebSecurityConfigurerAdapter，所以能观察 Boot 的默认装配。完整入口的 Controller 核心是：
@@ -98,13 +98,17 @@ Authorization: Bearer YOUR_SIGNED_ACCESS_TOKEN
 
 这些路径已在上文完整版本组合的 Windows 11 x64 本地环境验证。实验过期输入使用了超出默认时钟偏差的时间，不能用刚跨过 exp 的一瞬间推断校验器忽略过期。它验证的是认证边界，不证明业务的 issuer、audience 或权限规则已经正确。
 
-## BearerTokenAuthenticationFilter 提取令牌并交给管理器
+## 从请求头到已认证的用户
+
+请求中的字符串要依次经过提取、验证和身份转换，Controller 才能拿到 `Jwt`。成功路径与失败路径在每一步都有不同出口，下面按执行顺序展开。
+
+### 过滤器提取 Bearer Token，再交给认证管理器
 
 过滤器先用 BearerTokenResolver 读取令牌。没有令牌时继续链，交由后续授权决定是否允许匿名访问；令牌格式错误时立即进入认证入口。存在令牌时，构造未认证的 BearerTokenAuthenticationToken，选择 AuthenticationManager 并委托认证。
 
 成功后创建新的 SecurityContext、放入认证结果，再继续下游链；AuthenticationException 则清理上下文并交给失败处理器。可以从 [BearerTokenAuthenticationFilter 5.2.2 源码](https://github.com/spring-projects/spring-security/blob/5.2.2.RELEASE/oauth2/oauth2-resource-server/src/main/java/org/springframework/security/oauth2/server/resource/web/BearerTokenAuthenticationFilter.java) 对照这些分支。
 
-## JwtDecoder 负责的不只是文本解码
+### JwtDecoder 验证签名与声明
 
 JwtAuthenticationProvider 的核心步骤是：
 
@@ -129,7 +133,7 @@ public Authentication authenticate(Authentication authentication) throws Authent
 
 这里的 JwtDecoder 使用配置的公钥与签名算法，并执行声明校验；失败被转换成认证异常。静态公钥配置默认应用时间相关校验，业务若要求固定 issuer、audience 或其他声明，必须配置对应验证器，不能因为验签通过就省略这些约束。[JwtAuthenticationProvider 5.2.2 源码](https://github.com/spring-projects/spring-security/blob/5.2.2.RELEASE/oauth2/oauth2-resource-server/src/main/java/org/springframework/security/oauth2/server/resource/authentication/JwtAuthenticationProvider.java)
 
-## 从 scope 得到权限，再进入资源授权
+### 转换 scope 后，授权规则才决定能否访问
 
 JwtAuthenticationConverter 把 Jwt 转成 Authentication。默认 JwtGrantedAuthoritiesConverter 先找 `scope` 或 `scp` 声明，接受空格分隔字符串或集合，再给权限添加 `SCOPE_` 前缀。
 
@@ -149,4 +153,6 @@ Boot 根据 `public-key-location` 创建使用 RSA 公钥的 NimbusJwtDecoder，
 
 文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
-排查 401 时，沿令牌提取、算法与公钥、声明校验逐步定位；排查已认证后的拒绝，则检查权限转换与资源规则。不透明令牌通常通过自省取得状态，属于另一条认证路径，不能套用 JWT 本地验签过程。
+本例的有效令牌没有 `scope`，仍可访问只要求 `authenticated` 的接口。若把接口改成需要读取消息的权限，应该同时检查令牌中的 scope 和转换后的 `SCOPE_message:read`，而不是反复更换已经能正确验签的公钥。
+
+因此，401 先沿令牌提取、算法、公钥和声明校验查起；已认证后的访问拒绝，再看权限转换与资源规则。不透明令牌通常通过自省取得状态，属于另一条认证路径。其他版本的组件配置见相应的 [JWT 资源服务器文档](https://docs.spring.io/spring-security/reference/servlet/oauth2/resource-server/jwt.html)。

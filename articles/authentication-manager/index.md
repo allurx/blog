@@ -9,9 +9,11 @@ tags:
 domain: Spring
 ---
 
-用户名密码认证不是过滤器直接比较两个字符串。过滤器收集凭据，AuthenticationManager 选择能够处理该令牌的提供者，提供者再取得用户、检查账户状态并验证密码。把这些职责分开，才能定位“没有提供者”“用户不存在”和“密码格式不匹配”等不同失败。
+登录表单已经提交了用户名和密码，却得到“没有可用的 `AuthenticationProvider`”；另一次能查到用户，仍然报密码错误。这两次失败都发生在认证阶段，但经过的路径并不一样：前者还没有选中负责校验的组件，后者已经进入用户资料和密码匹配流程。
 
-本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的历史 Servlet 用户名密码路径。前置知识是 Authentication 与 GrantedAuthority；可运行环境和默认登录示例见 [基本概念](/spring-security-basics/)。完整实现分别见 [ProviderManager](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/authentication/ProviderManager.java)、[AbstractUserDetailsAuthenticationProvider](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/authentication/dao/AbstractUserDetailsAuthenticationProvider.java) 和 [DaoAuthenticationProvider](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/authentication/dao/DaoAuthenticationProvider.java)。
+沿一次表单登录往下看，过滤器先收集凭据，`AuthenticationManager` 选择提供者，提供者再完成具体校验。把这条链拆清楚，就能知道每种失败应当在哪里查。
+
+本文以 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的 Servlet 用户名密码路径为准。前置知识是 `Authentication` 与 `GrantedAuthority`；运行环境和默认登录示例见[基本概念](/spring-security-basics/)。完整实现分别见 [ProviderManager](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/authentication/ProviderManager.java)、[AbstractUserDetailsAuthenticationProvider](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/authentication/dao/AbstractUserDetailsAuthenticationProvider.java) 和 [DaoAuthenticationProvider](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/authentication/dao/DaoAuthenticationProvider.java)。
 
 文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
@@ -30,7 +32,9 @@ domain: Spring
 
 这里的“父管理器”是委托关系，不是 Java 继承关系。一次调用可能先尝试本地提供者，再交给父管理器。
 
-## supports、null 和异常分别怎样影响遍历
+## 管理器如何选中认证提供者
+
+### supports 先筛选令牌类型
 
 ProviderManager 先调用 `supports(authentication.getClass())`，只把令牌交给支持其类型的提供者。核心调用顺序可从下面的摘录看出，省略了日志和事件发布：
 
@@ -45,7 +49,11 @@ if (result != null) {
 }
 ```
 
-“支持类型”不等于“认证一定成功”，也不等于提供者必须独占该类型。提供者的结果决定接下来发生什么：
+`supports` 回答的是“我能处理这类令牌吗”。例如 DAO 提供者能够处理用户名密码令牌，接下来仍要检查密码是否正确。同一类型也可以有多个提供者，前一个没有完成认证时，管理器可能继续尝试后一个。
+
+### 返回值和异常决定是否继续尝试
+
+提供者的结果决定接下来发生什么：
 
 | 本地提供者的结果 | ProviderManager 的动作 |
 | --- | --- |
@@ -59,7 +67,7 @@ if (result != null) {
 
 本地仍没有结果且配置了父管理器时，才调用父管理器。父层也没有支持者时的 ProviderNotFoundException 不一定覆盖本地已有的更具体异常；最终既没有结果也没有其他异常，才创建“没有可用 AuthenticationProvider”的异常。
 
-## 返回结果之前还要擦除凭据与发布事件
+### 返回前清除秘密并发布事件
 
 默认 `eraseCredentialsAfterAuthentication=true`。当结果实现 CredentialsContainer 时，管理器调用 `eraseCredentials()` 清除密码等秘密；认证结果通常仍保留主体和权限。业务不应依赖认证成功后还能从 Authentication 取回明文密码。
 
@@ -80,6 +88,8 @@ DaoAuthenticationProvider 继承 AbstractUserDetailsAuthenticationProvider。父
 | 缓存与结果 | 按需更新缓存，构造带权限的已认证令牌 |
 
 默认 UserCache 是 NullUserCache，不会跨请求缓存用户。只有应用配置了真实缓存时，下面的“重新加载”分支才有作用：如果缓存中的用户没有通过前置检查或密码检查，父类会从用户服务重新取得资料，再检查一次。这用于避免旧缓存决定最终结果；没有用缓存时，不会无条件重复查询。
+
+例如用户刚改完密码，而应用缓存里仍保存旧的编码值。第一次匹配可能失败，重新加载后才有机会使用新值。这解释了为什么源码会出现重复检查，也说明是否真的发生两次查询，要结合 `UserCache` 配置判断。
 
 ### UserDetailsService 的失败契约
 
@@ -115,7 +125,7 @@ protected void additionalAuthenticationChecks(UserDetails userDetails,
 
 凭据为空会失败；否则把提交的原文交给配置的 PasswordEncoder，与 UserDetails 保存的编码值匹配。数据库、LDAP 或其他用户资料来源不改变这个契约。
 
-## 默认编码器与存储格式必须配套
+### 默认编码器需要带算法标识的存储值
 
 构造器实际使用的是委托编码器：
 
@@ -133,9 +143,9 @@ public DaoAuthenticationProvider() {
 | 直接 BCryptPasswordEncoder.encode，省略 `{bcrypt}`，再交给默认委托编码器 | 无法识别算法，会报告 id 为 null 的错误 |
 | 显式把认证提供者配置为 BCryptPasswordEncoder，同时按它的格式保存 | 是另一套一致的配置方式 |
 
-这里不需要也不存在把密码解密回原文的步骤。新增或迁移密码时，应明确实际使用的编码器及存储格式，而不是看到源码中出现 bcrypt 就假定默认类型是 BCryptPasswordEncoder。[该版本的密码编码与格式说明](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/#core-services-password-encoding)
+这能解释一种看似奇怪的失败：数据库里已经是 bcrypt 编码值，认证却提示找不到算法。若认证使用默认委托编码器，它先读取 `{id}` 决定交给谁；缺少 `{bcrypt}` 时，失败发生在选择算法这一步，还没有进入密码匹配。存储端和认证端需要采用一致的格式。[该版本的密码编码与格式说明](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/reference/htmlsingle/#core-services-password-encoding)
 
-## 成功后构造结果，必要时升级编码
+### 校验成功后构造结果，必要时升级编码
 
 父类创建新的 UsernamePasswordAuthenticationToken，带上用户主体、经过 GrantedAuthoritiesMapper 映射的权限及请求详情。`forcePrincipalAsString` 可以把主体改成用户名字符串，默认则保留 UserDetails。
 

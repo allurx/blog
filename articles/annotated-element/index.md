@@ -9,144 +9,159 @@ tags:
 domain: Java
 ---
 
-读取注解时，首先要回答三个问题：只读当前元素吗，是否展开可重复注解的容器，是否按 @Inherited 查父类？AnnotatedElement 把这三件事组合成不同方法，选错方法会出现“明明写了注解却读不到”的现象。
+类上只写一个注解时，`getAnnotation()` 能正常读到；把它改成两个可重复注解后，同样的查询却可能返回 `null`。注解没有消失，只是编译器把重复项放进了容器，而这个查询方法不会展开容器。
 
-本文用同一组注解比较查询结果。下面的完整程序仅依赖 JDK 标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。需要先了解 [可重复注解与容器](/repeatable-annotations/)。反射读取要求 RUNTIME 保留策略，@Inherited 只影响类的父类链，不把接口、方法或字段注解自动继承过来。
+`AnnotatedElement` 提供了几种不同的查询方式。选择时先确定两件事：是否需要展开可重复注解，是否允许从父类继承。下面用一组父子类对照结果，再把它们对应到 API 使用的几个术语。
 
-## 四种关系解释查询范围
+本文按 Java SE 25 的公开 API 说明，完整程序只依赖标准库，目标环境是 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）。反射读取需要 `RUNTIME` 保留策略；容器的声明方式见[可重复注解](/repeatable-annotations/)。
 
-| 关系 | 含义 |
+## 同一个类，为什么能查出不同结果
+
+假设有一个可重复且允许继承的 `Tag` 注解，父类和子类分别这样声明：
+
+```java
+@Tag(3)
+static class Parent {}
+
+@Tag(1)
+@Tag(2)
+static class RepeatedChild extends Parent {}
+
+static class PlainChild extends Parent {}
+```
+
+`Parent` 直接携带一条 `Tag(3)`。`RepeatedChild` 重复使用了两次 `Tag`，编译后直接携带的是 `Tags` 容器，容器里保存 `1` 和 `2`。`PlainChild` 自己没有声明注解。
+
+### 只查当前类，也要决定是否展开容器
+
+`RepeatedChild.class.getDeclaredAnnotation(Tag.class)` 返回 `null`，因为当前类直接携带的注解类型是 `Tags`。改用 `getDeclaredAnnotationsByType(Tag.class)`，方法就会打开容器，得到 `1`、`2`。
+
+这里的 `Declared` 限定查询在当前元素上；`ByType` 让方法识别可重复注解的容器。它们控制不同的查询行为。
+
+### 允许继承时，本类结果怎样影响父类查询
+
+`getAnnotation(Tag.class)` 不展开容器，所以在 `RepeatedChild` 上找不到直接的 `Tag`，接着沿父类查到 `Tag(3)`。
+
+`getAnnotationsByType(Tag.class)` 则先展开子类自己的容器，已经得到 `1`、`2`，因此不会再拼接父类的 `3`。对于没有任何本地结果的 `PlainChild`，这个方法才会从父类取得 `3`。
+
+这两次查询都允许继承，但“本类有没有结果”的判定方式不同。父子类上的注解不会自动合并成一个总表，合并是否合理要由框架自己的规则决定。
+
+## 四种关系与六种方法
+
+API 用四个术语精确定义前面的区别。它们描述查询关系，不是四种新的注解语法。
+
+| 关系 | 在例子中的含义 |
 | --- | --- |
-| 直接存在 | 元素直接携带该注解 |
-| 间接存在 | 元素直接携带容器，容器 value 数组包含该可重复注解 |
-| 存在 | 本元素直接存在；或者本元素没有直接结果，按类继承和 @Inherited 规则从父类继承 |
-| 关联 | 本元素直接或间接存在；本元素都没有结果时，再按继承规则查父类 |
+| 直接存在 | `Parent` 直接携带 `Tag(3)`；`RepeatedChild` 直接携带 `Tags` |
+| 间接存在 | `RepeatedChild` 的容器里包含 `Tag(1)`、`Tag(2)` |
+| 存在 | 本类直接存在，或没有直接结果时按 `@Inherited` 规则查询父类 |
+| 关联 | 本类直接或间接存在，或两者都没有结果时按继承规则查询父类 |
 
-单个可重复注解通常直接存在，重复写多个时编译器使用容器表示。因此“可重复注解”不等于“间接存在”。父类搜索也不是无条件合并：getAnnotationsByType 在本类已经找到结果时，不再拼接父类的同类注解。
-
-## 六种查询方法如何选择
+方法与这些关系的对应如下：
 
 | 方法 | 查询关系 | 展开容器 |
 | --- | --- | --- |
-| getAnnotation(Class&lt;T&gt;) | 存在 | 否 |
-| getAnnotations() | 存在 | 否 |
-| getAnnotationsByType(Class&lt;T&gt;) | 关联 | 是 |
-| getDeclaredAnnotation(Class&lt;T&gt;) | 直接存在 | 否 |
-| getDeclaredAnnotations() | 直接存在 | 否 |
-| getDeclaredAnnotationsByType(Class&lt;T&gt;) | 直接或间接存在 | 是 |
+| `getAnnotation(Class<T>)` | 存在 | 否 |
+| `getAnnotations()` | 存在 | 否 |
+| `getAnnotationsByType(Class<T>)` | 关联 | 是 |
+| `getDeclaredAnnotation(Class<T>)` | 直接存在 | 否 |
+| `getDeclaredAnnotations()` | 直接存在 | 否 |
+| `getDeclaredAnnotationsByType(Class<T>)` | 直接或间接存在 | 是 |
 
-isAnnotationPresent 按“存在”判断，不等价于 getAnnotationsByType 的结果非空。容器类型也是一个注解类型，查询容器与查询它包含的元素注解会得到不同结果。
+`isAnnotationPresent(type)` 等价于 `getAnnotation(type) != null`。它也不会展开容器，因此不能用它代替“`getAnnotationsByType` 的结果是否非空”。单独查询容器类型同样合法，此时得到的是容器，而不是容器中的各个元素。
 
-## 用一个程序观察容器与继承
+继承还有限定：`@Inherited` 只沿类的父类链生效，不会自动把接口、方法或字段注解继承过来。可重复注解如果只使用一次，也通常直接存在，不必经过容器。
 
-A 和 B 都重复使用 MyAnnotation，编译后分别携带 RepeatableAnnotation 容器。两种注解都使用 RUNTIME 与 @Inherited，容器 value 返回 MyAnnotation 数组。
+## 运行对照程序
 
-保存为 Test.java，执行 `javac -encoding UTF-8 -d out Test.java`、`java -cp out io.allurx.Test`：
+下面的程序打印注解值，避免冗长的注解对象字符串掩盖查询差别。保存为 `AnnotationLookupDemo.java`：
 
 ```java
 package io.allurx;
 
-import java.lang.annotation.*;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Inherited;
+import java.lang.annotation.Repeatable;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.util.Arrays;
 
 /**
  * @author allurx
  */
-public class Test {
+public class AnnotationLookupDemo {
 
     public static void main(String[] args) {
-        // A类上是否“存在”MyAnnotation注解
-        System.out.println(A.class.isAnnotationPresent(MyAnnotation.class));
+        System.out.println("子类直接查询: "
+                + RepeatedChild.class.getDeclaredAnnotation(Tag.class));
+        System.out.println("子类展开容器: "
+                + values(RepeatedChild.class.getDeclaredAnnotationsByType(Tag.class)));
+        System.out.println("子类普通继承查询: "
+                + RepeatedChild.class.getAnnotation(Tag.class).value());
+        System.out.println("子类 ByType 查询: "
+                + values(RepeatedChild.class.getAnnotationsByType(Tag.class)));
+        System.out.println("空子类直接查询: "
+                + values(PlainChild.class.getDeclaredAnnotationsByType(Tag.class)));
+        System.out.println("空子类 ByType 查询: "
+                + values(PlainChild.class.getAnnotationsByType(Tag.class)));
+    }
 
-        // A类上是否“存在”RepeatableAnnotation注解
-        System.out.println(A.class.isAnnotationPresent(RepeatableAnnotation.class));
-
-        // 如果A类上“存在”MyAnnotation注解，则返回该注解，否则返回null
-        System.out.println(A.class.getAnnotation(MyAnnotation.class));
-
-        // 如果A类上“存在”RepeatableAnnotation注解，则返回该注解，否则返回null
-        System.out.println(A.class.getAnnotation(RepeatableAnnotation.class));
-
-        // 获取A类上所有“存在”的注解
-        System.out.println(Arrays.toString(A.class.getAnnotations()));
-
-        // 如果指定的注解是与A类“关联的”，则返回该注解，否则再去它的父类中取寻找。
-        // 如果参数注解是可重复注解，则会从该元素上的容器注解中寻找该重复注解并返回。
-        System.out.println(Arrays.toString(A.class.getAnnotationsByType(MyAnnotation.class)));
-        System.out.println(Arrays.toString(A.class.getAnnotationsByType(RepeatableAnnotation.class)));
-
-        // 获取“直接存在”与该元素上的所有注解
-        System.out.println(Arrays.toString(A.class.getDeclaredAnnotations()));
-
-        // 获取“直接存在”于该元素上的指定注解
-        System.out.println(A.class.getDeclaredAnnotation(MyAnnotation.class));
-        System.out.println(A.class.getDeclaredAnnotation(RepeatableAnnotation.class));
-
-        // 获取“直接存在”或者“间接存在”于该元素上的注解
-        System.out.println(Arrays.toString(A.class.getDeclaredAnnotationsByType(MyAnnotation.class)));
-        System.out.println(Arrays.toString(A.class.getDeclaredAnnotationsByType(RepeatableAnnotation.class)));
+    private static String values(Tag[] tags) {
+        return Arrays.toString(Arrays.stream(tags).mapToInt(Tag::value).toArray());
     }
 
     @Target(ElementType.TYPE)
     @Retention(RetentionPolicy.RUNTIME)
     @Inherited
-    @Documented
-    public @interface RepeatableAnnotation {
-
-        MyAnnotation[] value();
+    public @interface Tags {
+        Tag[] value();
     }
 
     @Target(ElementType.TYPE)
     @Retention(RetentionPolicy.RUNTIME)
-    @Repeatable(RepeatableAnnotation.class)
     @Inherited
-    @Documented
-    public @interface MyAnnotation {
-
+    @Repeatable(Tags.class)
+    public @interface Tag {
         int value();
     }
 
-    @MyAnnotation(1)
-    @MyAnnotation(2)
-    static class A extends B {
+    @Tag(3)
+    static class Parent {}
 
-    }
+    @Tag(1)
+    @Tag(2)
+    static class RepeatedChild extends Parent {}
 
-    @MyAnnotation(3)
-    @MyAnnotation(4)
-    static class B {
-
-    }
-
+    static class PlainChild extends Parent {}
 }
 ```
 
-下面是 JDK 25 的实际输出；toString 的标点和类名排版不是 API 保证，应对照每行查询的语义：
+编译并运行：
 
-```text
-false
-true
-null
-@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})
-[@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})]
-[@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)]
-[@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})]
-[@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})]
-null
-@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})
-[@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)]
-[@io.allurx.Test.RepeatableAnnotation({@io.allurx.Test.MyAnnotation(1), @io.allurx.Test.MyAnnotation(2)})]
+```shell
+javac -encoding UTF-8 -d out AnnotationLookupDemo.java
+java -cp out io.allurx.AnnotationLookupDemo
 ```
 
-前两行 false、true 表明 A 上存在的是容器，而不是一个可直接读取的 MyAnnotation。getAnnotation(MyAnnotation.class) 也不会展开父类的容器，所以返回 null；ByType 方法则展开 A 上的 1、2，不合并 B 上的 3、4。
+输出对应六次查询：
 
-如果把 B 改为只标注一个 MyAnnotation(3)，B 上便直接存在该注解。按 API 规则，A 的 getAnnotation(MyAnnotation.class) 可以沿继承链读到 3，而 getAnnotationsByType(MyAnnotation.class) 仍使用 A 自己容器里的 1、2。这个对照说明“存在”和“关联”解决的是不同查询问题，不能把两个结果互相代替。
+```text
+子类直接查询: null
+子类展开容器: [1, 2]
+子类普通继承查询: 3
+子类 ByType 查询: [1, 2]
+空子类直接查询: []
+空子类 ByType 查询: [3]
+```
 
-## 声明注解与类型使用注解不要混读
+第三行和第四行尤其值得对照：同一个子类上，普通查询取得父类的 `3`，`ByType` 查询却取得本类的 `1`、`2`。这由两种方法的查询规则共同决定，不是随机的反射行为。
 
-Field.getDeclaredAnnotations 读取字段声明上的注解；List<@Sensitive String> 中 String 的注解属于类型使用，要从 Field.getAnnotatedType 递归进入参数化类型读取。方法返回值、数组维度与通配符边界也有同样的区别，见 [AnnotatedType](/annotated-type/)。
+## 查询范围之外，还要选对注解位置
 
-解析框架应先确定自己的继承和重复注解政策，再选择对应方法；不要先把所有注解平铺到一个 Map，之后才试图恢复容器、声明位置和覆盖关系。
+`Field.getDeclaredAnnotations()` 读取字段声明上的注解；`List<@Sensitive String>` 中 `String` 的注解属于类型使用，要从 `Field.getAnnotatedType()` 进入参数化类型后读取。方法返回值、数组维度和通配符边界也有各自的位置，详见 [AnnotatedType](/annotated-type/)。
+
+因此，实现注解解析时，可以先确定要读的是声明还是类型使用，再决定是否展开容器、是否继承。若业务确实要求合并父子类结果，就显式定义覆盖与顺序规则；把所有结果直接塞进一个 `Map`，会丢失之后还需要判断的位置和来源。
 
 ## 资料来源
 

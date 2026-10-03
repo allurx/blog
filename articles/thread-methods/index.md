@@ -9,7 +9,9 @@ tags:
 domain: Java
 ---
 
-线程方法分别等待时间、线程终止或业务条件，不能只因为都可能暂停执行就互相替代。本文先比较这些契约，再用独立的小程序观察中断、join、yield、监视器等待与异常分发。
+主线程启动下载任务后，怎样等文件下载完再继续？休眠两秒可能刚好够，也可能下载还没有结束。`join()` 等待线程终止，`sleep()` 只等待一段时间，这个区别决定了程序能否依靠它们安排顺序。
+
+线程 API 看起来都有“暂停”或“唤醒”的动作，实际等待的条件却不同。下面按完成等待、中断请求、业务条件和异常处理来理解它们，每个示例只观察一个行为。
 
 范围是 Java 25 平台线程的公开行为。示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。各节 DemoApplication 都是独立程序，分别保存、编译和运行，不应把同名类放在同一目录。保存为 DemoApplication.java，执行 `javac -encoding UTF-8 -d out DemoApplication.java`、`java -cp out io.allurx.DemoApplication`。
 
@@ -24,7 +26,11 @@ domain: Java
 
 sleep 不保证到期后立即获得 CPU。currentThread 返回真正执行当前代码的线程，isAlive 判断目标是否已启动且未终止。Thread.State 是观察值，不能用轮询某个状态替代业务同步。
 
-## interrupt：发出协作请求
+## 中断请求怎样被线程接收
+
+中断允许调用者提出停止等待的请求。目标线程如何响应，取决于它正在执行什么操作，以及业务代码怎样处理这个请求。
+
+### interrupt 对阻塞等待的影响
 
 interrupt 作用于目标线程。目标在 wait、sleep 或 join 中等待时，按契约抛 InterruptedException 并清除中断标记；一般计算代码不会自动停止。下面主线程可能在子线程进入 wait 前或等待期间发出中断，两种情况都不需要用休眠保证先后。
 
@@ -61,7 +67,7 @@ public class DemoApplication {
 
 本次观察到 InterruptedException。它由示例打印，用来显示 wait 对中断的响应，不是未处理的业务故障。
 
-## interrupted 与 isInterrupted：谁的标记被清除
+### 查询中断标记时，是否清除会影响下一步
 
 Thread.interrupted 是静态方法，检查并清除当前执行线程的标记；isInterrupted 检查调用目标线程的标记，不清除。不要通过某个实例调用静态方法后，误以为检查的是该实例线程。
 
@@ -97,7 +103,11 @@ public class DemoApplication {
 }
 ```
 
-## join：等待的是目标线程结束
+## 等待完成与请求调度
+
+下载任务结束前，后续代码不能读取未完成的结果；如果只是希望其他线程获得执行机会，则是另一个问题。
+
+### join 等到目标线程结束
 
 worker.join 由 main 执行，但等待条件是 worker 已终止。先 start 再 join；尚未启动的线程不处于存活状态，join 可以直接返回。下面无超时的 join 成功后，先打印 2，再打印 1。
 
@@ -160,7 +170,7 @@ public class DemoApplication {
 
 常见观察是 1、2，但超时预算不保证调用者准点恢复，因此不能把它当作固定打印顺序的程序。
 
-## yield：只是调度提示
+### yield 不建立执行顺序
 
 yield 可以被调度器忽略，线程仍是 RUNNABLE。它不提供内存同步，也不保证其他线程先执行；JDK 25 中以 Thread.yield() 限定调用，避免与受限标识符冲突。
 
@@ -186,7 +196,7 @@ public class DemoApplication {
         public void run() {
             System.out.println(getName() + "开始执行");
             if ("YieldThread1".equals(getName())) {
-                System.out.println(getName() + "让出cpu执行权");
+                System.out.println(getName() + "发出调度让步提示");
                 Thread.yield();
             }
             System.out.println(getName() + "执行结束");
@@ -197,7 +207,9 @@ public class DemoApplication {
 
 输出先后不固定。只能确认代码进行了让步提示，不能由一次打印顺序推导调度保证。
 
-## wait 与 notify：业务条件必须自己保存
+## 用 wait 等待业务条件
+
+### 条件决定能否继续，通知让线程重新检查
 
 wait 要求持有目标对象监视器，等待期间释放这个监视器，返回前重新取得。notify/notifyAll 不释放通知者的锁，也不保证等待者马上执行。下面把 ready 与通知放在同一个同步边界内，通知先发生也不会丢失状态。
 
@@ -245,7 +257,11 @@ public class DemoApplication {
 }
 ```
 
-Worker 在观察到 ready 后结束。sleep 只拉开演示间隔，正确性由监视器和 while 条件保证；时间戳不是等待时长承诺。
+### 通知先发生时，为什么也能继续
+
+如果 main 先把 `ready` 设为 true，Worker 后来取得锁时会直接跳过 while；如果 Worker 先等待，通知会让它重新竞争锁，再检查 ready。两种顺序都依靠同一个状态变量，因此不需要猜测谁先运行。
+
+`while` 还覆盖虚假唤醒，以及醒来后条件又不满足的情况。示例中的 sleep 只拉开演示间隔，时间戳不是等待时长承诺。
 
 ## 未捕获异常处理器：最后的报告入口
 
@@ -274,20 +290,6 @@ public class DemoApplication {
 ```
 
 故意执行 1 / 0 后，输出“线程实例的异常处理器”。删除实例处理器才会沿线程组默认路径找到全局处理器。
-
-## Java 8 的 join 循环解释了等待条件
-
-[OpenJDK 8u202-b08 Thread](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/Thread.java) 使用目标线程对象的监视器反复检查 isAlive。无超时分支的核心是：
-
-```java
-while (isAlive()) {
-    wait(0);
-}
-```
-
-执行 wait 的是调用 join 的线程；this 是被等待的目标对象。线程终止时 JVM 配合通知，但循环仍需要应对其他通知和虚假唤醒。这个摘录解释历史实现，不要求应用在 Thread 对象上自建 wait/notify 协议，当前 JDK 也不必保持同一内部代码。
-
-中断是请求，超时是等待预算，通知是重新检查机会。需要确保某件业务工作完成，应使用该工作的状态和完成协议，不能用 sleep、yield 或一次 getState 观察代替。
 
 ## 资料来源
 

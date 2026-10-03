@@ -1,5 +1,5 @@
 ---
-title: FutureTask
+title: FutureTask 如何连接任务执行、结果等待与取消
 date: 2019-12-28
 updated: 2026-10-03
 tags:
@@ -9,9 +9,11 @@ tags:
 domain: Java
 ---
 
-FutureTask 连接了两个不同角色：Runnable 提供执行入口，Future 提供结果、失败和取消句柄。创建 FutureTask 不会启动线程，get 也不会替调用者执行任务；普通构造后提交的用法，需要 run 被执行或任务被取消，等待者才可能观察到终止状态；子类还可以通过受保护的完成方法发布结果。
+把计算报表的代码包装成 FutureTask，随后调用 `get()`，程序却一直等着：任务对象已经创建，为什么还没有结果？因为创建任务、执行任务和等待结果是三个动作。FutureTask 同时提供 `Runnable` 的执行入口与 `Future` 的结果句柄，但它不会替调用者启动线程。
 
-下面先用一个同步执行和一个新线程执行的例子区分这些角色，再按执行、发布、等待和取消分析 [OpenJDK 8u202-b08 源码](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/FutureTask.java)。完整用法示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。内部源码仍按 OpenJDK 8u202-b08 研究，不能把旧字段布局当作新版 JDK 的实现承诺。
+更容易混淆的是取消。`cancel(true)` 返回成功后，`get()` 可以立刻报告取消，而计算代码仍可能继续运行。要解释这些行为，需要把任务体的执行进度与结果的发布状态分开来看。
+
+下面先用一个同步执行和一个新线程执行的例子区分这些角色，再按执行、发布、等待和取消分析 [OpenJDK 8u202-b08 源码](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/FutureTask.java)。完整用法示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。源码分析以 OpenJDK 8u202-b08 为准，用法示例验证的是 JDK 25 的公共 API；两个版本的内部字段布局不必相同。
 
 ## 先确定谁执行任务，谁等待结果
 
@@ -55,9 +57,7 @@ public class Test {
         }, person);
 
 
-        // 直接调用FutureTask的run方法，注意这种使用方式阻塞的是当前执行线程，
-        // 也就是main线程，实际使用中应该使用线程池或者通过new Thread(java.lang.Runnable)
-        // 这种方式来提交任务，不然的话异步任务就没有“异步的意义”了
+        // 直接调用 run，任务就在 main 线程执行；这里用它与 task2 作对照。
         task1.run();
 
         int num1 = task1.get().num;
@@ -84,7 +84,9 @@ public class Test {
 
 Callable 自己返回结果；Runnable 没有返回值，因此另一个构造器使用调用者给定的 result 对象。示例中任务修改这个对象，get 正常返回后读取 num。Future 的内存一致性契约保证任务中的动作对成功取得结果之后的动作可见，不要求给 num 再加 volatile。
 
-## 状态机区分任务执行与结果发布
+## 一次计算怎样变成可读取的结果
+
+### NEW 包含尚未启动和正在执行
 
 | 状态 | 含义 |
 | --- | --- |
@@ -104,9 +106,11 @@ NEW → CANCELLED
 NEW → INTERRUPTING → INTERRUPTED
 ```
 
-state 是 volatile；outcome 存放正常值或异常；runner 记录执行线程；waiters 是等待 get 的线程构成的单向栈。把 NEW 解释成“任务尚未开始”会直接误解运行中取消的行为。
+可以把这几个字段对应到报表任务：`runner` 记录正在计算的线程，`outcome` 将来保存报表或失败原因，`waiters` 收集等待报表的调用者。`state` 是 volatile，负责区分结果是否已经发布。
 
-## run：同一个任务体最多由一个执行者进入
+计算最耗时的阶段也可以一直处于 NEW。它表达的是“还没有确定最终结果”，所以此时取消仍能参与竞争。
+
+### run 取得执行权，set 取得结果发布权
 
 run 同时检查 state 和 runner。CAS 设置 runner 防止两个线程同时执行任务体；随后再次检查 NEW，避免与取消竞争后仍无条件调用业务代码。
 
@@ -155,7 +159,9 @@ protected void set(V v) {
 
 run 的 finally 清空 runner，并与正在发送的取消中断协调。这里的运行线程可以来自普通 Thread，也可以来自线程池；FutureTask 控制的是一次任务，不是线程的整个生命周期。
 
-## get：等待终止状态，再解释 outcome
+## 调用者怎样等待结果
+
+### awaitDone 在检查状态后安排等待
 
 get 先读取状态；NEW 或 COMPLETING 还不能报告最终结果，因此进入 awaitDone。多个线程等待同一个 FutureTask 是正常用法。
 
@@ -170,7 +176,11 @@ public V get() throws InterruptedException, ExecutionException {
 
 awaitDone 的循环依次处理：调用者中断、已终止状态、COMPLETING 发布窗口、构造并 CAS 压入 WaitNode，最后才 park 或 parkNanos。唤醒后重新读取 state，不能因为 park 返回就直接读取 outcome。
 
-finishCompletion 原子地取走等待者栈，为每个等待线程 unpark，随后调用 done 钩子并清除 callable 引用。等待者可能在不同时间重新获得 CPU；结果不会因“先唤醒谁”而改变。
+报表计算完成后，`finishCompletion` 原子地取走等待者栈，为每个等待线程 unpark，随后调用 done 钩子并清除 callable 引用。这里唤醒的是所有等待同一份结果的调用者，结果不会被第一个醒来的线程取走。
+
+### report 把最终状态转换为返回值或异常
+
+等待结束之后，`get` 还需要区分成功、失败和取消。`report` 负责这最后一步：
 
 ```java
 private V report(int s) throws ExecutionException {
@@ -193,7 +203,9 @@ private V report(int s) throws ExecutionException {
 
 ## cancel：Future 的取消与业务停止是两件事
 
-cancel 只有在成功把 NEW 改为取消状态时才返回 true。由于 NEW 包含执行中的任务，cancel(false) 可以在任务已开始后成功；执行中的业务代码可以继续，但 get 将报告 CancellationException。
+假设报表已经计算到一半，用户关闭了页面。此时任务仍可能是 NEW，`cancel(false)` 可以抢先把它改为取消状态，之后所有 `get()` 都报告 CancellationException。计算线程没有因此被中断，仍可能把剩余工作做完；只是完成时再也不能发布正常结果。
+
+这和 `set` 的 CAS 是同一场竞争：正常完成与取消只能有一方先改变 NEW。
 
 ```java
 public boolean cancel(boolean mayInterruptIfRunning) {
@@ -220,7 +232,7 @@ public boolean cancel(boolean mayInterruptIfRunning) {
 
 mayInterruptIfRunning 为 true 时请求中断 runner。中断是协作机制：任务阻塞在可中断操作时可能退出，纯计算或忽略中断的代码仍可能继续。成功取消也不回滚已经发送的请求、写入的文件或其他业务副作用。已完成状态下的失败取消直接返回 false。
 
-## runAndReset 为什么适合周期任务
+## 周期执行为何需要 runAndReset
 
 runAndReset 执行 callable，但正常完成时不发布结果，仍保留 NEW，返回是否具备再次执行的条件。异常会进入异常完成，取消也会使其不能继续。这不是一般调用者的重试 API，而是供 [ScheduledThreadPoolExecutor](/scheduled-thread-pool/) 等内部周期协议使用的受保护入口。
 

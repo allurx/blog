@@ -18,6 +18,12 @@
 .prose p {
   margin: 1.3em 0;
 }
+.prose h1 {
+  margin: 2em 0 .9em;
+  font-size: 1.7em;
+  line-height: 1.45;
+  font-weight: 650;
+}
 .prose h2 {
   margin: 2em 0 .9em;
   padding-bottom: .55em;
@@ -48,7 +54,7 @@
   font-weight: 500;
   color: var(--muted);
 }
-.prose :is(h2, h3, h4, h5, h6) {
+.prose :is(h1, h2, h3, h4, h5, h6) {
   scroll-margin-top: 0;
 }
 .prose img {
@@ -280,6 +286,9 @@
   .prose {
     font-size: 1rem;
   }
+  .prose h1 {
+    font-size: 1.5em;
+  }
   .prose h2 {
     font-size: 1.3em;
   }
@@ -305,7 +314,7 @@
     font-size: 11pt;
     line-height: 1.65;
   }
-  .prose :is(h2, h3, h4, h5, h6) {
+  .prose :is(h1, h2, h3, h4, h5, h6) {
     break-after: avoid;
   }
   .code-block {

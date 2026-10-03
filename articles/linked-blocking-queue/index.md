@@ -1,5 +1,5 @@
 ---
-title: LinkedBlockingQueue
+title: LinkedBlockingQueue 如何用两把锁协调生产与消费
 date: 2020-01-04
 updated: 2026-10-03
 tags:
@@ -11,7 +11,9 @@ tags:
 domain: Java
 ---
 
-LinkedBlockingQueue 是可指定容量的 FIFO 阻塞队列。它把入队与出队分别交给两把锁，共享计数和条件通知连接两侧，因此一个生产者入队与一个消费者出队可以并行；这并不意味着内部字段都可以无锁访问。
+队列里还剩两个任务时，生产者向尾部放入新任务，消费者从头部取走旧任务。这两个动作操作的是不同位置，LinkedBlockingQueue 因而为入队和出队分别安排一把锁，让两侧有机会并行。
+
+麻烦出现在边界：队列从空变为非空时，要通知消费者；从满变为未满时，要通知生产者。贯穿源码的主线就是如何用同一个原子计数，把两把锁下的变化连接起来。
 
 本文按存储不变量、入队、出队和批量操作阅读 [OpenJDK 8u202-b08 实现](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/LinkedBlockingQueue.java)，最后给出有限生产消费程序。先了解 [BlockingQueue 契约](/blocking-queue/) 与 [Condition](/condition/)。完整用法示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。
 
@@ -31,7 +33,9 @@ capacity 是容量上限，AtomicInteger count 是当前元素数。无参构造
 
 count 的原子读写既协调容量转换，也参与节点内容的可见性。它与锁共同构成协议，不能因为计数是 AtomicInteger 就把其他链表读写随意移到锁外。
 
-## put：持入队锁等待容量，再发布新节点
+## 入队与出队怎样跨锁协作
+
+### put 先接上尾节点，再增加计数
 
 ```java
 public void put(E e) throws InterruptedException {
@@ -59,9 +63,11 @@ public void put(E e) throws InterruptedException {
 
 入队把旧 last.next 指向新节点，再更新 last。随后 getAndIncrement 返回的是旧计数 c：若 c 为零，本次完成从空到非空的转换，需要跨到 takeLock 一侧通知消费者。
 
-put 内部还在 c + 1 小于 capacity 时通知 notFull。这是级联通知：多个生产者可能已在 await 中释放 putLock 并等待；消费者从满队列移走一个元素后先唤醒一个生产者，醒来的生产者发现仍有容量，再把机会向后传递。独占锁限制同时执行受保护代码的线程数，不限制已经等待的线程数。
+再看 `c + 1 < capacity` 这个分支。假设容量为 4，几个生产者都因队列满而等待，消费者连续取走了两项。第一次从满变为未满时会唤醒一个生产者；它放入一项后，如果仍有空位，就通过 `notFull.signal()` 唤醒下一个。这种级联通知把剩余容量继续交给等待者。
 
-## take：移动哨兵，按计数转换通知生产者
+多个生产者能够同时等待，是因为 `await()` 会释放 putLock。独占锁限制的是正在临界区里工作的线程数，而不是等待队列里的人数。
+
+### take 取出元素，再判断是否释放了容量
 
 ```java
 public E take() throws InterruptedException {
@@ -103,23 +109,25 @@ private E dequeue() {
 
 旧计数 c 大于 1，说明本次之后仍有元素，可以级联通知另一个消费者。只有 c 等于 capacity 时，本次才完成从满到未满的转换，需要跨锁通知生产者；此前未满不表示绝对没有等待者，其他通知由对应侧继续传播。
 
-## offer 与 poll 的区别是等待政策
+## 从队列机制回到 API 选择
+
+### offer、poll 与阻塞操作的等待政策
 
 无超时 offer 在当前无法插入时返回 false，poll 在当前无元素时返回 null；带超时版本按预算等待；put、take 等待直到条件满足或响应中断。它们复用相近的链表和计数结构，却不具有相同的等待契约。
 
 先 remainingCapacity 再 offer、先 isEmpty 再 take，都不是一个原子检查。并发下应依赖实际操作结果；需要“查看后执行”的额外业务约束时，必须找到明确的共同同步边界。
 
-## remove 为什么同时取得两把锁
+### remove 需要同时保护头尾链接
 
 remove(Object) 沿链寻找首个 equals 相等的元素，并可能修改中间链接或 last。只持入队锁或出队锁都不足以覆盖这些修改，所以 fullyLock 按 putLock、takeLock 的顺序加锁。
 
 unlink 清除 item，跳过节点；删除尾节点时还更新 last，并在满到未满时通知生产者。这里删除的是一个元素，不是删除所有相等元素。
 
-## drainTo 不提供跨集合事务
+### drainTo 只维护队列自身的一致性
 
 drainTo 在 takeLock 下决定本次最多转移数量，逐个调用目标集合的 add，再清空相应节点。目标 add 失败时，finally 仍按已经转移的数量更新 head、count 和通知状态，保持队列自身不变量。
 
-不能因此说整个转移是“全成功或全失败”：目标集合可能已经收到部分元素，且它的线程安全不是队列替它保证的。maxElements 小于等于零返回零；目标不能为 null 或队列自身。完整的异常路径和迭代行为见固定版本源码。
+例如目标集合接收第三项时抛异常，前两项可能已经进入目标集合。队列会按实际转移数量修正自己的状态，但不会替目标集合回滚。这也意味着目标集合的线程安全需要由调用方保证。maxElements 小于等于零返回零；目标不能为 null 或队列自身。完整的异常路径和迭代行为见固定版本源码。
 
 ## 用有限任务观察生产与消费
 

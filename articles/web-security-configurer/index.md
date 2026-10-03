@@ -9,9 +9,11 @@ tags:
 domain: Spring
 ---
 
-WebSecurityConfigurerAdapter 把应用的安全规则、认证管理器和 HttpSecurity 组合起来，再让 WebSecurity 构建最终过滤入口。理解这个适配器的关键，是区分本地认证配置、全局认证配置和单条 HTTP 安全链。
+继承 `WebSecurityConfigurerAdapter` 后，会看到三个同名的 `configure` 方法。一个接收 `HttpSecurity`，一个接收 `WebSecurity`，还有一个接收 `AuthenticationManagerBuilder`。把代码写进不同的方法，会改变完全不同的部分。
 
-本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的历史 API。适配器属于该版本的配置方式，不是当前新项目的推荐入口。运行基线见[基本概念](/spring-security-basics/)，固定实现见 [WebSecurityConfigurerAdapter 5.1.5](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/configuration/WebSecurityConfigurerAdapter.java)。
+下面从这三个入口出发，沿 `init()` 和 `getHttp()` 追踪适配器如何准备认证能力，再把单条 HTTP 安全链交给整体构建器。
+
+本文以 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的适配器 API 为分析范围，配置方式与调用顺序均限定于这一版本。运行基线见[基本概念](/spring-security-basics/)，固定实现见 [WebSecurityConfigurerAdapter 5.1.5](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/configuration/WebSecurityConfigurerAdapter.java)。
 
 文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
@@ -25,13 +27,19 @@ WebSecurityConfigurerAdapter 把应用的安全规则、认证管理器和 HttpS
 
 它们只是同名重载，不能因为都叫 configure 就推断执行阶段和作用相同。HttpSecurity 的构建结果是单条 SecurityFilterChain，WebSecurity 则组合这些链为 FilterChainProxy。
 
-## Boot 的默认子类为什么什么都不写
+## 一份适配器配置怎样进入过滤链
+
+即使应用没有覆盖任何方法，适配器也能提供一组默认规则。先看它从哪里来，再看启动时如何使用这些规则。
+
+### Boot 提供默认适配器
 
 缺少自定义适配器且满足 Servlet 条件时，SpringBootWebSecurityConfiguration 提供 DefaultConfigurerAdapter。它继承父类默认行为，不需要覆盖方法就能得到要求认证、表单登录与 HTTP Basic 等起步配置。
 
 应用提供自己的适配器 Bean 后，Boot 的默认适配器退让；但 Security 的其他装配职责并不因此全部消失。[默认适配器配置源码](https://github.com/spring-projects/spring-boot/blob/v2.1.5.RELEASE/spring-boot-project/spring-boot-autoconfigure/src/main/java/org/springframework/boot/autoconfigure/security/servlet/SpringBootWebSecurityConfiguration.java)
 
-## init 把 HttpSecurity 加到 WebSecurity
+### init 登记单条链的构建器
+
+`init()` 先取得 HttpSecurity，再把它加入 WebSecurity。下面登记的 `postBuildAction` 留到构建完成后执行，所以此刻还没有可供请求使用的成品链。
 
 ```java
 public void init(final WebSecurity web) throws Exception {
@@ -48,7 +56,7 @@ public void init(final WebSecurity web) throws Exception {
 
 getHttp 取得本适配器的单条链构建器；addSecurityFilterChainBuilder 把它加入整体构建计划。postBuildAction 在链已生成后取得 FilterSecurityInterceptor，供整体 Web 权限查询等协作使用。整个过程发生在启动构建阶段，没有在此执行某个用户请求。
 
-## getHttp 先准备共享状态，再应用 HTTP 规则
+### getHttp 先准备认证能力，再应用 HTTP 规则
 
 首次调用 getHttp 时，适配器依次完成：
 
@@ -76,7 +84,11 @@ protected void configure(HttpSecurity http) throws Exception {
 
 因此，禁用基础默认项与覆盖 configure(HttpSecurity) 是不同操作。显式禁用默认项需要理解缺少哪些职责，不能只为了得到更短的过滤器列表而使用。
 
-## 覆盖认证配置时使用传入的本地 builder
+## 认证管理器从哪里来
+
+适配器可以使用自己配置的认证管理器，也可以使用全局配置的结果。这一选择由下面的标记控制。
+
+### 本地配置与全局配置如何选择
 
 父类默认的 configure(AuthenticationManagerBuilder) 只设置 disableLocalConfigureAuthenticationBldr 标记，表示本地未提供认证配置，随后改从全局 AuthenticationConfiguration 取得管理器。子类覆盖并配置传入的 auth 时，通常不会调用这个默认实现，便由本地 builder 构建。
 
@@ -99,9 +111,9 @@ protected AuthenticationManager authenticationManager() throws Exception {
 
 这个分支也解释了为什么重写方法后又调用 super 可能改变预期：super 的作用是设置切换标记，不是自动合并一套默认用户配置。最终以标记与 builder 状态为准，不能反过来说“重写方法就不使用传入的 builder”。
 
-## 暴露 Bean 与内部持有对象不是一回事
+### 需要其他 Bean 使用时，显式暴露对象
 
-authenticationManagerBean 和 userDetailsServiceBean 提供把相应结果暴露为 Bean 的入口，历史用法通常由子类覆盖并添加 @Bean。适配器内部持有的 HttpSecurity、认证 builder 等字段，并不因为被创建就自动成为独立容器 Bean。
+authenticationManagerBean 和 userDetailsServiceBean 提供把相应结果暴露为 Bean 的入口，该版本通常由子类覆盖并添加 @Bean。适配器内部持有的 HttpSecurity、认证 builder 等字段，并不因为被创建就自动成为独立容器 Bean。
 
 默认密码编码器还会延迟查找应用提供的 PasswordEncoder，没有时使用 DelegatingPasswordEncoder；它的存储格式见[认证管理器分析](/authentication-manager/)。
 

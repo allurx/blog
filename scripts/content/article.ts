@@ -3,7 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Marked } from 'marked';
 import { parse } from 'yaml';
 import { summarizeMarkdown } from '../markdown/text.ts';
 
@@ -85,9 +84,5 @@ export function parseArticle(markdown: string, filePath: string, id: string): Ar
 
   const body = markdown.slice(match[0].length);
   if (!body.trim()) throw new Error(filePath + ': 正文为空');
-  const parser = new Marked();
-  parser.walkTokens(parser.lexer(body), token => {
-    if (token.type === 'heading' && token.depth === 1) throw new Error(filePath + ': 正文标题应从二级标题开始');
-  });
   return { title, date, updated, id, url, domain, tags, markdown: body, filePath, summary: summarizeMarkdown(body), assets: [] };
 }

@@ -11,11 +11,15 @@ tags:
 domain: Java
 ---
 
-ScheduledThreadPoolExecutor 安排的是任务最早可以执行的时间，不是实时执行保证。固定频率按预定时间序列计算下一轮，固定延迟从上次完成后再计时；同一个周期任务不会重叠，某轮抛出异常会阻止后续正常周期。
+任务设成每两秒执行一次，实际每次却要工作四秒：下一轮会并发启动、排队追赶，还是等这轮完成后再计时？答案取决于选择的是固定频率还是固定延迟。`ScheduledThreadPoolExecutor` 为它们计算不同的下一次触发时间，但同一个周期任务都不会重叠执行。
 
-本文先通过有限实验比较两种周期，再分析 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/ScheduledThreadPoolExecutor.java) 中的任务包装、最小堆与 Leader-Follower 等待。需要理解 [线程池执行流程](/thread-pool-internals/) 和 [FutureTask 状态](/future-task/)。完整用法示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。内部源码仍按 OpenJDK 8u202-b08 研究，不能把旧字段布局当作新版 JDK 的实现承诺。
+先观察这个小例子，再看实现怎样保存时间、重新入队和等待队头，就能把“设定周期”与“实际开始时间”的差异连起来。
 
-## 用有限实验比较两种周期
+内部实现以 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/ScheduledThreadPoolExecutor.java) 为准；前置知识是 [线程池执行流程](/thread-pool-internals/) 和 [FutureTask 状态](/future-task/)。完整用法示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。公开调度行为与具体版本的内部字段分别说明。
+
+## 工作耗时超过周期时会发生什么
+
+### 只保留一个任务，观察三轮执行
 
 先只运行一种周期任务，以免其他任务和线程数量干扰观察。每次工作休眠约 4 秒，周期或延迟设为 2 秒，共观察三次执行：固定频率的第二次任务会因第一次尚未完成而迟到；固定延迟则从每次完成后再等约 2 秒。输出记录相对程序起点的时间，包含调度误差，不是实时保证。
 
@@ -91,7 +95,7 @@ public class ScheduledThreadPoolExecutorDemo {
 
 rate 模式的前三次开始时间通常接近 1、5、9 秒；delay 模式通常接近 1、7、13 秒。这是由任务耗时与调度公式推导的观察范围，实际以本机打印结果为准。固定频率可能在主线程取消前开始第四次执行，因此边界处可能多一条“开始”记录；取消可以中断该次休眠，不会让同一周期任务重叠运行。
 
-这次在上述环境中观察到以下记录。rate 的第四条开始记录展示了取消与下一轮开始之间的竞争，不代表并行执行：
+上述环境的一组运行记录如下。rate 的第四条开始记录展示了取消与下一轮开始之间的竞争，不代表并行执行：
 
 ```text
 rate
@@ -115,7 +119,7 @@ delay
 一次性调度则使用 `schedule(Runnable, delay, unit)` 或 `schedule(Callable, delay, unit)`：前者的 Future 在正常完成后返回 null，后者返回 Callable 的结果。周期 Future 在正常执行每一轮时不会完成；发生异常、取消或执行器终止相关处理后，调用者才会观察到终止状态。需要读取失败原因时保存 Future 并处理 get 抛出的 ExecutionException。
 
 
-## 四种调度入口，组合成两类执行协议
+### 一次性任务与周期任务怎样报告完成
 
 | 入口 | 下一次执行的安排 | 正常完成后的 Future |
 | --- | --- | --- |
@@ -126,7 +130,9 @@ delay
 
 负的一次性 delay 当作零处理；周期或固定延迟必须大于零。execute 和 submit 也被包装成延迟为零的一次性任务。调度时间已到但线程全忙时，任务仍需等待工作线程可用。
 
-## ScheduledFutureTask 同时保存结果和时间
+## 任务执行后怎样重新计算时间
+
+### ScheduledFutureTask 同时保存结果与触发时刻
 
 内部任务继承 FutureTask 并实现 RunnableScheduledFuture，组合了 Runnable 执行入口、Future 结果句柄、Delayed 剩余时间和 isPeriodic 标记。公开调用者通常拿到 ScheduledFuture，不承担执行任务的责任。
 
@@ -140,7 +146,7 @@ delay
 
 getDelay 用 time - now 计算剩余时间。比较两个内部任务时先比较触发时刻，时刻相同再比较序号；不能把墙上时钟回拨直接套到这套相对时间机制。
 
-## 周期任务依靠 runAndReset 重新入队
+### 正常完成一轮后，runAndReset 才允许重新入队
 
 一次性任务使用 FutureTask.run 发布结果。周期任务使用 runAndReset，只有业务正常完成且没有取消时，才计算下一次触发时刻并重新加入队列。异常会让 Future 终止，因此周期不会静默继续。
 
@@ -166,15 +172,19 @@ private void setNextRunTime() {
 }
 ```
 
-固定频率保留预定时间序列，因此任务耗时超过周期后会迟到，后续可能紧接着执行，但不保证马上获得 CPU。固定延迟基于完成后的当前时刻，任务自身耗时会进入相邻开始时刻的间隔。
+对开篇例子，固定频率原本计划在第 1、3、5 秒开始。第一轮实际到第 5 秒才完成，`time += period` 算出的第二轮触发点已经过去，因此它重新入队后可以立即取得执行资格。固定延迟则在第 5 秒完成后重新加两秒，下一轮最早到第 7 秒才取得资格。
 
-## 为什么 maximumPoolSize 不起常规扩容作用
+这解释了输出中的时间差：固定频率保留原定时间序列，固定延迟让任务耗时进入相邻开始时间的间隔。取得资格后还需等待工作线程和 CPU，触发时间始终不是实时执行保证。
+
+## 延迟队列怎样决定由谁等待、何时取出
+
+### 无界队列使 maximumPoolSize 不承担常规扩容
 
 构造器使用无界 DelayedWorkQueue，maximumPoolSize 为 Integer.MAX_VALUE。队列不会因达到一个业务容量限制而拒绝 offer，所以普通 ThreadPoolExecutor 的“入队失败再扩容”路径不承担调度并发控制；正常并行度主要由 corePoolSize 决定。
 
 无界只表示没有配置固定上限，不表示内存无限。大量长延迟任务仍可能积压。取消任务默认也未必立即从延迟队列移除；需要该行为时了解 setRemoveOnCancelPolicy。关闭后是否继续一次性延迟任务或周期任务，则由相应关闭策略决定，不能只看 shutdown 是否已调用。
 
-## 最小堆如何选择最早到期的任务
+### 最小堆让最早触发的任务处在队头
 
 DelayedWorkQueue 用数组保存二叉最小堆。根节点是最早到期任务；节点 k 的父节点为 (k - 1) >>> 1，左右孩子为 2k + 1、2k + 2。只有 [0, size) 范围是有效堆，末尾空槽不参与比较。
 
@@ -236,9 +246,9 @@ private void siftDown(int k, RunnableScheduledFuture<?> key) {
 
 内部 ScheduledFutureTask 通过 heapIndex 可以 O(1) 定位，移除后恢复堆序仍是 O(log n)。被 decorateTask 包装成其他任务类型时，定位可能退化为线性扫描；不能把未包装任务的定位复杂度推广到所有任务。
 
-## Leader-Follower 避免所有空闲线程一起定时等待
+### 只让一个空闲线程按队头延迟定时等待
 
-队列为空时，线程在 available 上普通等待。队头尚未到期时，只选一个 leader 按队头延迟定时等待，其余线程等待通知；leader 返回后释放这个角色，必要时唤醒另一个等待者。
+假设有四个空闲工作线程，队头任务十秒后触发。如果四个线程都定时等待十秒，它们到时会一起争同一个队头。这里让一个线程作为 leader 按剩余时间等待，其余线程只等通知；leader 返回后释放这个角色，必要时唤醒另一个等待者。队列为空时，则全部在 `available` 上等待新任务。
 
 ```java
 public RunnableScheduledFuture<?> take() throws InterruptedException {

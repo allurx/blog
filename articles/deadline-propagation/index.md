@@ -40,80 +40,45 @@ childTimeout = max(0, remaining - responseReserve)
 
 预算耗尽后，调用方停止等待只是第一步。服务器应用仍要停止为该请求派生的活动；gRPC 官方指南也明确把清理已启动工作留给应用负责。数据库查询、远程调用和长循环必须各自支持超时或检查取消信号，否则调用者已经返回错误，后台工作仍可能继续消耗资源。
 
-## 把预算传到真正的阻塞点
+## 沿一次调用把预算交到阻塞点
 
-一条可落地的处理链通常包含这些动作：
+### 排队也在消耗时间
 
-1. **入口建立预算。** 从客户端 deadline、网关最大值和服务自身上限中取最严格者；缺少客户端期限时也设置服务默认上限。
-2. **每次开始工作前重算。** 任务可能已在事件循环、线程池或连接池中排队，不能沿用入队时算出的固定 timeout。
-3. **为收尾留出余量。** 从剩余预算中扣除序列化、提交结果、释放资源和网络回传的保守余量；余量应由测量得出，而非永久写死。
-4. **传给实际阻塞点。** HTTP 读取、数据库语句、锁等待、消息确认和重试退避都应取不超过剩余预算的上限。只限制最外层 Future，不能约束底层资源占用。
-5. **预算不足时停止接纳。** 如果剩余时间小于某操作的最小有用窗口，返回明确的 deadline/timeout 结果，避免进入下游后再制造超时。
-6. **派生工作继承预算。** 并行兄弟调用共享原截止约束；某个调用失败是否取消其他调用取决于聚合语义，但不能给每个兄弟重新发一整份串行预算。
+入口先从客户端期限、网关限制和服务自身上限中取最严格的一项。开篇的请求得到 1 秒预算后，并不代表服务 A 真正开始工作时仍有 1 秒：鉴权和排队已经花掉 250 ms，它此时只能拿到约 750 ms。
 
-重试尤其容易破坏端到端边界。每次尝试前应重新读取剩余时间，并从中同时容纳退避与下一次调用；若只按“最多重试三次”而不看总预算，最坏等待时间会随尝试次数成倍增长。对有副作用的请求，即使调用方因 deadline 返回失败，也不能据此断定服务端没有提交，重试必须另有幂等或结果查询机制。
+因此，剩余预算应在实际开始工作前重算。如果在入队时计算一次 timeout，在线程池里又等了 200 ms，出队后继续使用原值，就把这段等待漏算了。有界队列也不会自动删除过期任务，工作线程取到任务后仍需判断它是否还有执行价值。
+
+### 调数据库前，再扣除已经花掉的时间
+
+服务 A 处理了 600 ms 后，剩余预算是 150 ms。若编码响应与回传需要预留 20 ms，数据库只能使用约 130 ms。这里的 20 ms 用于演示，真实余量要根据运行数据选择；预留太少来不及收尾，太多又会过早拒绝本可完成的请求。
+
+这个值最终要传到实际等待的位置，例如 HTTP 请求、数据库语句或锁获取。只在外层 `Future` 上等 130 ms，可能让调用方按时返回，却仍把查询留在后台。相关差别见 [CompletableFuture 超时](/completablefuture-timeout/)和[连接池与查询超时](/connection-pool-timeout/)。
+
+### 重试与并行调用继续使用原来的期限
+
+假设数据库调用失败后还剩 80 ms，退避要等 50 ms，那么下一次尝试至多剩约 30 ms，不能重新获得 130 ms。如果这不足以完成一次有用查询，就不应只因为“重试次数还没用完”而继续发出请求。
+
+并行子调用则在同一时间窗口内消耗预算，不必把总时长机械地平均分给每个分支。但它们仍然受同一截止约束；一个分支失败后是否取消其他分支，由结果聚合规则决定。对于有副作用的重试，还必须另外处理提交结果未知，期限传播本身不提供幂等保证。
 
 ## 用两个时钟起点演示跨进程转换
 
-将完整代码保存为 `DeadlineBudgetDemo.java`，使用 JDK 25 LTS 运行 `java DeadlineBudgetDemo.java`，无需第三方依赖。可控时钟固定每一步耗时：网关从 1 秒中消耗 250 ms，把 750 ms 传给下游；下游使用不同的时钟起点，处理 600 ms 后剩 150 ms，再预留 20 ms。为隔离预算计算，示例把网络传输耗时设为零。
+下载 [DeadlineBudgetDemo.java](./DeadlineBudgetDemo.java)，使用 JDK 25 LTS 运行 `java DeadlineBudgetDemo.java`，无需第三方依赖。可控时钟固定每一步耗时：网关从 1 秒中消耗 250 ms，把 750 ms 传给下游；下游使用不同的时钟起点，处理 600 ms 后剩 150 ms，再预留 20 ms。为隔离预算计算，示例把网络传输耗时设为零。
+
+完整程序见 [DeadlineBudgetDemo.java](./DeadlineBudgetDemo.java)。预算对象保存起始读数和总时长，剩余时间由差值计算：
 
 ```java
-import java.time.Duration;
-import java.util.Objects;
-import java.util.function.LongSupplier;
+Duration remaining() {
+    long elapsed = clock.getAsLong() - started;
+    return Duration.ofNanos(elapsed >= timeout ? 0 : timeout - elapsed);
+}
 
-public final class DeadlineBudgetDemo {
-    static final class Budget {
-        private final LongSupplier clock;
-        private final long started;
-        private final long timeout;
-
-        Budget(Duration timeout, LongSupplier clock) {
-            this.clock = Objects.requireNonNull(clock);
-            this.timeout = timeout.toNanos();
-            if (this.timeout <= 0) throw new IllegalArgumentException("timeout");
-            this.started = clock.getAsLong();
-        }
-
-        Duration remaining() {
-            long elapsed = clock.getAsLong() - started;
-            return Duration.ofNanos(elapsed >= timeout ? 0 : timeout - elapsed);
-        }
-
-        Duration childTimeout(Duration reserve) {
-            if (reserve.isNegative()) throw new IllegalArgumentException("reserve");
-            return Duration.ofNanos(Math.max(0, remaining().toNanos() - reserve.toNanos()));
-        }
-    }
-
-    static final class ManualClock implements LongSupplier {
-        private long nanos;
-        ManualClock(long origin) { nanos = origin; }
-        public long getAsLong() { return nanos; }
-        void advanceMillis(long millis) { nanos += Duration.ofMillis(millis).toNanos(); }
-    }
-
-    public static void main(String[] args) {
-        ManualClock gatewayClock = new ManualClock(10_000);
-        Budget gateway = new Budget(Duration.ofSeconds(1), gatewayClock);
-        gatewayClock.advanceMillis(250);
-        Duration wireBudget = gateway.remaining();
-
-        ManualClock serviceClock = new ManualClock(-900_000);
-        Budget service = new Budget(wireBudget, serviceClock);
-        serviceClock.advanceMillis(600);
-        Duration database = service.childTimeout(Duration.ofMillis(20));
-        if (wireBudget.toMillis() != 750 || database.toMillis() != 130) {
-            throw new AssertionError("budget calculation");
-        }
-        System.out.printf("wire=%dms remaining=%dms database=%dms%n",
-                wireBudget.toMillis(), service.remaining().toMillis(), database.toMillis());
-
-        serviceClock.advanceMillis(200);
-        if (!service.remaining().isZero()) throw new AssertionError("expired budget");
-    }
+Duration childTimeout(Duration reserve) {
+    if (reserve.isNegative()) throw new IllegalArgumentException("reserve");
+    return Duration.ofNanos(Math.max(0, remaining().toNanos() - reserve.toNanos()));
 }
 ```
+
+这里摘录的是附件中 `Budget` 的两个方法。`clock` 在真实进程内可以取 `System::nanoTime`；示例传入可控时钟，让计算结果只由设定的耗时决定。
 
 在 Windows、Oracle JDK 25.0.2 LTS 下执行上述源文件，得到以下输出；程序中的检查会核对这些结果。
 
@@ -123,14 +88,10 @@ wire=750ms remaining=150ms database=130ms
 
 断言覆盖预算递减、预留余量和到期归零，未模拟网络、gRPC、数据库或真实时钟漂移。时钟必须单调前进，观测间隔和预算小于约 292 年；示例用差值计算持续时间，不比较两个 JVM 的绝对读数。
 
-## 把超时、容量和业务结果一起设计
+## 怎样发现预算在调用链中丢了
 
-**统一传播语义。** 在服务框架的请求上下文中保存预算对象，并由 HTTP/gRPC 客户端、数据库适配器、重试器和线程池任务读取。若框架原生支持 deadline 传播，优先沿用其语义；手写 header 时必须定义单位、上限、缺失值、负值和序列化精度，且不可把不可信客户端给出的超长时间直接当作资源承诺。
+只记录最后一条 timeout 日志，很难知道 1 秒花在了哪里。若网关交给服务 A 时还剩 750 ms，而数据库调用开始时只剩 130 ms，那么数据库收到的短期限可能完全合理；若它又收到 1 秒，则预算已经在中间某层被重置。
 
-**在边界处记录“剩余量”，而不只记录最终超时。** 建议采集入口预算、每跳接收时的剩余预算、队列耗时、下游调用耗时、预算不足而提前拒绝的数量，以及 deadline 之后仍运行的后台任务。这样才能区分“下游本身慢”和“上游已经花完大部分预算”。
+因此，观察入口预算、每跳接收时的剩余量、排队时长与下游耗时，比单独统计最终超时次数更容易定位问题。还应检查期限之后仍然运行的任务，确认取消有没有落到资源拥有者；任务已经过期时，释放相应接纳许可与上下文，避免它继续占用容量。
 
-**用延迟分布分配预算。** 子调用上限应参考真实的 p95/p99、网络开销和失败模式。串行步骤要分配总预算，并行步骤可以共享截止时间；不要简单把 1 秒平均分给四个步骤，也不要把每个步骤都设成 1 秒。预留余量过大可能造成过早失败，过小则来不及编码和回传，需要负载测试校准。
-
-**让容量控制认识 deadline。** 有界队列不会自动删除已经过期的任务。任务真正开始执行时再次检查预算；如果已过期，立即释放接纳许可与上下文。连接池等待、限流器排队和重试退避也要遵守同一个边界，避免把过期请求继续推向瓶颈。
-
-**明确超时后的业务状态。** 查询类操作通常可以停止等待；支付、写库、发消息等操作可能在客户端超时前后跨过提交点。返回 timeout 只说明调用方没有及时得到确定结果，不等于事务回滚。用幂等键、操作状态查询、Outbox 或补偿流程处理这种不确定性。
+框架原生支持 deadline 时，可以让请求上下文和客户端适配器沿用它的语义。自行定义 header 则需要说明单位、上限、缺失值与精度，并限制客户端给出的过长预算。无论采用哪条路径，真正要验证的都是同一件事：每个等待点拿到的，是当时剩余的时间，还是重新开始的一整段时间。

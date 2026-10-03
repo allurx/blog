@@ -8,11 +8,13 @@ tags:
 domain: Spring
 ---
 
-Spring 事务的传播行为回答的是“被调用的方法如何参与已有事务”，隔离级别回答的是“并发事务之间怎样观察数据”。要判断一次调用是否会回滚，还必须把代理入口、事务管理器和异常规则放在一起看，不能只记住几个传播常量。
+保存订单时，服务 A 调用服务 B 写入审计记录。A 随后失败，审计记录应该跟着回滚，还是独立保留？如果 B 写入失败，A 又应该继续还是一起失败？
 
-本文解释命令式事务，并以 **Spring Framework 5.2.5.RELEASE** 的 [TransactionAspectSupport](https://github.com/spring-projects/spring-framework/blob/v5.2.5.RELEASE/spring-tx/src/main/java/org/springframework/transaction/interceptor/TransactionAspectSupport.java) 为历史源码基线。讨论不包含响应式事务；不同数据库和事务管理器的资源能力也不完全相同。本文中的事务场景是按契约推导，不声称已在某个数据库上执行集成实验。
+这些选择决定了事务边界。Spring 的传播行为描述 B 如何参与 A 已有的事务；隔离级别则描述并发事务之间如何观察数据。下面沿 A 调用 B 的例子理解传播，再进入拦截器源码，解释提交和回滚发生在哪里。
 
-## 先区分属性、状态和拦截器上下文
+本文解释命令式事务，并以 **Spring Framework 5.2.5.RELEASE** 的 [TransactionAspectSupport](https://github.com/spring-projects/spring-framework/blob/v5.2.5.RELEASE/spring-tx/src/main/java/org/springframework/transaction/interceptor/TransactionAspectSupport.java) 为源码基线。讨论不包含响应式事务；不同数据库和事务管理器的资源能力也不完全相同。本文中的事务场景是按契约推导，不声称已在某个数据库上执行集成实验。
+
+## 事务调用涉及哪些对象
 
 | 类型 | 表达什么 |
 | --- | --- |
@@ -21,7 +23,7 @@ Spring 事务的传播行为回答的是“被调用的方法如何参与已有�
 | TransactionStatus | 当前事务执行状态，包含 rollback-only、保存点等操作能力 |
 | TransactionInfo | 拦截器维护的事务信息，用来恢复外层调用上下文 |
 
-TransactionStatus 不要求业务调用方直接持有底层连接；TransactionInfo 的清理也不等于物理事务已经提交。后面两个时序问题都来自这一区分。
+这些对象对应一次调用的不同阶段：先从注解取得属性，再让管理器建立或加入事务，最后用状态决定如何结束。`TransactionInfo` 额外保存拦截器自己的调用上下文，方便嵌套调用返回时恢复；它的清理与数据库提交是不同动作，后面的源码会展示这个顺序。
 
 ## 七种传播行为围绕当前事务展开
 
@@ -55,7 +57,11 @@ B 的事务可以与 A 独立提交或回滚，但 JDBC 场景中 A 的连接常
 
 保存点依赖 JDBC 驱动、数据库和事务管理器支持，不能把 NESTED 当作所有管理器都支持的通用能力。
 
-## 声明式事务先经过代理才会生效
+## 沿代理调用观察事务的开始与结束
+
+传播常量只有被事务拦截器读取，才会产生前面描述的行为。接下来沿调用顺序看它如何工作。
+
+### 代理入口取得事务属性
 
 默认代理模式下，外部经代理进入的方法调用由 TransactionInterceptor 处理；同一对象内部直接调用自己的另一个方法通常绕过代理。因此 A 内部的 `this.b()` 不会仅因为 B 有事务注解就自动开启新的传播边界。
 
@@ -67,7 +73,7 @@ return invokeWithinTransaction(invocation.getMethod(), targetClass, invocation::
 
 `invocation::proceed` 是方法引用。基类先处理事务，再调用后续拦截器及目标方法；业务的返回值或异常随后沿同一调用栈返回。[TransactionInterceptor 5.2.5 源码](https://github.com/spring-projects/spring-framework/blob/v5.2.5.RELEASE/spring-tx/src/main/java/org/springframework/transaction/interceptor/TransactionInterceptor.java)
 
-## 普通 PlatformTransactionManager 路径的顺序
+### 目标方法返回后，管理器决定提交或回滚
 
 下面摘录的是非响应式、非 CallbackPreferringPlatformTransactionManager 分支的主要顺序，省略 Vavr Try 等额外处理；它不是所有管理器共用的完整实现：
 
@@ -100,8 +106,10 @@ return retVal;
 
 源码摘录版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。完整分支应对照上述固定版本文件，不能用一个简化片段替代全部管理器契约。
 
-## 把业务要求转成可观察场景
+## 回到订单与审计的选择
 
-先决定 B 是否必须与 A 一起成功，还是需要独立提交，或仅需要局部回滚；再选择传播方式。验证时至少记录以下条件：调用是否经过代理、使用哪种管理器和数据库、异常在哪一层被捕获、最终哪些记录提交，以及连接如何占用。
+如果审计记录描述的是一笔已经成功保存的订单，让 A、B 使用 `REQUIRED` 参与同一个物理事务，便能一起提交或回滚。如果审计要记录失败尝试，允许订单回滚后记录仍在，则需要独立提交的边界；`REQUIRES_NEW` 可以表达这一点，但也要考虑额外连接与审计自身失败的处理。
 
-同一业务需求在自调用和跨 Bean 调用中可能得到不同结果；同一个传播常量在不支持保存点的管理器中也可能失败。事务注解只是入口，完整的因果链必须覆盖代理、管理器、资源和最终数据状态。[代理模式的边界](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)
+验证这两个方案时，主动让 A 在 B 返回后抛出符合回滚规则的异常，再从事务外查询两张表。前一种方案应不留下新增记录，后一种方案应只留下已独立提交的审计记录。这个观察比“两个 save 都执行到了”更能说明传播是否符合需求。
+
+调用是否经过代理、数据库是否支持保存点，仍会改变结果。[代理模式的边界](https://docs.spring.io/spring-framework/reference/data-access/transaction/declarative/annotations.html)

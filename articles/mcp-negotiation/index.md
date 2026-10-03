@@ -10,7 +10,9 @@ tags: ["MCP", "协议设计", "Agent"]
 
 本文以 **MCP 2026-07-28** 正式规范为基线，解释这次状态归属变化，以及同时连接新旧 Server 时应把兼容逻辑放在哪里。无状态化可以减少服务端对连接协商状态的依赖，但仍需处理认证、授权、缓存和长任务各自的生命周期。[MCP 2026-07-28 规范](https://modelcontextprotocol.io/specification/2026-07-28)
 
-## 协商上下文从连接移到请求
+## 两个服务实例为什么需要相同的请求上下文
+
+### 一次握手留下了什么状态
 
 MCP 中的 Host、Client、Server 是架构角色，不是协议本身：
 
@@ -32,7 +34,11 @@ MCP 中的 Host、Client、Server 是架构角色，不是协议本身：
 
 后续请求依赖这次握手留下的隐式上下文。Server 收到 `tools/list` 时，需要知道该连接此前协商了哪个版本、Client 支持什么能力。
 
-新版则把隐式状态显式化：
+设想 HTTP 请求由负载均衡转发到两个实例：A 处理了初始化，下一次 `tools/list` 却到了 B。如果 B 需要 A 保存的协商状态，就必须共享会话信息或维持请求归属。这说明连接级协商会对服务部署提出额外要求。
+
+### 每个请求带上本次处理所需的元数据
+
+新版把这些上下文放回请求：
 
 ```text
 请求
@@ -44,9 +50,11 @@ MCP 中的 Host、Client、Server 是架构角色，不是协议本身：
 
 任意 Server 实例都能从当前请求取得协议版本与 Client 能力，不必读取此前握手留下的协商状态；业务数据和授权检查仍按各自的规则处理。这就是该版本所说的自包含请求与每请求能力协商。[MCP 基础协议](https://modelcontextprotocol.io/specification/2026-07-28/basic)
 
-## 请求元数据、版本错误与能力发现
+## 读懂一个每请求协商的消息
 
-现代请求通过 `_meta` 携带以下标准元数据：
+### 标准元数据放在 params._meta 中
+
+2026-07-28 请求通过 `_meta` 携带以下标准元数据：
 
 * `io.modelcontextprotocol/protocolVersion`
 * `io.modelcontextprotocol/clientCapabilities`
@@ -76,6 +84,8 @@ MCP 中的 Host、Client、Server 是架构角色，不是协议本身：
 
 在 Streamable HTTP 中，部分元数据还会镜像到 HTTP Header，便于网关路由和检查；但消息体仍是事实来源。[MCP Transport 规范](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)
 
+### 对端识别协议但不支持这个版本
+
 如果 Server 不支持请求声明的版本，应返回 `UnsupportedProtocolVersionError`，并列出支持的版本：
 
 ```json
@@ -101,6 +111,8 @@ MCP 中的 Host、Client、Server 是架构角色，不是协议本身：
 
 `-32022` 表示对端识别了现代协议，版本不匹配应先在双方支持的现代版本中选择交集重试。对旧 Server 的探测与 `initialize` 回退另按传输约定处理，不能把普通业务错误直接解释成需要切换协议时代。
 
+### 需要了解服务能力时调用 server/discover
+
 Server 必须实现 `server/discover`；Client 可以但不必须预先调用它。Discovery 结果可一次返回：
 
 * `supportedVersions`
@@ -109,9 +121,9 @@ Server 必须实现 `server/discover`；Client 可以但不必须预先调用它
 * 使用指导
 * 缓存期限与作用域
 
-这避免了分别调用 `tools/list`、`resources/list`、`prompts/list` 来猜测 Server 能力。[MCP Server Discovery](https://modelcontextprotocol.io/specification/2026-07-28/server/discover)
+这样 Client 可以先了解 Server 提供哪类能力，再按需要查询具体列表。例如发现结果声明支持 tools，随后调用 `tools/list` 取得工具定义；发现能力和枚举内容承担不同职责。[MCP Server Discovery](https://modelcontextprotocol.io/specification/2026-07-28/server/discover)
 
-## 在 Client 边界统一构造请求
+## 把元数据构造放在协议 Client 里
 
 下面的 TypeScript 片段以 TypeScript 7.0.2、`strict` 类型检查和 ES2023 为基线，只展示请求形状，能力必须按 Client 实际实现配置；它不是完整 SDK，也没有覆盖传输、响应校验、扩展或重试。示例将请求的标准 `_meta` 交给协议层管理，不接受调用方同名字段覆盖：
 
@@ -176,7 +188,7 @@ const request = createRequest("tools-1", "tools/list", {});
 
 `JsonRpcId` 中的 `number` 对应协议允许的整数 ID，不能据此接受任意小数、`NaN` 或无穷大。完整协议层还应在运行时校验 ID，并确保同一发送方尚未结束的请求不会复用它；TypeScript 类型别名不能代替这些协议约束。[MCP 请求 ID 契约](https://modelcontextprotocol.io/specification/2026-07-28/basic#requests)
 
-工程中不应让每个业务调用手写这些元数据。应在 Transport 或协议 Client 层统一注入，以保持版本切换和能力配置的一致性。
+业务调用只需要表达“列出工具”或“调用某个工具”。把元数据集中在协议 Client 或 Transport 层，就能在一个位置调整版本与能力，同时让普通调用方继续使用同一语义接口。
 
 ## 新旧协议共存时的实现边界
 
@@ -192,13 +204,13 @@ Supported MCP versions:
 
 协议版本是日期标识，不应当作普通语义化版本号比较。例如，不能通过字符串大小推断两个实现一定兼容。
 
-### 将能力视为契约，而不是功能猜测
+### 能力声明与本次调用授权分别处理
 
 只有双方声明支持的能力才应被使用。Client 声明 `sampling`，表示它能够处理相关协议流程；这并不意味着 Server 可以绕过用户授权随意调用模型。
 
 能力协商回答的是“协议上能否处理”，授权回答的是“本次是否允许执行”，两者必须分层。
 
-### 隔离 Legacy 兼容逻辑
+### 确实要连接两代 Server 时再维护兼容入口
 
 只有确实需要同时支持两代协议时，才在协议 Client 中维护两套入口：现代请求的元数据处理，以及旧版初始化后的会话状态。工具调用方应使用同一语义接口，避免在每次调用中重复判断协议版本。具体是否需要独立适配类，取决于现有 SDK 和实现规模。
 

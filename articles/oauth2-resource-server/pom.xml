@@ -10,7 +10,7 @@
         <relativePath/>
     </parent>
     <groupId>io.allurx</groupId>
-    <artifactId>historical-resource-server-demo</artifactId>
+    <artifactId>resource-server-demo</artifactId>
     <version>1.0.0</version>
     <properties>
         <java.version>11</java.version>

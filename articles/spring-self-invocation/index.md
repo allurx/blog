@@ -12,7 +12,11 @@ tags: ["Spring", "Transaction", "AOP"]
 
 这个版本组合处在 Spring 官方列出的兼容范围内；升级已有项目时，还应一起核对 Jakarta API 与持久化实现。[Spring 版本与兼容范围](https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-Versions)
 
-## 事务注解取决于调用经过哪里
+## 同一个方法，为什么两种调用结果不同
+
+先看最容易复现误解的场景：控制器调用下单入口，入口再调用本类的保存方法。事务注解只写在保存方法上。
+
+### 外部进入代理，内部直接调用目标
 
 以下是接入现有应用的结构片段，假定已启用事务管理，Repository 与业务类型已由应用提供。本文没有运行数据库集成实验，后面的回滚与传播结果按代理契约推导。外部调用 `createOrder()` 后，`saveItem()` 上的注解不会为它单独建立事务边界：
 
@@ -49,36 +53,11 @@ OrderService Target → this.saveItem()
 
 如果 Repository 自己使用事务，部分数据库操作可能仍然成功执行，这会制造一种“`@Transactional` 好像生效了”的错觉；真正遇到多步写入和异常回滚时，问题才会暴露。
 
-`@Transactional` 本身只是元数据。它不会由 JVM 自动改变方法语义，也不会在编译后直接变成事务控制代码。
+### 事务控制由拦截器包围业务调用
 
-启用事务管理后，Spring 大致完成以下工作：
+`@Transactional` 提供事务属性，真正执行控制的是代理中的 `TransactionInterceptor`。它先读取传播、超时和回滚规则，让事务管理器准备资源，然后继续调用目标方法；目标返回或抛出异常后，再结束相应事务。
 
-1. 找到带事务元数据的 Bean。
-2. 为符合条件的 Bean 创建 AOP Proxy。
-3. 外部调用进入 Proxy。
-4. `TransactionInterceptor` 查找方法对应的事务属性。
-5. 根据传播级别决定新建、加入、挂起或不使用事务。
-6. 调用真正的目标方法。
-7. 根据返回或异常结果提交、回滚或恢复外层事务。
-
-核心调用关系可概括为：
-
-```text
-调用方
-  → Proxy
-    → TransactionInterceptor
-      → TransactionManager
-        → Target Method
-```
-
-self-invocation 实际路径则是：
-
-```text
-Target Method A
-  → Target Method B
-```
-
-由于没有经过 `TransactionInterceptor`，方法 B 上声明的事务属性不会被解释。
+这使业务代码可以专注于保存数据，但也意味着调用必须经过这个入口。`this.saveItem()` 已经发生在目标对象内部，前后没有新增的一层拦截器，自然也就没有重新读取注解的机会。
 
 这不是 `@Transactional` 特有的问题。默认 Proxy 模式下，基于 Spring AOP 实现的 `@Async`、`@Cacheable` 等功能也有相似边界。
 
@@ -165,6 +144,10 @@ private void saveItem(Order order) {
 ## 为逐条导入建立可见的事务边界
 
 ### 批量处理中的内部调用
+
+假设导入文件中的每条记录互不依赖：前十条已经成功，第十一条格式有误时，前十条仍应保留，后面的记录也要继续处理。这与整笔订单一起回滚的要求不同，需要让每条记录拥有自己的提交结果。
+
+下面的写法把注解放在循环内调用的方法上，仍会遇到同样的入口问题：
 
 ```java
 @Service
@@ -257,7 +240,7 @@ ImportService
 
 每次调用都经过 `RecordImporter` 的代理，`REQUIRES_NEW` 因而能够挂起外层事务并创建独立事务。
 
-### 可选：使用 TransactionTemplate
+### 在算法内部使用 TransactionTemplate
 
 若事务边界很小且拆分 Bean 会使领域结构更差，可显式控制：
 
@@ -290,13 +273,11 @@ public class ImportService {
 
 Spring 官方对 imperative flow 通常推荐使用 `TransactionTemplate`，对 reactive flow 使用 `TransactionalOperator`。[Spring Framework：编程式事务管理](https://docs.spring.io/spring-framework/reference/data-access/transaction/programmatic.html)
 
-## 验证事务行为并控制资源范围
+## 改完调用路径，还要观察提交结果
 
-### 根据业务边界选择声明式或编程式事务
+另一个 Bean 已经承担独立业务职责时，声明式事务能清楚地表达调用边界。如果只是算法内部需要短事务，`TransactionTemplate` 可以把控制与相关步骤放在一起。两种方式都应回到最初的业务要求，用实际提交结果判断是否正确。
 
-另一个 Bean 已经承担独立业务职责时，声明式事务能清楚地表达调用边界。如果只是一个算法内部需要短事务，强行拆分 Service 反而增加转发，`TransactionTemplate` 可以更直接。是否拆分应由职责和实际事务需求决定，不能仅为了经过代理制造空壳层。
-
-### 用集成测试验证回滚，而不是只看数据是否写入
+### 让第二步写入故意失败
 
 至少覆盖以下情况：
 
@@ -314,15 +295,13 @@ boolean active =
 
 但不应把这种检查散布到业务逻辑中作为事务控制方式。
 
-### 保持事务短小
+### 把连接留给需要事务的工作
 
-不要因为拆分 Bean 就把远程 HTTP 请求、文件解析或长时间计算全部放入事务。推荐流程通常是：
+批量导入中，读取文件和解析字段可以先完成，进入事务后再检查需要与写入保持一致的业务条件。这样一条数据库连接不会在等待文件或远程 HTTP 响应时一直被占着。
 
-1. 事务外完成远程查询和输入解析。
-2. 进入短事务执行一致性校验和数据库写入。
-3. 提交后通过事件或 Outbox 驱动外部副作用。
+如果提交后还要发送消息，应另行决定可靠性要求。内存事件回调适合允许丢失的通知；需要在进程失败后继续投递时，可以把 Outbox 记录与业务数据放在同一事务。
 
-### 谨慎捕获异常
+### 捕获异常会改变代理看到的结果
 
 即使代理正确生效，下面的写法也可能导致事务提交：
 

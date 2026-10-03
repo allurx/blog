@@ -1,5 +1,5 @@
 ---
-title: "Repeatable 注解"
+title: 可重复注解为什么需要容器
 date: 2019-10-29
 updated: 2026-10-03
 tags:
@@ -8,51 +8,29 @@ tags:
 domain: Java
 ---
 
-@Repeatable 允许同一种注解在同一元素上写多次，编译器用容器注解表示这些重复项。反射读取时应区分“元素上的容器”和“容器里的注解”，否则同一注解写一次与写两次可能得到完全不同的查询结果。
+一个注解写一次时，`getDeclaredAnnotation()` 能读到它；再加一个同类型注解，查询却返回 `null`。这并不意味着第二个注解覆盖了第一个，而是多个注解被放进了容器，原来的查询没有继续展开它。
 
-本文采用 Java 25 注解与反射契约。下面两个 Test 定义只依赖标准库，已在 Oracle JDK 25.0.2 下编译，并使用 javap 确认容器表示；它们用于 class 文件检查，没有 main。
+`@Repeatable` 把重复书写的语法与容器类型关联起来。先看容器如何表达数组，再看编译和反射怎样使用它，就能解释单个与多个注解的差别。
+
+本文采用 Java 25 注解与反射契约。下面的 `Test` 只依赖标准库，可在 Oracle JDK 25.0.2 下编译，并使用 `javap` 检查容器表示；它用于 class 文件检查，没有 `main`。
 
 ## 容器首先是一个普通注解
 
-在没有 @Repeatable 语法时，可以显式写出容器。容器的 value 返回元素注解数组：
+如果需要在一个类上记录两个整数，普通注解也能表达：先定义元素注解，再让另一个注解的 `value` 返回元素数组。使用处写成下面这样，定义见下一节的完整程序：
 
 ```java
-package io.allurx;
-
-import io.allurx.Test.MyAnnotation;
-import io.allurx.Test.RepeatableAnnotation;
-
-import java.lang.annotation.*;
-
-/**
- * @author allurx
- */
 @RepeatableAnnotation({@MyAnnotation(1), @MyAnnotation(2)})
-public class Test {
-
-    @Target(ElementType.TYPE)
-    @Retention(RetentionPolicy.RUNTIME)
-    @Documented
-    public @interface RepeatableAnnotation {
-
-        MyAnnotation[] value();
-    }
-
-    @Target(ElementType.TYPE)
-    @Retention(RetentionPolicy.RUNTIME)
-    @Documented
-    public @interface MyAnnotation {
-
-        int value();
-    }
+class Example {
 }
 ```
 
-这段程序可独立保存为 Test.java。它表明容器结构本身不依赖重复书写语法；反射直接查询 RepeatableAnnotation 可以取得容器，再读取 value。
+这时，类上直接出现的是 `RepeatableAnnotation`，内部才是两个 `MyAnnotation`。反射先取得容器、再读取 `value()`，就能拿到 1 和 2。容器结构本身不依赖重复书写语法。
 
-## @Repeatable 把重复语法连接到容器类型
+## 用 @Repeatable 省去使用处的容器写法
 
-下面在 MyAnnotation 上指定容器，使用处便可以重复写 MyAnnotation。另存到独立目录的 Test.java，避免与前一个同名类冲突。
+### 在元素注解上声明容器类型
+
+在 `MyAnnotation` 上指定容器后，使用处就能连续写两次 `MyAnnotation`。下面是完整定义，保存为 `Test.java`：
 
 ```java
 package io.allurx;
@@ -90,7 +68,7 @@ public class Test {
 
 容器还须符合语言规则：value 返回正确的注解数组，其他元素需要默认值，保留策略、目标范围以及 Documented、Inherited 等关系也有限制。不能只添加 @Repeatable 就任意选择一个注解作容器，具体规则见 JLS 9.6.3。
 
-## 编译后观察实际保存的结构
+### 编译器仍然用容器保存重复项
 
 ```shell
 javac -encoding UTF-8 -d out Test.java
@@ -112,7 +90,9 @@ javap -v -classpath out io.allurx.Test
 | getDeclaredAnnotation(MyAnnotation.class) | 可以取得 | 不展开容器，通常为 null |
 | getDeclaredAnnotationsByType(MyAnnotation.class) | 返回单元素数组 | 展开容器并返回全部元素 |
 
-需要按类继承查找时使用 getAnnotationsByType，并理解 @Inherited 与本类结果覆盖父类搜索的规则。完整运行程序见 [AnnotatedElement](/annotated-element/)，它同时对照六种查询，不需要应用依赖编译器内部实现类。
+如果消费者关心的是“这个类配置了哪些 `MyAnnotation`”，使用 `getDeclaredAnnotationsByType()` 就可以让单个和多个结果都进入同一条数组处理路径。只有需要研究容器本身时，才直接查询 `RepeatableAnnotation`。
+
+需要按类继承查找时使用 `getAnnotationsByType()`，并理解 `@Inherited` 与本类结果覆盖父类搜索的规则。完整运行程序见 [AnnotatedElement](/annotated-element/)，其中对照了六种查询。
 
 ## 资料来源
 

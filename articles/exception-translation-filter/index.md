@@ -9,7 +9,9 @@ tags:
 domain: Spring
 ---
 
-认证或授权失败最终需要变成浏览器能理解的响应。ExceptionTranslationFilter 负责把下游传播回来的安全异常交给合适的入口或拒绝处理器；它不验证密码，也不参与权限投票。
+访问同一个管理页面，未登录时会跳到登录页，登录后权限不足却会收到 403。两次请求都被授权规则拒绝，为什么响应不同？ExceptionTranslationFilter 会接住下游抛出的安全异常，再结合当前身份，决定让用户开始认证，还是直接告诉他没有访问权限。
+
+沿着这个请求看，它处在“安全判断已经失败”与“向客户端发送响应”之间。密码是否正确、权限是否足够由认证和授权组件判断；这里要解决的是失败之后怎么办。
 
 本文分析 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的 Servlet 过滤链。前置知识是 AuthenticationException、AccessDeniedException 和[匿名身份](/anonymous-authentication/)。固定实现见 [ExceptionTranslationFilter 5.1.5](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/access/ExceptionTranslationFilter.java)。
 
@@ -21,7 +23,11 @@ domain: Spring
 
 若找到 AuthenticationException 或 AccessDeniedException，但响应已经提交，过滤器会抛出 ServletException，不能重新写一个登录重定向或错误页。非安全异常则沿原有异常路径传播。
 
-## 先看异常类型，再看身份强度
+## 同一次访问拒绝，为什么会走向两个出口
+
+### 匿名和 Remember-Me 身份先进入认证流程
+
+假设 `/admin` 要求管理员权限。匿名访问时，直接显示“权限不足”并不能帮助用户完成访问，因为应用还没有取得足够的身份信息。过滤器因此可以把授权拒绝转成一次认证要求。Remember-Me 身份也可能需要重新完成登录，才能满足资源要求。
 
 | 异常与当前身份 | 委托对象 | 典型目的 |
 | --- | --- | --- |
@@ -34,7 +40,13 @@ domain: Spring
 
 AuthenticationEntryPoint 具体做什么由配置决定：表单登录可重定向到登录页，HTTP Basic 可返回 401，预认证场景也可选择直接拒绝的入口。过滤器本身没有“所有认证失败都返回同一个状态码”的承诺。
 
-## 发起认证前清空当前认证并保存请求
+### 已有充分身份时，由拒绝处理器响应
+
+如果用户已经完成认证，仍然没有管理员权限，再跳回登录页通常不能解决问题。这时 `AccessDeniedException` 被交给 `AccessDeniedHandler`。表中的分支说明了过滤器如何选择出口；具体返回什么页面或状态码，仍取决于出口的实现。
+
+## 开始认证时，原请求怎样留下来
+
+用户从 `/admin` 被带到登录页后，往往希望登录成功能回到原位置。下面这段方法连接了上下文、请求缓存和认证入口，执行顺序正好对应这三个动作：
 
 ```java
 protected void sendStartAuthentication(HttpServletRequest request,
@@ -78,4 +90,4 @@ forward 是服务端转发，浏览器地址不会因为它自动跳到另一个
 | Remember-Me 身份访问要求完整认证的资源 | 是否重新发起完整认证 |
 | 完整认证但没有所需权限 | 是否进入拒绝处理器，状态码和错误页是否符合契约 |
 
-这些是验证配置的方法，不是本文对某个应用已经通过集成测试的声明。排查时先定位原异常的产生位置，再核对当前身份与实际配置的处理器；只改错误页或状态码不会修正产生拒绝的认证、授权规则。
+这三次访问可以把认证入口问题与授权规则问题区分开。若完整认证用户仍被送回登录页，先核对异常类型和身份判定；若进入拒绝处理器，则继续检查权限与规则。表中列出的是配置检查的观察点，具体应用还需要按自己的登录方式执行这条操作链。

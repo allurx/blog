@@ -1,5 +1,5 @@
 ---
-title: "AOP 概述"
+title: "用 AspectJ 理解 AOP：切点、通知与字节码织入"
 date: 2019-12-22
 updated: 2026-10-03
 tags:
@@ -8,9 +8,11 @@ tags:
 domain: Java
 ---
 
-AOP 把日志、权限、事务等横切行为独立表达，再按连接点规则把它们应用到程序。AspectJ 可以通过编译时或类加载时织入改变字节码；Spring AOP 常用代理拦截方法调用。理解二者边界，比把 AOP 统称为“动态代理”更重要。
+一个方法需要在执行前后记录日志，十个方法也需要同样的日志。逐个修改方法体很直接，但日志规则一变，每个位置都要跟着改。AOP 允许把这段共同的行为独立写出来，再用规则指定它在哪些执行位置生效。
 
-本文以一个可编译的 AspectJ 示例连接连接点、切点、通知和成员引入，再说明常见选择边界。示例已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）与 AspectJ 1.9.25.1 下完成编译时织入及运行。
+AspectJ 把这些规则织入字节码，因此还能处理构造器、字段访问和异常处理器等位置。下面从一个可运行的小程序出发，观察代码里没有显式调用的通知怎样执行，再说明它与 JDK 动态代理的区别。
+
+示例采用 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）与 AspectJ 1.9.25.1，使用编译时织入。代码中的 `aspect` 和成员引入需要由 AspectJ 编译器处理。
 
 ## 先区分选中哪里与执行什么
 
@@ -21,15 +23,17 @@ AOP 把日志、权限、事务等横切行为独立表达，再按连接点规�
 | Advice（通知） | 在选中连接点的前、后或周围执行的代码 |
 | Aspect（切面） | 组织切点、通知及其他切面声明的单元 |
 
-call(void Person.eat()) 关注调用位置，execution(void Person.eat()) 关注方法体执行。静态字段、构造器、异常处理器等还具有各自的连接点规则；能否织入也取决于相关字节码是否经过 AspectJ 处理，不能仅写一个表达式就假定全系统都会拦截。
+例如 `call(void Person.eat())` 选中调用 `eat` 的位置，`execution(void Person.eat())` 选中 `eat` 的方法体执行。两者都与同一次方法调用有关，却位于不同的字节码中：前者需要处理调用方，后者需要处理方法所在的类。这也解释了为什么切点写对以后，还要检查相应代码是否参与织入。
 
-## 准备确定的编译与运行环境
+## 编译并观察一个切面
+
+### 准备编译器与运行库
 
 选用 [AspectJ 1.9.25.1 稳定发布](https://github.com/eclipse-aspectj/aspectj/releases/tag/V1_9_25_1) 和 Java 25 LTS。1.9.25 系列支持 Java 25，编译器最低需要 JDK 17；AspectJ 的版本策略独立于 JDK，不能把它的版本号也称为 JDK LTS。
 
 从 Maven Central 获取 [aspectjtools-1.9.25.1.jar](https://repo.maven.apache.org/maven2/org/aspectj/aspectjtools/1.9.25.1/aspectjtools-1.9.25.1.jar) 与 [aspectjrt-1.9.25.1.jar](https://repo.maven.apache.org/maven2/org/aspectj/aspectjrt/1.9.25.1/aspectjrt-1.9.25.1.jar)，与两个源文件放在同一工作目录。前者提供 ajc 编译器/织入器，后者提供运行库。
 
-## 一个例子同时观察通知与成员引入
+### 普通类负责发起调用
 
 HelloWorld 调用普通方法，也访问切面引入的新方法和字段。最后故意向 saySomething 传入 null，用于观察通知阻止原方法执行。
 
@@ -70,6 +74,10 @@ public class HelloWorld {
     }
 }
 ```
+
+### 切面声明匹配位置与额外行为
+
+切面把 `say()` 的调用绑定到 `before`、`after` 两段通知，另外演示空参数检查、构造器与异常处理器的连接点。`newField`、`newMethod` 则是成员引入：它们经过编译后成为目标类的成员，不是运行时反射临时查找出来的值。
 
 保存为 HelloWorldAspect.aj：
 
@@ -148,7 +156,7 @@ public privileged aspect HelloWorldAspect {
 
 aspect 是 AspectJ 语法，不能交给普通 javac 单独编译；HelloWorld 还依赖切面引入的成员，所以两个源文件要一起交给 ajc。privileged 允许切面访问目标的私有成员，是这个演示访问 privateField 的前提，不是所有切面必须开启的选项。
 
-## 按顺序编译、运行并解释结果
+### 一起编译，再检查执行顺序
 
 以下命令用于 Windows PowerShell；Linux、macOS 的运行时类路径分隔符改为冒号：
 
@@ -157,7 +165,7 @@ java -cp aspectjtools-1.9.25.1.jar org.aspectj.tools.ajc.Main -25 -encoding UTF-
 java -cp "out;aspectjrt-1.9.25.1.jar" io.allurx.HelloWorld
 ```
 
-本例是编译时织入，不需要 javaagent。实际输出依次包含 privateField、before、Hello World、after、新方法文本、新字段文本和捕获的异常信息；最后 NullPointerException 来自切面主动拒绝空参数，运行退出码为 1 是预期结果。
+本例是编译时织入，不需要 `javaagent`。输出应依次包含私有字段、`before`、`Hello World`、`after`、新方法文本、新字段文本和被捕获的异常信息；最后的 `NullPointerException` 来自切面拒绝空参数，运行退出码为 `1` 是预期结果。
 
 ```text
 I'm a private field on HelloWorld
@@ -170,9 +178,13 @@ I'm a new field on HelloWorld
 Exception in thread "main" java.lang.NullPointerException
 ```
 
-生成的织入方法名和堆栈行号取决于编译结果，不作为稳定 API。如果只有编译通过，却没有观察到 before/after，仍不能宣称织入结果正确；应检查源文件是否一起参与编译，以及运行时是否使用刚生成的 class。
+先看中间三行：目标方法只打印了 `Hello World`，两侧的 `before` 和 `after` 来自织入。再看最后一次 `saySomething(null)`：前置通知抛异常后，目标方法没有机会执行，因此不会再打印一行 `null`。通知可以改变控制流，这一点比多打印几行日志更需要在实际使用时留意。
 
-## 切点表达式选择的是什么
+生成的织入方法名和堆栈行号取决于编译结果。如果没有观察到 `before`、`after`，先检查两个源文件是否一起参与编译，以及运行时是否使用刚生成的 class。
+
+## 从示例扩展到其他切点与通知
+
+### 切点表达式选中哪些执行位置
 
 | 表达式 | 关注的范围 |
 | --- | --- |
@@ -182,13 +194,13 @@ Exception in thread "main" java.lang.NullPointerException
 | this / target / args | 当前执行对象、目标对象和参数类型或绑定 |
 | cflow / cflowbelow | 指定连接点的动态控制流，后者排除起点本身 |
 | handler | 异常处理器执行 |
-| &&、||、! | 合取、析取和排除 |
+| `&&`、`\|\|`、`!` | 合取、析取和排除 |
 
 this 与 target 在静态上下文不一定存在；call 与 execution 也不总有相同的当前对象。重用表达式时必须检查连接点种类，不能把“同一个方法名”当作上下文完全相同。
 
-类型模式中的 * 匹配名称片段，.. 可表示包层级或参数数量，+ 表示子类型关系。完整语法和各连接点允许的状态见官方编程指南，文章不再复制一份容易与版本分叉的语法手册。
+类型模式中的 `*` 匹配名称片段，`..` 可表示包层级或参数数量，`+` 表示子类型关系。组合表达式前，可以先问“规则需要控制调用者所在的位置，还是被调用方法的执行”，再选择 `call` 或 `execution`，最后收窄类型和参数范围。完整语法见[官方编程指南](https://eclipse.dev/aspectj/doc/latest/progguide/index.html)。
 
-## 三种 after 与 around 的完成语义
+### 正常返回与异常完成需要不同通知
 
 | 通知 | 何时执行 |
 | --- | --- |
@@ -204,9 +216,7 @@ this 与 target 在静态上下文不一定存在；call 与 execution 也不总
 
 AspectJ 可作用于比普通方法代理更广的连接点，但需要构建或类加载链参与。Spring AOP 的代理机制不因此自动获得字段访问、构造器等全部能力；目标内部自调用与外部经过代理的调用也不同。
 
-只有接口方法边界需要共享行为时，可以先考虑较简单的代理方案；需要字节码级连接点时，再评估织入对构建、调试和部署的影响。下面保留旧 IntelliJ IDEA 插件截图作为历史界面材料，当前集成按官方 IDE 文档配置，不作为本例复现前提。
-
-[![历史 IntelliJ IDEA 的 AspectJ 插件设置](./images/intellij-aspectj-plugin.png)](./images/intellij-aspectj-plugin.png)
+回到日志的需求：若调用都经过服务接口，代理通常就能覆盖希望记录的方法边界。如果需要观察目标内部调用、构造器执行或字段访问，AspectJ 提供的连接点更合适，同时构建与调试也必须理解织入后的代码。本例中访问新增成员的 Java 源码必须和切面一起编译，就是这种成本最直接的体现。
 
 ## 资料来源
 
@@ -215,4 +225,3 @@ AspectJ 可作用于比普通方法代理更广的连接点，但需要构建或
 - [ajc 编译器选项](https://eclipse.dev/aspectj/doc/latest/devguide/ajc.html)
 - [AspectJ 与 Java 版本兼容表](https://github.com/eclipse-aspectj/aspectj/blob/master/docs/release/JavaVersionCompatibility.adoc)
 - [Spring AOP 的代理边界](https://docs.spring.io/spring-framework/reference/core/aop/proxying.html)
-- [IntelliJ IDEA 的 AspectJ 集成](https://www.jetbrains.com/help/idea/aspectj.html)

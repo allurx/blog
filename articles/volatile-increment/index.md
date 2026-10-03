@@ -27,7 +27,11 @@ tags: ["Java", "volatile", "原子性"]
 
 Java Memory Model 规定，对某个 `volatile` 字段的写入 happens-before 后续线程对该字段的读取。这意味着后续读取能够观察到符合该同步顺序的值。[Java Language Specification 17.4](https://docs.oracle.com/javase/specs/jls/se25/html/jls-17.html)
 
-但 happens-before 解决的是操作之间的可见性和顺序，不等于把多个操作合并为不可分割的整体。
+表中的关键是第二步：B 读取时，A 还没有写入，所以 B 读到 0 完全合理。等到 A 写入 1，B 已经完成了自己的读取；可见性规则不会让 B 回头重算。最后 B 也写入 1，于是一次更新被覆盖。
+
+### 一行自增包含两个共享访问
+
+happens-before 约束访问之间的可见性和顺序，无法把下面这些步骤自动合并为一次操作。
 
 ```java
 count++;
@@ -45,7 +49,9 @@ count = next;        // volatile write
 
 把 `value++` 改成 `++value` 不会改变这一点。前置和后置形式区别在表达式返回值，二者都要读取旧值并写回新值；“一行代码”不是原子性边界。
 
-## 原子计数器提供完整的读改写
+## 用一次原子更新代替分开的读写
+
+### 比较两个计数器的实现
 
 `AtomicInteger.incrementAndGet()` 的公共契约是原子递增并返回更新后的值。JVM 可以用硬件原子指令或等价机制实现，应用不需要假定内部一定存在一段 Java CAS 重试循环。[AtomicInteger 自增契约](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/atomic/AtomicInteger.html)
 
@@ -91,6 +97,8 @@ public final class AtomicCounter {
 
 上述“可能少于两百万”是竞争结果，不是每次运行都必须出现的输出。若一次测试恰好得到两百万，只能说明那次调度没有暴露丢失，不能证明 `volatile` 自增正确。还应通过 `join()` 等手段等待全部写线程完成，再评价最终计数；中途读取值本来就可能尚未达到终值。
 
+### 等两个写线程结束后再核对总数
+
 下载 [VolatileIncrementDemo.java](./VolatileIncrementDemo.java)，在文件所在目录执行：
 
 ```sh
@@ -107,7 +115,9 @@ atomic=2000000 expected=2000000
 
 第一行的 `804301` 是这次调度的观测值，重复运行可能不同，也可能恰好达到两百万；程序没有把“必须丢失更新”写成断言。这个实验不测量吞吐量，正确性的依据仍是前面的读、改、写交错与原子 API 契约。
 
-## 同步范围应跟随不变量
+## 原子计数之后，复合条件仍要一起保护
+
+### 库存检查与扣减必须是同一次决定
 
 `volatile` 适合停止标志或整体替换的配置引用等场景。它不会为引用指向的整个可变对象自动建立一致性，也不会阻止多个线程同时执行检查。
 
@@ -119,7 +129,9 @@ if (stock.get() > 0) {
 }
 ```
 
-两个线程可以同时通过判断，然后分别扣减。需要把条件和更新放入同一个原子协议；对于单字段，可以使用 CAS 循环：
+库存为 1 时，A 读到 1，B 也读到 1，两者都通过判断。接下来两次原子扣减依次把库存变成 0 和 -1：扣减本身没有丢失，却违反了库存不能为负的要求。
+
+需要把“仍有库存”和“扣减这一份”放到同一个原子决定里。对于单字段，可以使用 CAS 循环：
 
 ```java
 static boolean reserveOne(AtomicInteger stock) {
@@ -136,5 +148,7 @@ static boolean reserveOne(AtomicInteger stock) {
 ```
 
 这里假定库存更新都遵守相同协议；CAS 失败后重新读取，不能继续使用旧快照。余额与版本号、状态与时间戳等多个字段必须一起变更时，分别使用原子类仍不够，应使用同一把锁、不可变状态整体替换或数据库事务等合适边界。
+
+### 统计总数与精确状态需要不同契约
 
 高并发统计可以考虑 `LongAdder`，但其并发 `sum()` 不是与所有更新形成单一线性化时刻的快照，不应替代需要精确条件判断的状态。锁、原子类与 `volatile` 的选择依据是所需语义，再在代表性负载下比较性能。

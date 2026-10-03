@@ -1,5 +1,5 @@
 ---
-title: "Import 注解"
+title: Spring @Import 怎样把配置交给容器
 date: 2019-07-03
 updated: 2026-10-03
 tags:
@@ -8,9 +8,11 @@ tags:
 domain: Spring
 ---
 
-`@Import` 把普通组件、配置类和自定义注册逻辑接入 Spring 的配置处理过程。固定组合可以直接导入类；需要根据注解元数据选择导入项时使用 `ImportSelector`；需要自行定义 Bean 名称、类型或构造参数时使用 `ImportBeanDefinitionRegistrar`。选哪种形式，取决于谁来决定注册内容。
+一个模块准备好了 `Person` 和相关能力类，却没有放在应用的组件扫描范围内，怎样把它们交给 Spring？最直接的办法是在入口配置上写 `@Import(Person.class)`。如果不同应用要启用不同能力，还可以让导入逻辑读取注解参数，再决定注册哪些类型。
 
-本文用 Spring Framework **7.0.9** 的独立容器演示这些入口，不依赖 Spring Boot 或组件扫描。完整示例在 **Windows 11 x64、Oracle JDK 25.0.2 LTS、Apache Maven 3.10.0** 下执行，输出与下文一致；依赖与插件版本保存在 [pom.xml](./pom.xml)。7.0.x 是当前稳定的 Framework 分支；Maven 采用稳定版，不把预览版当作 LTS。[Framework 文档与版本](https://docs.spring.io/spring-framework/reference/)、[Maven 下载与版本说明](https://maven.apache.org/download.cgi)
+这条路径从“固定列出类”逐渐走向“自行决定 Bean 定义”。下面用彼此隔离的容器逐步演示，观察每一种入口究竟把什么交给了 Spring。
+
+本文用 Spring Framework **7.0.9** 的独立容器演示这些入口，不依赖 Spring Boot 或组件扫描。完整示例的运行环境为 **Windows 11 x64、Oracle JDK 25.0.2 LTS、Apache Maven 3.10.0**，输出与下文一致；依赖与插件版本保存在 [pom.xml](./pom.xml)。
 
 ## 先运行一个不受组件扫描干扰的例子
 
@@ -42,7 +44,9 @@ registered=allurx
 
 每组示例都创建并关闭自己的 `AnnotationConfigApplicationContext`，只传入当前要演示的配置类。这样，某个 Bean 是否出现取决于明确的导入链，不会因为组件扫描发现了旁边的类而掩盖 `@Import` 的作用。下面按这些输出追踪注册过程。
 
-## 直接导入普通类：把类型交给容器管理
+## 固定组合直接列出要导入的类型
+
+### 普通类也能直接交给容器管理
 
 `@Import` 的核心声明是一个类数组：
 
@@ -65,7 +69,7 @@ public static class DirectConfig {
 
 `Person` 没有 `@Component`，也没有被扫描；容器处理 `DirectConfig` 时从 `@Import` 取得它的类型并注册 Bean 定义。容器刷新后，`getBean(Person.class)` 才能取得实例。这里按类型查询，不依赖框架生成的默认 Bean 名。
 
-## 导入配置类：把一组 Bean 组合进来
+### 配置类把一组 Bean 一起带入容器
 
 如果一个能力由多个 `@Bean` 方法组成，可以把它们放在独立配置类，再显式导入：
 
@@ -88,7 +92,9 @@ public static class ComposedConfig {
 
 在启用了组件扫描的应用中，同一个配置类可能同时被扫描发现，因此删除 `@Import` 后仍能运行。那只能说明还有另一条注册路径，不能证明导入配置类没有作用。本文用独立容器排除了这条路径。
 
-## ImportSelector：根据导入方的元数据选择类型
+## 导入内容随配置变化时，选择合适的扩展点
+
+### ImportSelector 根据注解参数返回类型名
 
 当类型组合取决于注解参数时，先定义一个表达能力选择的注解：
 
@@ -119,7 +125,7 @@ return imports.toArray(String[]::new);
 
 这个选择发生在配置解析阶段。容器已经刷新后，再改变某个普通业务字段不会自动重新执行选择器；它也不是每次调用方法时动态注入对象的机制。[`ImportSelector` API](https://docs.spring.io/spring-framework/docs/7.0.9/javadoc-api/org/springframework/context/annotation/ImportSelector.html)
 
-## ImportBeanDefinitionRegistrar：直接提交 Bean 定义
+### ImportBeanDefinitionRegistrar 直接提交 Bean 定义
 
 选择器只返回类型名。当注册过程还需要控制 Bean 名称、构造参数或其他定义属性时，可以实现注册器：
 
@@ -145,4 +151,4 @@ public static class PersonRegistrar implements ImportBeanDefinitionRegistrar {
 | 根据导入方元数据选择哪些类参与配置 | `ImportSelector` |
 | 自行控制 Bean 名称及定义属性 | `ImportBeanDefinitionRegistrar` |
 
-三种入口都参与容器配置，不是三套独立的依赖注入系统。能直接导入时，无需为了形式完整增加选择器或注册器；需要条件组合或定义级控制时，再使用相应扩展点。组合配置的其他形式见 [Spring Java 配置组合指南](https://docs.spring.io/spring-framework/reference/core/beans/java/composing-configuration-classes.html)。
+回到示例，`DirectConfig` 和 `ComposedConfig` 只需列出固定类型；`EnableAbilities` 才需要选择器读取参数；明确指定 `person` 这个 Bean 名时，注册器开始承担定义级控制。它们最终都把配置交回同一个容器处理，因此用到哪一层能力，就停在哪一个入口。组合配置的其他形式见 [Spring Java 配置组合指南](https://docs.spring.io/spring-framework/reference/core/beans/java/composing-configuration-classes.html)。

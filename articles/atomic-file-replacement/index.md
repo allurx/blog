@@ -6,25 +6,29 @@ domain: "Linux"
 tags: ["Linux", "文件系统", "持久性"]
 ---
 
-更新配置文件时，直接覆盖可能让并发读者看到半份内容。先写临时文件再 `rename()`，可以把这个过程收敛为一次文件名切换；但机器紧接着掉电时，新版本能否恢复，还取决于文件内容和目录项是否完成同步。
+服务正在读取 `config.json`，部署程序同时更新它。如果直接清空后重写，读者可能在写到一半时打开文件，得到截断的 JSON。常见做法是先写完整的临时文件，再用 `rename()` 替换目标名称，这样读者只会打开替换前或替换后的版本。
+
+但替换刚完成机器就掉电，是另一个问题。新内容是否已经写入持久存储、目录是否记住了新的名称映射，都影响重启后的结果。一次完整的名称切换，并没有自动回答这两个问题。
 
 本文只讨论 Linux 本地文件系统、同一目录内普通文件的替换，并按 `rename(2)` 与 `fsync(2)` 的接口契约说明顺序。NFS、其他远程文件系统或特殊存储设备需要单独核对；原子可见性与崩溃持久性不能从一个成功返回值中同时推断。
 
 ## 原子切换保护读者看到的内容
 
-原子性回答“观察者能否看到中间状态”，持久性回答“已完成的状态能否在崩溃后恢复”。两者不是同一承诺。
+对配置文件来说，原子性保护的是读者不会看到半份 JSON，持久性保护的是重启后仍能找到已经确认写好的版本。一次更新可以先满足前者，随后才完成后者。
 
 当 `newpath` 已存在时，Linux `rename()` 会原子替换它，所以并发打开 `target` 的进程不会遇到名称空档。已经打开旧文件的描述符仍指向旧 inode；之后按路径打开的读者看到新文件。这是名称映射切换，不表示脏数据已经越过页缓存、设备缓存并稳定落盘。[`rename(2)` 语义](https://man7.org/linux/man-pages/man2/rename.2.html)
 
 `fsync(fileFd)` 刷新该文件的数据与相关 inode 元数据，但手册明确说明：这不一定把“目录中存在这个名字”的变更同步到磁盘；目录项还需要对目录文件描述符执行 `fsync()`。[`fsync(2)`](https://man7.org/linux/man-pages/man2/fsync.2.html)
 
-这一结论要求临时文件已经完整写好，并且改名后不再继续原地修改它。已经打开旧目标的读者可以继续读旧 inode；之后重新按名称打开的读者会得到新文件。`rename()` 没有让所有既存文件描述符切换到新内容。
+因此，配置发布者应当先写完整，再改名，改名后不继续原地修改新文件。否则“完整版本之间切换”的前提就被破坏了。需要长期持有文件描述符的读者主动看到新配置时，还要由它重新打开路径。
 
-## 数据与目录项需要按顺序同步
+## 一次持久替换需要经过哪些步骤
+
+### 先同步内容，再切换并同步名称
 
 在本文同一目录的前提下，顺序如下：
 
-1. 为使用本文的单目录同步顺序，临时文件就在目标目录中创建。`rename()` 的文件系统边界是同一挂载文件系统；跨挂载移动会因 `EXDEV` 失败，同一文件系统内的不同目录则需要额外考虑目录同步。
+1. 在目标目录中创建临时文件，使后面的名称变化都由同一个目录承载。
 2. 先写完并 `fsync` 临时文件，保证被新名字指向的数据已同步。
 3. `rename` 原子切换目录项，使运行中的读者不会读到半成品。
 4. 再 `fsync` 目标目录，使名称替换本身持久化。
@@ -35,69 +39,28 @@ ext4 默认日志主要保护文件系统元数据的一致性，并不等价于
 
 `fflush()` 只把 C 标准库缓冲交给内核，不能替代 `fsync()`；内核和设备也必须正确履行其刷盘承诺。文件系统日志保护的内容与应用要求的“新配置已经持久化”并不天然相同。
 
-## 一个检查写入与同步结果的辅助函数
+### 从错误处理看各阶段的边界
 
 以下辅助函数使用 Linux 上的 C11/POSIX API，在已经打开的同一目录内替换普通文件。临时文件由 `O_EXCL` 独占创建；示例采用 `0600` 权限，没有复制目标文件原有元数据。
 
+完整函数与运行入口都在 [atomic-replace-demo.c](./atomic-replace-demo.c)。`replace_file` 按三个阶段组织：先创建并写完临时文件，检查文件同步与关闭结果；再执行 `renameat`；最后同步目录。写入循环处理短写和 `EINTR`，任何一个阶段都检查返回值。
+
+需要特别看的是最后两步：
+
 ```c
-#define _POSIX_C_SOURCE 200809L
-
-#include <errno.h>
-#include <fcntl.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <unistd.h>
-
-static int write_all(int fd, const char *data, size_t size) {
-    while (size > 0) {
-        ssize_t written = write(fd, data, size);
-        if (written < 0) {
-            if (errno == EINTR) continue;
-            return -1;
-        }
-        if (written == 0) {
-            errno = EIO;
-            return -1;
-        }
-        data += written;
-        size -= (size_t) written;
-    }
-    return 0;
-}
-
-int replace_file(int dir_fd,
-                 const char *temp_name,
-                 const char *target_name,
-                 const char *data,
-                 size_t size) {
-    int fd = openat(dir_fd, temp_name,
-                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-    if (fd < 0) return -1;
-
-    int failed = write_all(fd, data, size) < 0 || fsync(fd) < 0;
+if (renameat(dir_fd, temp_name, dir_fd, target_name) < 0) {
     int saved = errno;
-    if (close(fd) < 0 && !failed) {
-        failed = 1;
-        saved = errno;
-    }
-    if (failed) {
-        unlinkat(dir_fd, temp_name, 0);
-        errno = saved;
-        return -1;
-    }
-
-    if (renameat(dir_fd, temp_name, dir_fd, target_name) < 0) {
-        int saved = errno;
-        unlinkat(dir_fd, temp_name, 0);
-        errno = saved;
-        return -1;
-    }
-
-    return fsync(dir_fd);
+    unlinkat(dir_fd, temp_name, 0);
+    errno = saved;
+    return -1;
 }
+
+return fsync(dir_fd);
 ```
 
-该片段是一个需要调用方提供目录描述符的辅助函数，不包含 `main()`。`dir_fd` 应由调用方打开为目标目录，`temp_name` 和 `target_name` 必须是不同的、经过验证的单个文件名，不接受绝对路径或路径分隔符；临时名称在创建前不能已被占用，目录也应由应用控制，避免其他参与者替换临时项。
+这段摘录位于临时文件已经完成写入、同步与关闭之后。`renameat` 失败时尝试删除临时文件；成功后，临时名称已经被移走，此时目录同步若失败，目标内容也不会自动恢复成旧版。
+
+`replace_file` 的调用方负责打开目标目录，传入的 `temp_name` 和 `target_name` 必须是不同的单个文件名，不含路径分隔符或绝对路径。临时名称需要尚未被占用，目录也由应用控制；这样，函数操作的名称才能始终指向预期范围。
 
 编译可检查 API 和类型使用，普通替换测试可检查内容变化；两者都不能证明真实掉电后的恢复结果。部署时仍需针对实际文件系统、挂载参数和存储设备验证相应保证。
 
@@ -129,7 +92,7 @@ new-descriptor=new
 - `renameat()` 之前失败时，新内容尚未替换目标，代码尝试清理临时文件，并保留原始错误。
 - `renameat()` 成功、目录 `fsync()` 失败时，运行中的目标已经是新文件，但它的崩溃持久性未确认。函数返回失败并不意味着目标仍是旧版本，更不意味着可以放心重做一遍上游业务。
 
-调用方需要区分这些结果时，应把阶段或已替换状态纳入自己的返回契约，随后核对目标内容；不要在同步失败后盲目把旧备份写回，覆盖其他进程后来完成的更新。清理临时文件失败也不应掩盖原始写入错误。
+例如目录同步失败后，调用方读回 `config.json` 可能已经是新版。此时把错误简单翻译成“保存没有发生”，会误导后续恢复。需要精确恢复的接口应另外返回失败阶段或已替换状态，再决定怎样核对目标；立即写回旧备份还可能覆盖其他写入者已经完成的更新。
 
 这里不实现多写入者的版本协调。若多个进程都能替换同一个目标，它们仍可能互相覆盖；原子替换保证名称切换完整，不保证哪一次业务更新应该获胜。
 

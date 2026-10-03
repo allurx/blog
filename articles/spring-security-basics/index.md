@@ -9,13 +9,17 @@ tags:
 domain: Spring
 ---
 
-Spring Security 的认证与授权都围绕当前主体展开，但“上下文里有一个 Authentication”不等于“用户已经完成真实登录”。先把请求入口、上下文、令牌和权限分开，再观察一次默认登录，后续过滤器源码才有清楚的参照。
+给一个只有首页的 Web 应用加上 Spring Security 后，再访问首页，浏览器会先跳到登录页。登录成功后，首页才返回内容。框架如何知道当前请求是谁发来的，又如何在下一个请求中记住这个人？
 
-本文固定分析 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的历史 Servlet 表单链，使用 **Eclipse Temurin JDK 11.0.32.1+1、Apache Maven 3.10.0**。JDK 11 位于 Boot 2.1.5 声明的 Java 8—11 兼容范围；这些旧依赖用于学习历史实现，不是当前新项目推荐。[该版本运行要求](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/getting-started-system-requirements.html)
+从这次交互出发，可以认识几个贯穿过滤链的对象：`Authentication` 描述当前身份，`SecurityContext` 保存这份认证信息，过滤器则负责在请求的不同阶段读取、更新和检查它们。
 
-这个固定版本适合维护旧系统或对照过滤链机制的演进。新项目应从 [当前 Servlet 安全架构](https://docs.spring.io/spring-security/reference/servlet/architecture.html)和 [Spring Boot 当前文档](https://docs.spring.io/spring-boot/)选择配置与受支持依赖，不应直接把下面的历史 POM 用于新服务。
+本文固定分析 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的 Servlet 表单链，使用 **Eclipse Temurin JDK 11.0.32.1+1、Apache Maven 3.10.0**。JDK 11 位于 Boot 2.1.5 声明的 Java 8—11 兼容范围；下文的配置方式和源码结论均限定于该组合。[该版本运行要求](https://docs.spring.io/spring-boot/docs/2.1.5.RELEASE/reference/html/getting-started-system-requirements.html)
 
-## 先启动只有一个受保护接口的工程
+## 从一个受保护的首页开始
+
+这个工程只保留一个业务接口，方便把注意力放在访问前后的身份变化上。
+
+### 准备并启动应用
 
 下载 [完整 POM](./pom.xml) 和 [SecurityBasicsApplication.java](./SecurityBasicsApplication.java)，把入口放到 `src/main/java/io/allurx/SecurityBasicsApplication.java`。POM 继承 `spring-boot-starter-parent:2.1.5.RELEASE`，同时包含 Web 与 Security starter；不要只加安全依赖却假定已经有 Servlet Web 应用。
 
@@ -33,14 +37,16 @@ logging:
 java -version
 mvn -version
 mvn package
-java -jar target/historical-security-basics-demo-1.0.0.jar
+java -jar target/security-basics-demo-1.0.0.jar
 ```
 
 应用仅提供 `GET /`，成功访问时返回 `authenticated`。未自定义用户时，默认用户名为 user，当前启动生成的密码在开发日志中；这个配置不承担真实账号管理职责。
 
+### 观察登录前后的请求
+
 浏览器访问 `http://localhost:8080/` 会被引导到默认登录页。输入错误凭据时返回失败页，正确登录后再请求受保护接口；API 客户端使用其他 Accept 头时也可能得到 HTTP Basic 的 401 入口，不能把浏览器的一次重定向当作所有客户端的统一响应。
 
-该完整工程已在上述 JDK/Maven 的 Windows 11 x64 环境构建，并核对未认证 API 的 401、HTML 入口的登录重定向及正确/错误 HTTP Basic 凭据的 200/401。浏览器还完成了错误表单反馈、成功登录返回原资源、确认退出和退出后重新要求登录的流程；它不代表其他自定义认证方式也已验证。
+这组默认配置下，HTML 访问会先进入登录页；HTTP Basic 使用错误凭据得到 401，正确凭据可以取得首页的 200 响应。表单登录成功后会返回原资源，退出后再次访问又需要认证。下面沿这几个可观察结果解释过滤链中的对象。
 
 ## 请求先选链，再执行链内职责
 
@@ -76,7 +82,11 @@ FilterSecurityInterceptor
 
 先关注职责而不是死记序号：上下文过滤器为请求准备身份载体，认证过滤器尝试建立真实身份，匿名支持补齐尚无身份的路径，授权组件判断资源是否允许访问，异常转换再把下游拒绝变成响应。[FilterChainProxy 选择过程](/filter-chain-proxy/)
 
-## SecurityContext 保存当前使用的认证信息
+## 身份信息保存在哪里
+
+请求之间可以通过会话恢复身份，请求内部则需要一个方便各组件访问的入口。把这两个范围分清，就能理解下面几个名称为什么同时存在。
+
+### SecurityContext 与当前线程
 
 SecurityContext 的核心是一个 Authentication。默认 SecurityContextImpl 实现这个存取接口；SecurityContextHolder 则通过内部策略提供当前执行上下文的访问入口，默认策略使用 ThreadLocal。
 
@@ -89,7 +99,7 @@ SecurityContext 的核心是一个 Authentication。默认 SecurityContextImpl �
 
 线程绑定与跨请求保存不是同一件事。默认会话方案在请求结束时清理 Holder，又可在下次请求从会话恢复认证；无状态配置则可能每次都重新认证。[上下文生命周期](/security-context-persistence/)
 
-## Authentication 的字段不是同一种信息
+### Authentication 中的主体、凭据与权限
 
 [![Spring Security 5.1.5 中 Authentication、基础令牌类和四种常见令牌的关系](./images/authentication.png)](./images/authentication.png)
 
@@ -104,9 +114,9 @@ Authentication 同时扩展 Principal 和 Serializable。它的主要方法可�
 | isAuthenticated | 框架是否可把当前令牌视作已认证结果；不是通用的“用户已真实登录”判断 |
 | setAuthenticated | 改变令牌信任状态的接口，具体实现可能限制将其直接设为 true |
 
-主体、凭据和请求详情应分开处理。不要把 details 当作用户数据库记录，也不要假定成功后仍可取回密码。[Authentication 5.1.5 API](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/api/org/springframework/security/core/Authentication.html)
+以用户名密码登录为例：提交时的 principal 可以是用户名，credentials 是输入的密码；成功后 principal 通常变成用户对象，authorities 保存权限，密码则可能已经擦除。details 记录这次认证请求的附加信息，例如来源地址，因此它与用户资料承担不同职责。[Authentication 5.1.5 API](https://docs.spring.io/spring-security/site/docs/5.1.5.RELEASE/api/org/springframework/security/core/Authentication.html)
 
-## 令牌类型与认证状态要一起看
+### 为什么匿名令牌也可能标为已认证
 
 UsernamePasswordAuthenticationToken 和 PreAuthenticatedAuthenticationToken 提供用于请求与成功结果的不同构造方式；AnonymousAuthenticationToken 和 RememberMeAuthenticationToken 代表另外两种身份来源。
 
@@ -119,7 +129,7 @@ UsernamePasswordAuthenticationToken 和 PreAuthenticatedAuthenticationToken 提�
 
 匿名令牌的 authenticated 可以为 true，所以授权规则还会用 AuthenticationTrustResolver 区分身份来源；仅凭 isAuthenticated 做业务登录判断容易丢失这个边界。[匿名支持](/anonymous-authentication/)、[认证管理器](/authentication-manager/)
 
-## 认证回答身份，授权决定操作
+## 登录成功后为什么还会被拒绝
 
 成功认证后，访问仍可能被拒绝，因为主体没有资源所需权限。反过来，公开资源可能允许匿名访问，却不能因此把匿名访问者当成已登录用户。
 

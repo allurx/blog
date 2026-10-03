@@ -8,15 +8,17 @@ tags:
 domain: Java
 ---
 
-“本机 IP”不是一个在所有场景下都唯一的值。主机名解析、网卡绑定地址、某条连接的本地端点以及 NAT 后的公网出口，回答的是不同问题。先明确用途，才能选择正确 API。
+应用要把一个“本机 IP”写进日志，调用 `InetAddress.getLocalHost()` 得到的却是回环地址；换成枚举网卡，又出现了 Wi-Fi、VPN 和多个 IPv6 地址。哪个才是正确答案？先要看这条日志想表达什么：主机名解析到了哪里，机器绑定了哪些地址，还是某次连接实际用了哪个源地址。
 
-本文比较主机名解析与接口枚举，并保留一个历史 Windows 多地址实验。完整 Java 示例仅依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）运行；本次没有修改本机网络配置。
+一台机器可以同时拥有多个有效地址。与其写一个返回“第一个非回环地址”的通用方法，不如让 API 对应具体用途。
+
+本文以 Java SE 25 API 为准，比较主机名解析、接口枚举和已建立连接的本地端点。枚举示例只依赖标准库，运行基线为 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69），不需要修改网络配置。
 
 ## getLocalHost 返回主机名的解析结果
 
 InetAddress.getLocalHost 获取本机主机名，再通过名称服务解析地址。hosts 文件可能参与解析，也可能使用 DNS、缓存和系统配置。返回回环地址不表示没有其他网卡；返回某个内网地址也不证明它是访问任意远端时使用的源地址。
 
-因此，某次修改 Linux hosts 后得到指定地址，只能说明那次环境中的解析路径。不能把它写成所有 Windows 或 Linux 系统都只依赖一个文件的固定规则。
+例如日志要记录主机名对应的地址，`getLocalHost()` 就与这个需求一致。如果日志要诊断“这次连接走了哪张网卡”，主机名解析还没有涉及目标地址和路由选择，回答的便不是同一个问题。
 
 ## 枚举候选地址时保留接口关系
 
@@ -60,35 +62,11 @@ public class Ip {
 }
 ```
 
-每个地址输出一行，实际内容由机器配置决定；本次执行确实枚举出同一接口上的多个地址。顺序不保证稳定，不能把“第一个非回环地址”当作通用答案。SocketException 直接传播，避免枚举失败后悄悄改用另一种选址语义。
+每行同时保留接口名和一个地址，所以同一接口有多个绑定地址时，也会出现多行。实际地址和顺序由机器配置决定；如果代码找到第一项就 return，其他接口和地址会被遗漏。
+
+程序让 SocketException 向调用方传播。枚举失败与没有候选地址需要分开处理，不能在异常后悄悄改用主机名解析，让同一个方法有时返回网卡地址、有时返回另一种含义的值。
 
 链路本地 IPv6 地址还依赖作用域标识，输出中的接口关系不能随意去掉。枚举只得到当前绑定的候选地址，不会自动查询 NAT 后的公网地址。
-
-## 历史实验：同一 Windows 接口绑定两个 IPv4 地址
-
-以下截图来自 2019 年的 USB 无线网卡实验。它用于说明一个接口可以有多个地址，不是当前 Windows 菜单布局的保证，也不能照抄其中地址到其他网络。
-
-先执行 `ipconfig /all` 记录原配置。截图中接口通过 DHCP 获得 192.168.100.116：
-
-[![2019 年 Windows 接口的初始 ipconfig 配置](./images/ipconfig-before-additional-address.png)](./images/ipconfig-before-additional-address.png)
-
-通过网络适配器属性进入 IPv4 设置：
-
-[![历史无线网卡属性中的 IPv4 设置入口](./images/wireless-adapter-properties.png)](./images/wireless-adapter-properties.png)
-
-[![历史 IPv4 属性页中的手动地址配置](./images/ipv4-properties.png)](./images/ipv4-properties.png)
-
-这个实验后续采用手动地址配置，所以前后截图的 DHCP 状态也改变了，不是仅添加一个地址而其他配置完全不动。地址、子网掩码、网关和 DNS 都需符合所在网络规划。
-
-在高级设置中保留 192.168.100.116，并增加 192.168.100.117：
-
-[![同一接口上的两个手动 IPv4 地址](./images/advanced-ip-addresses.png)](./images/advanced-ip-addresses.png)
-
-再次执行 `ipconfig /all`，对照接口名称确认两个 IPv4 条目：
-
-[![历史 ipconfig 输出中同时出现两个 IPv4 地址](./images/ipconfig-after-additional-address.png)](./images/ipconfig-after-additional-address.png)
-
-Java 枚举程序对每个绑定地址逐行输出，因此能对应这些条目。若实现是在找到第一个地址后立即 return，则不可能由同一次调用输出两个地址；验证结果必须与真正运行的代码对应。
 
 ## 从候选地址到实际连接的本地端点
 

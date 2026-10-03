@@ -9,9 +9,11 @@ tags:
 domain: Spring
 ---
 
-HttpSecurity 的配置方法看起来像在立即添加过滤器，实际中间还经过配置器的生命周期。它收集规则与共享对象，在构建阶段让各配置器完成工作，再把排序后的过滤器与请求匹配器组合为单条安全链。
+写下 `http.authorizeRequests()` 后，授权过滤器并没有立即开始处理请求。这行代码取得的是一个规则登记入口。等应用构建安全链时，对应配置器才会把规则、认证管理器等材料组装成过滤器。
 
-本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的历史构建 API。应先理解[适配器如何创建 HttpSecurity](/web-security-configurer/)和[构建器生命周期](/web-security/)。固定源码见 [HttpSecurity 5.1.5](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/builders/HttpSecurity.java)。
+所以，阅读 HttpSecurity 时需要分清两个时刻：应用调用配置 API 的时刻，以及构建器把配置兑现为安全链的时刻。它们之间的生命周期解释了配置为何能相互协作，也解释了配置调用顺序为何不等于过滤器执行顺序。
+
+本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的构建 API。应先理解[适配器如何创建 HttpSecurity](/web-security-configurer/)和[构建器生命周期](/web-security/)。固定源码见 [HttpSecurity 5.1.5](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/builders/HttpSecurity.java)。
 
 文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
@@ -28,7 +30,9 @@ HttpSecurity 的配置方法看起来像在立即添加过滤器，实际中间�
 
 请求匹配器决定整条链是否被选中，链内 authorizeRequests 的规则决定某个请求是否获准访问。这两个匹配层次不能混用。
 
-## 配置方法先取得配置器
+## 从配置调用到一条可执行的安全链
+
+### authorizeRequests 取得规则登记入口
 
 以 authorizeRequests 为例：
 
@@ -56,13 +60,13 @@ private <C extends SecurityConfigurerAdapter<DefaultSecurityFilterChain, HttpSec
 
 这与直接调用基类 apply 的同类替换语义有关，但不是同一个入口行为：getOrApply 明确先查找并复用。因此不能从“apply 会替换同类型”推断每次 authorizeRequests 都抛弃此前规则。
 
-## init 与 configure 把规则变成过滤器
+### init 与 configure 把规则变成过滤器
 
 HttpSecurity 继承 AbstractConfiguredSecurityBuilder。构建时先初始化配置器和共享对象，再执行各配置器的 configure。例如授权配置器创建 FilterSecurityInterceptor 并加入过滤器集合，异常处理等其他配置器加入自己的组件。
 
-应用调用配置 API 的先后，不等于最后过滤器一定按这个顺序执行。最终排序使用独立的比较器；过滤器的执行职责和依赖关系决定了其相对位置。
+例如，异常转换过滤器需要包住后续授权调用，才能处理授权失败向外传播的异常。这样的调用关系由过滤器排序维护，不能随着应用调整配置方法的书写顺序而改变。最终排序因此交给独立的比较器处理。
 
-## performBuild 生成 DefaultSecurityFilterChain
+### performBuild 排序并生成最终的链
 
 ```java
 protected DefaultSecurityFilterChain performBuild() throws Exception {
@@ -75,6 +79,6 @@ protected DefaultSecurityFilterChain performBuild() throws Exception {
 
 ## 用一个多链场景检查两层规则
 
-假设第一条 HttpSecurity 只匹配 `/api/**`，第二条匹配其余请求。访问 `/api/orders` 时，FilterChainProxy 先选第一条链，再执行这条链内配置的认证与授权规则。第一条链没有配置到的过滤器，不会自动从第二条链借来补齐。
+现在把构建结果放回请求流程。假设第一条 HttpSecurity 只匹配 `/api/**`，第二条匹配其余请求。访问 `/api/orders` 时，FilterChainProxy 先选第一条链，再执行这条链内配置的认证与授权规则。第一条链没有配置到的过滤器，不会自动从第二条链借来补齐。
 
 排查时应分别查看链的 requestMatcher、链内过滤器顺序和授权属性。只核对某个 authorizeRequests 表达式，不能证明整个请求已经进入包含它的安全链。[FilterChainProxy 的选择过程](/filter-chain-proxy/)

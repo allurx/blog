@@ -9,7 +9,9 @@ tags:
 domain: Java
 ---
 
-ThreadLocal 让同一个键在不同线程中关联不同的值。隔离的是绑定关系，不是对象本身：若两个线程都 set 同一个可变对象，它们仍然共享那个对象。线程池还会复用线程，因此请求结束后应在业务边界 remove，不能把线程生命周期等同于一次请求的生命周期。
+处理请求时，代码常把用户信息放入一个 `ThreadLocal`，让调用链深处的方法无需层层传参就能取得它。同一个 `ThreadLocal` 被很多线程共用，为什么读取到的值可以各不相同？
+
+关键在于值存放的位置：每条线程都有自己的 Map，`ThreadLocal` 只是访问这张表的键。沿着这层关系，可以继续解释哈希冲突怎样解决、弱引用清除后为什么仍会留下值，以及线程池里的请求结束时为什么需要清理。
 
 本文从键、值和线程的持有关系出发，再分析线性探测、查找与过期条目清理。源码基线是 [OpenJDK 8u202-b08](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/lang/ThreadLocal.java)；末尾哈希程序只依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。
 
@@ -24,7 +26,11 @@ Java 8 的 Thread 持有 threadLocals 字段，类型为 ThreadLocal.ThreadLocal
 
 默认 initialValue 返回 null；首次 get 未找到键时调用 initialValue 并建立绑定。set(null) 仍是一个存在的绑定，remove 则删除绑定，后续 get 可以再次调用 initialValue。继承父线程的值由 [InheritableThreadLocal](/inheritable-thread-local/) 使用另一张 Map 处理，普通 ThreadLocal 不自动传播。
 
-## 哈希槽位与线性探测
+## ThreadLocalMap 怎样找到对应的值
+
+这张 Map 使用数组存储条目。先理解冲突后如何寻找空位，后面的 set、get 和删除逻辑就有了共同的基础。
+
+### 冲突后沿数组继续寻找
 
 ThreadLocalMap 用 Entry 数组保存条目，初始长度 16，长度保持为 2 的幂。起始槽位由 threadLocalHashCode & (length - 1) 计算；发生冲突时按步长 1 检查后续槽位，并在数组末尾绕回零。
 
@@ -32,7 +38,7 @@ ThreadLocalMap 用 Entry 数组保存条目，初始长度 16，长度保持为 
 
 一段从非空槽开始、到第一个空槽结束的连续条目构成探测链。查找遇到空槽就可以停止；因此删除不能简单把中间槽清空，否则位于它后面的键可能再也查不到。
 
-## set：更新已有键、替换过期槽或插入
+### set：更新、替换或插入
 
 set 的入口取得当前线程 Map，不存在则创建。已有 Map 时执行下面的三个分支：找到同一键便更新值；遇到键已清除的 Entry 交给 replaceStaleEntry；遇到空槽则新建 Entry，再做启发式清理和必要的 rehash。
 
@@ -63,7 +69,7 @@ private void set(ThreadLocal<?> key, Object value) {
 
 size 是实际条目计数，threshold 是扩容判断阈值，不是数组长度。达到阈值前也可能发生过期条目清理；rehash 先清理全表，再根据剩余数量决定是否扩容，不能把每次 set 都理解成固定成本的单次数组赋值。
 
-## get 与 remove：查找必须沿完整探测链进行
+### get 与 remove：沿探测链找到同一个键
 
 getEntry 先检查理想槽位，未命中再调用 getEntryAfterMiss。探测期间遇到过期条目会清理并重新检查当前位置，因为清理可能把后面的活条目搬过来。
 
@@ -104,7 +110,11 @@ private void remove(ThreadLocal<?> key) {
 }
 ```
 
-## 清除过期条目时，为什么还要重新放置活条目
+## 删除条目为什么会影响相邻位置
+
+删除除了释放值，还要保证其余键仍然能被找到。这是清理代码比一次数组置空复杂的原因。
+
+### expungeStaleEntry 修复探测链
 
 键被 GC 清除后，Entry 本身与 value 仍可能存活。expungeStaleEntry 先解除给定条目的 value 和数组引用，再扫描后续探测链。过期条目继续删除；活条目重新计算理想槽位，并放入当前链中可达的第一个空位。
 
@@ -139,7 +149,9 @@ private int expungeStaleEntry(int staleSlot) {
 }
 ```
 
-重新放置首先是查找正确性要求，不只是减少探测次数的优化。假设 A、B 从同一槽位开始，B 因冲突落在 A 后面；直接清空 A 会让查找 B 在第一个空槽就结束。把 B 按剩余表结构重新插入，才能恢复这个不变量。
+假设 A、B 都从槽位 2 开始，A 占了 2，B 只能放在 3。直接清空槽位 2 后，再查找 B 就会在第一个位置看到空槽，误以为 B 不存在。把 B 按剩余结构放回槽位 2，查找才能继续成立。这里的搬移因此关系到正确性，而非只为减少查找次数。
+
+### replaceStaleEntry 先找同一个键，再利用空位
 
 replaceStaleEntry 还处理更微妙的情况：遇到过期槽后，真正的同一键可能已经在它后面。如果不继续查找就插入，会留下两个同一键的条目。该方法先向前找这一段更早的过期槽，再向后寻找目标键；找到则更新并交换位置，找不到才用新条目替换。
 
@@ -178,6 +190,8 @@ private void replaceStaleEntry(ThreadLocal<?> key, Object value,
 }
 ```
 
+### cleanSomeSlots 把清理分摊到访问过程中
+
 cleanSomeSlots 用右移递减扫描预算，遇到过期槽后扩大清理范围。它是启发式扫描，不承诺一次调用清掉整张表的所有过期条目。
 
 ```java
@@ -198,7 +212,9 @@ private boolean cleanSomeSlots(int i, int n) {
 }
 ```
 
-## 弱引用为什么不能独立解决值滞留
+## 为什么请求结束后仍要 remove
+
+前面的清理方法都需要有代码执行到相应路径。请求结束本身不会通知 Map，也不会触发一次全表清理。
 
 若 ThreadLocal 键失去强引用，GC 可以清除键；但存活线程仍通过 Map 和 Entry 强引用 value。只有清理路径解除条目或线程退出后 Map 不再可达，值才可能解除这条持有链。System.gc 不保证立即发生，也不替 Map 调用 remove。
 

@@ -10,11 +10,15 @@ tags:
 domain: Java
 ---
 
-LockSupport 为每个线程关联至多一个许可。unpark 提供许可，park 消耗许可或等待；许可可以先于停车到达，但不会累计成消息数量。正确用法始终围绕一个业务条件循环检查，不能把 park 返回当作条件已经满足的证明。
+线程检查到“工作还没准备好”，正要休眠，另一个线程却在这时发出了通知。如果通知必须等接收方先进入等待，这个间隙就可能丢掉唤醒。LockSupport 用线程关联的一个许可处理这种交错：`unpark` 先到，随后 `park` 也能消费已有许可并返回。
+
+但一个许可只能表示一次可通过的等待，不能记录有多少份工作已经就绪。程序仍需要共享条件或队列保存业务状态，线程每次醒来再检查它。
 
 本文先用许可模型解释返回原因，再给出两阶段协作程序，最后说明 blocker 的诊断用途。完整示例只依赖标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下运行；内部背景参考 [OpenJDK 8u202-b08 LockSupport](https://github.com/openjdk/jdk8u/blob/jdk8u202-b08/jdk/src/share/classes/java/util/concurrent/locks/LockSupport.java)。
 
-## 一个许可，决定能否免于等待
+## 许可保留通知，条件决定是否继续
+
+### unpark 可以早于 park
 
 | 发生的动作 | 随后的观察 |
 | --- | --- |
@@ -24,7 +28,11 @@ LockSupport 为每个线程关联至多一个许可。unpark 提供许可，park
 
 unpark 可以在线程已启动但尚未 park 时发出，因此比依赖“等对方先停住”的协议更容易组合。不过对尚未启动线程的 unpark 不能作为可靠许可交付方式，API 不保证这种用法。
 
-park 还可能因中断或虚假唤醒返回，不会像 wait 那样抛出 InterruptedException，也不会清除中断标记。若调用者不处理退出条件，再次 park 可能立即返回，形成忙循环。
+### park 返回后还要检查条件
+
+`park` 可能消费许可，也可能因中断或虚假唤醒返回。调用者无法只凭“这行代码执行完了”判断原因，所以必须回到循环读取业务条件。
+
+中断还会保留在线程的中断标记上，`park` 不抛出 InterruptedException，也不清除标记。若程序忽略退出条件，再次调用 park 可能立即返回，原本想节省 CPU 的等待反而变成忙循环。
 
 ## 用共享条件保护两次通知
 
@@ -73,7 +81,9 @@ public class DemoApplication {
 }
 ```
 
-实测依次输出“已观察到阶段 1”和“已观察到阶段 2”。main 的 sleep 只拉开观察间隔，正确性依赖 phase 与检查循环；换成不可见的普通共享变量，unpark 也不能替它自动补齐完整的业务状态协议。
+该示例依次输出“已观察到阶段 1”和“已观察到阶段 2”。可以按两种时序读它：Worker 先等待时，main 的 unpark 让它重新检查 phase；main 先推进时，Worker 直接从 phase 看出条件已满足，无须休眠。两种时序依赖同一个 volatile 条件。
+
+main 的 sleep 只拉开观察间隔，不参与这项保证。把 phase 换成缺少可见性保障的普通共享变量，就失去了业务状态的发布规则。
 
 若业务要消费两条独立消息，应在队列或计数中保存消息，不能用两次 unpark 代替。这里的条件表示阶段进度，含义与消息数量不同。
 
@@ -93,7 +103,7 @@ public class DemoApplication {
 
 这个对象不因此获得监视器语义：park 不要求 synchronized(blocker)，也不会释放已经持有的监视器。getBlocker 的结果只是瞬时观察，线程可能已返回，不能把它当作另一个业务状态变量。
 
-应用通常直接使用 ReentrantLock、Condition、CountDownLatch 等成熟同步器。自己组合 LockSupport 时，应先写清条件如何发布、谁负责通知、怎样处理中断以及何时退出，再考虑停车机制。
+应用通常直接使用 ReentrantLock、Condition、CountDownLatch 等成熟同步器。自己组合 LockSupport 时，应先写清条件如何发布、谁负责通知、怎样处理中断以及何时退出，再决定怎样调用 park。
 
 ## 资料来源
 

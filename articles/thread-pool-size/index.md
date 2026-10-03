@@ -35,17 +35,25 @@ tags: ["ThreadPoolExecutor","队列","过载保护"]
 
 这里使用队列的即时 `offer`，不会因为类型叫 `BlockingQueue` 就自动等待空位。`ArrayBlockingQueue.put` 在队列满时会等待，`offer` 则返回失败；这两个 API 的差异正是“排队失败后扩容”能够发生的原因。[ArrayBlockingQueue 方法语义](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/ArrayBlockingQueue.html)
 
-**队列容量也是扩容触发阈值。** 假设前面的任务全部被闩锁阻塞，核心值为 2、最大值为 4、队列容量为 2：任务 1、2 占据两个 worker，任务 3、4 入队，任务 5、6 触发新增 worker，任务 7 被拒绝。因此刚提交的任务 5 可能比排队的任务 3 先开始；队列内部的 FIFO 不等于线程池全局按提交顺序启动或完成。这一现象可从下面实验的“4 个 worker 已启动、2 个任务仍排队”直接观察。
+### 队列满，才轮到最大线程数
 
-**不同队列定义不同的缓冲方式。** `SynchronousQueue` 不储存元素，只有与等待接收者配对才能交接；没有可接收 worker 时，接纳路径更快进入扩容或拒绝。它适合明确不要积压的场景，但必须配合有限的最大线程数和失败处理，不能把无界排队变成无界创建线程。[SynchronousQueue 交接语义](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/SynchronousQueue.html)
+假设前面的任务全部被闩锁阻塞，核心值为 2、最大值为 4、队列容量为 2：任务 1、2 占据两个 worker，任务 3、4 入队，任务 5、6 触发新增 worker，任务 7 被拒绝。因此刚提交的任务 5 可能比排队的任务 3 先开始；队列内部的 FIFO 不等于线程池全局按提交顺序启动或完成。这一现象可从下面实验的“4 个 worker 已启动、2 个任务仍排队”直接观察。
 
-**拒绝还是一种结果协议。** `AbortPolicy` 抛出 `RejectedExecutionException`；调用方能把它转换为明确的繁忙响应。拒绝也可能因为线程池已关闭，不能把每次拒绝都统计成容量不足。[AbortPolicy](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.AbortPolicy.html) · [RejectedExecutionHandler](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/RejectedExecutionHandler.html)
+### 没有缓冲位置时如何交接
+
+`SynchronousQueue` 不储存元素，只有与等待接收者配对才能交接；没有可接收 worker 时，接纳路径更快进入扩容或拒绝。它适合明确不要积压的场景，但必须配合有限的最大线程数和失败处理，不能把无界排队变成无界创建线程。[SynchronousQueue 交接语义](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/SynchronousQueue.html)
+
+### 接纳失败后，Future 会怎样
+
+`AbortPolicy` 抛出 `RejectedExecutionException`；调用方能把它转换为明确的繁忙响应。拒绝也可能因为线程池已关闭，不能把每次拒绝都统计成容量不足。[AbortPolicy](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.AbortPolicy.html) · [RejectedExecutionHandler](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/RejectedExecutionHandler.html)
 
 `CallerRunsPolicy` 在池未关闭时，让提交者自己运行任务；池已关闭则丢弃任务。由此可推断：它可能降低一个生产者的提交速度，却不保证整个系统的任务并发数被 `maximumPoolSize` 限住——多个提交者可以各自执行任务。对于事件循环或持锁调用方，同步执行还会延长该线程占用时间，应审查调用环境再选用。[CallerRunsPolicy](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.CallerRunsPolicy.html)
 
 还有一个容易遗漏的后果：`submit` 会建立 `RunnableFuture`，默认实现为 `FutureTask`。若处理器静默丢弃它，既没有执行、取消，也没有把失败通知给它，调用方拿到的 Future 就可能一直未完成；这种组合的风险来自两个 API 的生命周期不衔接，下面同时演示关闭后的 `CallerRunsPolicy` 情况。[AbstractExecutorService](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/AbstractExecutorService.html) · [FutureTask](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/FutureTask.html) · [DiscardPolicy](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.DiscardPolicy.html)
 
 ## 用闩锁固定线程池的接纳状态
+
+为了看清接纳顺序，需要让先提交的任务停在可控位置。否则它们可能很快执行完，后一个任务就会用到刚空出来的线程，无法与前面的容量表直接比较。
 
 将以下完整代码保存为 `PoolAdmissionDemo.java`。使用 JDK 25 LTS，运行 `java PoolAdmissionDemo.java`；无需第三方依赖。代码用闩锁固定任务占用状态，不靠 `sleep` 猜测调度时机。5 秒是实验失败上限，不是生产任务超时配置。
 
@@ -127,6 +135,8 @@ public final class PoolAdmissionDemo {
 }
 ```
 
+### 对照三种队列的结果
+
 在 Windows、Oracle JDK 25.0.2 LTS 下执行源文件，输出如下；程序会检查工作线程数、排队量和拒绝结果。
 
 ```text
@@ -140,13 +150,17 @@ shutdown + CallerRunsPolicy: future.isDone=false
 
 ## 从下游容量和等待预算选择配置
 
-**先定下游预算，再定队列。** 若数据库只允许这类任务同时占用 16 个连接，把线程池设成 200 个并不能凭空增加数据库处理能力。先测量指定并发下的完成速率与服务时间，再把它作为在线接纳预算；CPU 密集与阻塞任务最好分别验证，不共用一个未经测量的默认配置。
+### 线程与队列共享同一份服务预算
 
-**从等待预算反推容量。** 例如可持续完成速率约为 100 个/秒，希望排队最多占用约 200 ms，则约 20 个待处理任务可作为初始实验量级：`100 × 0.2 = 20`。这只是平滑吞吐假设下的起点，不是尾延迟保证；若核心线程阶段只能完成 25 个/秒，队列尚未满时同样 20 个任务就可能需要约 800 ms。必须分别测量扩容前后，而不是用最大线程数下的吞吐解释全部请求。
+若数据库只允许这类任务同时占用 16 个连接，把线程池设成 200 个并不能凭空增加数据库处理能力。先测量指定并发下的完成速率与服务时间，再把它作为在线接纳预算；CPU 密集与阻塞任务最好分别验证，不共用一个未经测量的默认配置。
 
-**让拒绝终止这次接纳尝试。** 对有返回结果的业务，优先使用显式异常或显式失败结果，并把线程池关闭与运行中饱和分别计数。只有业务允许放弃结果，且确实观察丢弃数量时，才考虑丢弃策略；不要在拒绝回调中无限重试，也不要直接向内部队列 `put` 来绕过接纳和关闭语义。上游如需重试，应受重试次数、退避和总时限约束。
+排队容量也可以从等待预算反推。例如可持续完成速率约为 100 个/秒，希望排队最多占用约 200 ms，则约 20 个待处理任务可作为初始实验量级：`100 × 0.2 = 20`。这只是平滑吞吐假设下的起点，不是尾延迟保证；若核心线程阶段只能完成 25 个/秒，队列尚未满时同样 20 个任务就可能需要约 800 ms。必须分别测量扩容前后，而不是用最大线程数下的吞吐解释全部请求。
 
-**同时观察四种时间和数量。** 至少采集提交至开始的排队时间、开始至结束的执行时间、队列长度与拒绝数量；辅以 worker 数、下游连接等待和请求总时限。`getActiveCount()` 本身是近似统计，不能拿它在业务线程里先判断“有空位”再提交，替代线程池的真实接纳结果。[ThreadPoolExecutor 监控方法](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html#getActiveCount())
+### 拒绝与监控共同暴露过载
+
+对有返回结果的业务，优先使用显式异常或显式失败结果，并把线程池关闭与运行中饱和分别计数。只有业务允许放弃结果，且确实观察丢弃数量时，才考虑丢弃策略；不要在拒绝回调中无限重试，也不要直接向内部队列 `put` 来绕过接纳和关闭语义。上游如需重试，应受重试次数、退避和总时限约束。
+
+为了判断限制究竟落在哪里，至少采集提交至开始的排队时间、开始至结束的执行时间、队列长度与拒绝数量；辅以 worker 数、下游连接等待和请求总时限。`getActiveCount()` 本身是近似统计，不能拿它在业务线程里先判断“有空位”再提交，替代线程池的真实接纳结果。[ThreadPoolExecutor 监控方法](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html#getActiveCount())
 
 可以按下面的观测组合定位，表中是诊断假设，需要用线程状态与负载测试确认：
 

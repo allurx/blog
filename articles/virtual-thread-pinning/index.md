@@ -8,11 +8,11 @@ tags: ["JVM", "VirtualThreads", "并发"]
 
 把 Java 服务切换到虚拟线程后，是否需要把所有 `synchronized` 换成 `ReentrantLock`？在 JDK 21～23 上，持锁时阻塞确实可能固定 Carrier；JDK 24 的 JEP 491 改变了 Monitor 实现，这个替换理由已经不再普遍成立。
 
-本文比较 JDK 21～23 与 24/25 的已知行为，现行 API 说明采用 Java SE 25。需要区分三类现象：虚拟线程无法卸载、线程在竞争同一把锁，以及下游资源已经用尽。它们都可能造成延迟，却需要不同的处理。[JEP 491](https://openjdk.org/jeps/491) · [Java 25 虚拟线程指南](https://docs.oracle.com/en/java/javase/25/core/virtual-threads.html)
+本文比较 JDK 21～23 与 24/25 的行为，API 说明采用 Java SE 25。先从一个持锁等待 HTTP 的例子入手，再解释虚拟线程与承载线程的关系，最后用 JFR 观察版本差异。这样可以分清延迟来自线程无法卸载、多个请求争同一把锁，还是下游已经满负荷。[JEP 491](https://openjdk.org/jeps/491) · [Java 25 虚拟线程指南](https://docs.oracle.com/en/java/javase/25/core/virtual-threads.html)
 
 ## 持锁等待 HTTP 时，版本改变了什么
 
-下面是应用代码片段，省略 `java.net.http` 和 `java.io` 等标准库 import。所有调用共享同一把锁：
+假设服务请求用户资料时，把整个 HTTP 调用放进一个同步块。下面是应用代码片段，省略 `java.net.http` 和 `java.io` 等标准库 import；所有请求共用同一把锁：
 
 ```java
 public final class UserProfileService {
@@ -42,13 +42,15 @@ public final class UserProfileService {
 | JDK 24+               | `synchronized` 本身不再阻止虚拟线程卸载        |
 | 本文涉及版本的 Native/FFM 阻塞调用 | 仍可能固定 Carrier                      |
 
-但即使使用 JDK 24，这段设计仍有问题：所有调用者都必须持有同一把锁才能发起 HTTP 请求。Carrier 可以复用，并不意味着业务并发度得到提升；锁仍然把请求串行化了。
+无论使用哪个版本，请求 B 都必须等请求 A 释放同一把锁，才有机会发起 HTTP 请求。JDK 24 改善的是等待期间 Carrier 能否去执行其他虚拟线程；这个服务内部一次只处理一个请求的约束仍然存在。是否要缩小临界区，还要看锁究竟保护了什么共享状态。
 
 ## 卸载、固定与 CPU 占用
 
-### Virtual Thread 与 Carrier Thread
+### 虚拟线程把执行交给承载线程
 
-平台线程通常与操作系统线程一一对应，创建数量受到栈内存和操作系统资源限制。
+平台线程通常与操作系统线程一一对应，创建数量受到栈内存和操作系统资源限制。若一个平台线程大部分时间都在等网络，它仍占着相应线程资源。
+
+虚拟线程把“任务的执行状态”和“实际运行它的平台线程”分开。实际承载执行的平台线程称为 Carrier Thread，下面简称 Carrier。
 
 虚拟线程由 JVM 调度，通过少量平台线程运行：
 
@@ -61,7 +63,7 @@ Virtual Thread D ─┘
 
 Oracle 的 Java 25 `Thread` 文档说明，虚拟线程适合大量主要等待 I/O 的任务，而不适合长时间占用 CPU 的计算；单个 JVM 可以支持非常多的虚拟线程，其底层通常只使用较少的 Carrier。[Java SE 25：Thread](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/Thread.html)
 
-### Mount、Unmount 与 Pinning
+### 阻塞时卸载，空出承载线程
 
 虚拟线程执行代码时，会挂载到某个 Carrier：
 
@@ -80,7 +82,7 @@ Virtual Thread 阻塞
     → 重新挂载到某个 Carrier
 ```
 
-重新挂载时不要求使用原来的 Carrier。
+例如，A 在 Carrier-1 上等待网络后卸载，Carrier-1 就能运行 B；A 的响应到达时，调度器可以让 A 在 Carrier-2 上继续执行。A 的 Java 代码仍沿自己的调用栈前进，不需要为了这次切换手工保存局部变量。
 
 当线程处于无法卸载的状态时称为 Pinning；它在此期间阻塞，才会同时占住 Carrier：
 
@@ -160,23 +162,15 @@ JEP 491 的目标之一就是让现有大量使用 `synchronized` 的 Java 代�
 
 因此，当虚拟线程正在 Native 或 Foreign Function 中运行时，它仍可能无法从 Carrier 卸载。Oracle 当前文档将这两类调用列为仍会发生 Pinning 的情况。[Oracle Java 25 虚拟线程指南](https://docs.oracle.com/en/java/javase/25/core/virtual-threads.html)
 
-需要关注的不是“依赖中是否存在 Native 代码”，而是：
-
-```text
-Native/FFM 调用是否会长时间阻塞
-×
-调用并发量是否很高
-×
-持续时间是否足以耗尽 Carrier
-```
-
-短暂、低频的 Native 调用通常不值得复杂改造。
+这类调用是否成为瓶颈，要同时看持续时间与并发量。偶尔一次很短的调用，对可用 Carrier 的影响可能有限；许多任务同时在外部代码中长时间等待，才更容易让其他虚拟线程迟迟得不到执行机会。
 
 ## 观察调度差异，并保留状态一致性
 
 运行前提：虚拟线程要求 Java 21+；要获得 `synchronized` 不再导致 Pinning 的行为，需要 JDK 24+。
 
-### 持锁执行慢操作
+### 用不同的锁隔离调度现象
+
+开头的 HTTP 例子让所有请求争同一把锁，无法单独观察卸载能力。下面改用 20 把不同的锁，每项任务只持有自己的那一把；慢操作用 sleep 表达，避免网络变化影响观察。程序最后读取所有 Future，确保任务异常不会被遗漏。
 
 ```java
 import java.time.Duration;
@@ -219,12 +213,7 @@ public final class SynchronizedBlockingDemo {
 }
 ```
 
-每个任务使用不同的共享锁，避免所有任务因为同一把锁而串行：
-
-* JDK 21～23：睡眠发生在 `synchronized` 内，可能固定大量 Carrier。
-* JDK 24+：持有 Monitor 不再阻止虚拟线程在睡眠时卸载。
-
-保存为 `SynchronizedBlockingDemo.java`。程序使用 20 把不同的锁，每个任务持锁睡眠 100 ms，并读取全部 Future，避免遗漏任务异常。分别在 JDK 21 LTS 与 JDK 25 LTS 的独立实验目录执行下列命令，先确认 `java`、`javac` 和 `jfr` 来自同一个 JDK：
+保存为 `SynchronizedBlockingDemo.java`。每项任务持锁睡眠 100 ms，JDK 21～23 的 Monitor 会阻止这一等待过程卸载；JDK 24/25 则允许卸载。分别在 JDK 21 LTS 与 JDK 25 LTS 的独立实验目录执行下列命令，先确认 `java`、`javac` 和 `jfr` 来自同一个 JDK：
 
 ```sh
 java -version
@@ -272,7 +261,7 @@ public Result process(long userId) throws Exception {
 3. 再次加锁并校验版本。
 4. 仅在状态仍符合预期时提交结果。
 
-JDK 24 解决的是 Carrier Pinning，并没有改变“长时间持锁会阻塞其他调用者”这一事实。把 I/O 移出临界区仍然可能显著提高业务并发度，但必须通过版本校验或状态机保证正确性。
+回到 HTTP 例子，请求 A 在锁外等待时，请求 B 便有机会取得快照并开始自己的 I/O。不过 A 返回时，本地状态可能已经改变，所以 `applyIfCurrent` 必须检查快照版本，并定义版本不符时的拒绝或重试行为。能否采用这种结构，取决于业务是否允许拆开这两个阶段；不能直接把锁挪开而忽略状态变化。
 
 ## 用运行证据决定是否调整实现
 

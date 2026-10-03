@@ -9,9 +9,11 @@ tags:
 domain: Spring
 ---
 
-Spring Security 的启动配置和请求过滤属于两个阶段。WebSecurity 的职责在启动阶段：收集单条安全链的构建器，执行配置生命周期，再把各条链组合成一个供 Servlet 代理调用的过滤入口。
+同一个应用里，API 请求可能使用一种认证方式，浏览器页面使用另一种。每条安全链都描述自己的匹配范围和过滤器，但 Servlet 容器需要的是一个统一的入口。
 
-本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的历史构建过程。应先理解 Java 泛型和构建器的基本用途；运行示例及 JDK 配套条件见 [Spring Security 基本概念](/spring-security-basics/)。当前框架的配置入口已经演进，本文以固定版本源码为准。
+`WebSecurity` 在启动时收集这些链的构建器，把它们组合成 `FilterChainProxy`。本文沿这个构建过程解释：配置器何时参与、`HttpSecurity` 何时加入，以及 `ignoring()` 为什么会改变请求最终选中的链。
+
+本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的构建过程。应先理解 Java 泛型和构建器的基本用途；运行示例及 JDK 配套条件见 [Spring Security 基本概念](/spring-security-basics/)。构建器行为以所链接的固定版本源码为准。
 
 文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
@@ -27,7 +29,11 @@ WebSecurity 构建最后一行所需的对象；HttpSecurity 构建第一行的�
 
 [![Spring Security 5.1.5 中 WebSecurity 的接口与构建器继承关系](./images/web-security.png)](./images/web-security.png)
 
-## 从 Bean 工厂进入一次性构建
+## 从 Bean 工厂到配置器生命周期
+
+生成过滤入口需要先执行配置，再生成最终对象。这两步分别落在构建器的公共基类和具体实现中。
+
+### build 只进入一次 doBuild
 
 WebSecurityConfiguration 的工厂方法最终调用 `webSecurity.build()`。如果没有任何应用配置器，它会先加入默认适配器；通常 Boot 已经准备了 DefaultConfigurerAdapter。[WebSecurityConfiguration 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/configuration/WebSecurityConfiguration.java)
 
@@ -45,7 +51,7 @@ public final O build() throws Exception {
 
 AtomicBoolean 保证同一个构建器只进入一次 `doBuild()`。它不代表任何方法都可并发使用，也不提供失败后的重试：即使构建抛异常，标记仍然已经改变，再次 build 会抛 AlreadyBuiltException。[AbstractSecurityBuilder 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/AbstractSecurityBuilder.java)
 
-## 配置器在什么时候修改构建器
+### init 准备共享对象，configure 使用它们
 
 SecurityBuilder 的目标是生成对象；SecurityConfigurer 把某一方面的规则放到构建器中。HttpSecurity 上的 CSRF、会话或授权配置器分别处理自己的职责，应用的 WebSecurityConfigurerAdapter 则把 HttpSecurity 接入 WebSecurity。
 
@@ -91,7 +97,11 @@ protected final O doBuild() throws Exception {
 
 共享对象另按 Class 存在一张 Map 中，配置器通过 `setSharedObject/getSharedObject` 协作。配置器集合与共享对象集合承担不同职责，不应仅因都按类型索引就混为一谈。
 
-## HttpSecurity 在 init 阶段加入
+## 把单条安全链组合为过滤入口
+
+生命周期确定以后，再回到 WebSecurity 特有的工作：先收集构建器，再按顺序生成链。
+
+### 适配器登记 HttpSecurity
 
 WebSecurityConfigurerAdapter 的 init 先取得 HttpSecurity，再调用：
 
@@ -107,7 +117,7 @@ web.addSecurityFilterChainBuilder(http).postBuildAction(new Runnable() {
 
 这段代码将单条链的构建器加入列表，并安排构建后取得相关授权组件。它尚未处理任何 HTTP 请求，也没有在这里直接执行认证。[WebSecurityConfigurerAdapter 的初始化](/web-security-configurer/)
 
-## performBuild 把链组合成 FilterChainProxy
+### performBuild 保留各条链的顺序
 
 WebSecurity 首先为 `ignoring()` 收集的每个 RequestMatcher 创建一条**空过滤器链**，再调用其他构建器的 build，最后把整个列表交给 FilterChainProxy。忽略链排在前面，匹配它的请求不会进入后面的安全过滤器链。
 
@@ -124,7 +134,11 @@ FilterChainProxy filterChainProxy = new FilterChainProxy(securityFilterChains);
 
 随后配置可选 HttpFirewall、调用代理的初始化检查，并在启用调试时包装 DebugFilter。最后执行 postBuildAction，返回过滤入口。[WebSecurity 5.1.5 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/config/src/main/java/org/springframework/security/config/annotation/web/builders/WebSecurity.java)
 
-因此，`ignoring()` 与某条链内的 `permitAll()` 不是等价写法：前者匹配空链，后者仍可经过上下文、安全响应头、CSRF 等已配置过滤器，只是在授权规则处允许访问。是否应该跳过这些职责，需要按资源性质判断。
+### ignoring 与 permitAll 为什么会得到不同处理
+
+假设 `/assets/**` 命中了前面的忽略链，请求会选中一个没有安全过滤器的列表，后面的链就没有机会处理它。若改为在普通链内对 `/assets/**` 配置 `permitAll()`，请求仍会经过该链配置的上下文、安全响应头、CSRF 等处理，只是在授权判断时允许访问。
+
+因此，要保留哪些安全处理应由资源需求决定；“无需登录”本身并不意味着“无需经过安全过滤器”。
 
 ## 用结果类型连接启动与请求阶段
 

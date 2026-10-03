@@ -6,9 +6,11 @@ domain: "MQ"
 tags: ["Kafka", "ExactlyOnce", "Outbox"]
 ---
 
-订单已经写入 MySQL，`OrderCreated` 却没能到达 Kafka，是消息系统常见的双写故障。开启幂等 Producer，或者给方法加上 `@Transactional`，都不能自动让这两个独立资源拥有同一个提交点。
+订单 9001 已经写入 MySQL，用户也看到了创建成功，但库存服务始终没有收到 `OrderCreated`。如果进程恰好在数据库提交后、消息发布前崩溃，这个结果完全可能发生。重启后，程序甚至可能不知道还有哪条消息需要补发。
 
-Kafka 的 Exactly-Once Semantics 必须连同范围一起讨论：Producer 重试、Kafka 消息与消费位点可以得到各自保证，外部数据库、HTTP 调用和邮件发送则需要额外的协调。本文采用 Kafka 4.3 的公共契约，以订单和事件为例说明 Transactional Outbox 如何把不可恢复的双写窗口转为可重试的发布过程。
+Kafka 的幂等 Producer 和事务各自提供保证，但要解决这个故障，首先要找到丢失的东西：应用没有把“这笔订单还需要发布事件”可靠地保存下来。
+
+本文采用 Kafka 4.3 的公共契约，沿着订单创建、事件发布和库存消费三步展开：先找出双写窗口，再说明 Kafka 事务覆盖哪里，最后用 Transactional Outbox 保存发布意图，并用消费端幂等处理重发。
 
 ## 两种提交顺序都留下故障窗口
 
@@ -29,7 +31,7 @@ kafkaProducer.send(new ProducerRecord<>("order-created", serializedEvent));
 3. Kafka 消息尚未发布
 ```
 
-结果：订单存在，但下游永远收不到事件。
+订单已经存在，待发事件却可能只在进程内存里。如果没有持久化的补发线索，进程重启后也无法仅靠重试 Producer 恢复这条消息。
 
 ### Kafka 先提交
 
@@ -38,7 +40,7 @@ kafkaProducer.send(new ProducerRecord<>("order-created", serializedEvent));
 2. MySQL COMMIT 失败
 ```
 
-结果：下游收到订单创建事件，但订单在数据库中不存在。
+这次变成了另一种不一致：库存服务可以收到订单创建事件，数据库却没有那笔订单。把提交顺序反过来，只是移动了故障窗口。
 
 ### 两个事务依次提交
 
@@ -53,7 +55,7 @@ COMMIT Kafka
 COMMIT MySQL
 ```
 
-两个独立资源也无法在普通本地事务中同时完成不可撤销提交。无论选择哪一个先提交，两个提交之间都存在故障窗口。
+这种写法让执行顺序更明确，但两次 COMMIT 仍然分别发生。第一个资源提交后，第二个资源可能失败；普通本地事务没有把它们合成一个原子提交点。
 
 ## Kafka 的保证在哪个边界结束
 
@@ -67,7 +69,7 @@ Producer 重试
 同一消息再次写入
 ```
 
-Kafka 的幂等 Producer 使用 Producer ID 和序列号，让 Broker 识别同一 Producer 会话中的重试，避免重试产生重复日志记录。
+对于这类响应丢失，Kafka 可以用 Producer ID 和序列号识别同一 Producer 会话中的协议重试，避免重复追加日志记录。这处理的是“一次发送是否被 Broker 重复记录”，还没有处理订单表里的状态。
 
 本文采用 Apache Kafka 4.3 的 Producer 契约：
 
@@ -113,9 +115,9 @@ Spring 的：
 
 ## Outbox 把发布意图写进数据库事务
 
-### Transactional Outbox
+### 让订单与待发布事件一起提交
 
-核心思想是把必须原子完成的写入收缩到一个资源中：
+为订单 9001 增加一条持久记录，内容是“发布这个 eventId 对应的 OrderCreated”。这条记录和订单使用同一个 MySQL 事务：
 
 ```text
 同一个 MySQL Transaction
@@ -123,7 +125,7 @@ Spring 的：
 └── INSERT outbox_event
 ```
 
-只存在两种提交结果：
+对这两次插入，事务结束后便只有两种结果：
 
 | 事务结果     | 订单  | Outbox 事件 |
 | -------- | --- | --------- |
@@ -159,9 +161,9 @@ Debezium 官方将 Outbox Pattern 定义为避免服务内部数据库状态与�
 | 应用轮询 Outbox     | 架构简单，依赖较少，应用可完全控制重试       | 需要抢占、批次、状态更新和清理；容易形成数据库轮询压力      |
 | CDC，例如 Debezium | 直接读取数据库变更日志；无需高频扫描；通常延迟较低 | 增加 Connector、Schema、位点和变更日志运维复杂度 |
 
-CDC 并没有把端到端语义变成神奇的 Exactly Once。Connector 或下游仍可能重放事件，消费者依然需要幂等。
+无论选轮询还是 CDC，恢复过程都可能重新交付已经发过的事件。因此中继选择解决的是怎样取得和搬运发布意图，消费端仍需处理重复。
 
-### 消费端幂等
+### 同一个 eventId 再次到达时，只保留一次业务结果
 
 假设消费者收到：
 
@@ -205,7 +207,7 @@ VALUES (?, 'inventory-service', CURRENT_TIMESTAMP(6));
 COMMIT;
 ```
 
-若事件已处理，唯一键冲突表明本次是重复投递。业务代码可以确认其已经成功处理，而不是再次执行副作用。
+假设库存服务已经处理过订单 9001 的这条事件，第二次投递携带同一个 eventId。插入消费记录时命中唯一键，业务代码就能识别已提交的处理记录，跳过本次重复更新。若第一次处理在提交前失败，去重记录与业务变更一起回滚，下一次仍有机会完整执行。
 
 关键要求是去重记录与业务结果必须位于同一个本地事务中。否则仍会出现：
 
@@ -339,14 +341,7 @@ public void publish(OutboxEvent event)
 | Kafka 已确认，`markPublished` 尚未提交 | Kafka 可能已有消息，Outbox 仍待发布 | 允许重发，由消费者去重 |
 | 已发布标记提交之后 | Outbox 记录已完成 | 按保留策略归档 |
 
-完整工程还需处理：
-
-* 多 Publisher 实例的任务抢占。
-* 批量发送和背压。
-* 指数退避与永久失败事件。
-* Outbox 积压告警。
-* 已发布记录的归档或清理。
-* 发布顺序与同一 Aggregate 的分区键。
+把这个方法放进持续运行的中继后，还需要决定哪些实例负责哪些记录，以及失败后何时重试。多个 Publisher 要协调任务抢占；批量发送要给数据库和 Kafka 留出可承受的负载；持续失败的事件需要记录原因并进入人工处理或其他明确路径。已发布记录可以按保留策略归档，但待确认记录不能提前清除。
 
 如果使用 Debezium CDC，应用不再维护 `published_at` 也很常见：Outbox 行只负责追加，由 Connector 从 Binlog 捕获，清理由独立保留策略完成。
 
@@ -354,9 +349,11 @@ public void publish(OutboxEvent event)
 
 ### 把事件 ID、业务 ID 和 Kafka Key 分开
 
-* `eventId`：一次事件事实的唯一身份，用于去重。
-* `aggregateId`：所属业务实体，例如 `orderId`。
-* Kafka Key：决定 Partition，通常采用 `aggregateId` 以维持同一实体事件顺序。
+| 标识 | 对订单 9001 的含义 | 是否在重发时改变 |
+| --- | --- | --- |
+| eventId | 这一次 OrderCreated 事件的身份 | 不改变，否则无法去重 |
+| aggregateId | 事件所属订单，值为 9001 | 同一订单的不同事件相同 |
+| Kafka Key | 用于选择分区，常采用订单 ID | 同一实体采用一致的分区策略 |
 
 同一订单的 `OrderCreated`、`OrderPaid` 和 `OrderCancelled` 使用相同 Kafka Key，可以让它们进入同一个 Partition。但 Kafka 保存的是进入 Partition 的顺序，不会按业务时间替并行 Publisher 自动重排。若同一实体的事件被不同 Worker 倒序发送，即使用同一个 Key，消费者也会观察到倒序；中继还需有按实体串行发布、序号校验或其他符合业务需求的顺序策略。跨 Partition 也没有全局顺序保证。
 
@@ -402,21 +399,13 @@ WHERE order_id = ?
     → 使用 eventId / jobId 防重
 ```
 
-系统级可靠性来自每个边界上的持久意图、重试和幂等，而不是一个跨越所有服务的巨大事务。
+这里又出现了与开篇相同的结构：先可靠保存需要发送邮件的意图，再由 Worker 执行。邮件服务能否按 jobId 去重，则决定最后一次外部调用能获得什么保证；仅在本地写去重记录，还不能撤回已经发出的邮件。
 
 ### 监控积压，而不只监控错误率
 
-Outbox 系统最危险的状态通常不是直接报错，而是事件长期未发布。至少监控：
+订单接口可以持续成功，发布中继却已经停止。要发现这种状态，最直接的是观察最旧未发布事件的年龄和未发布数量：前者反映一笔订单等待了多久，后者反映等待队列是否在增长。
 
-* 最旧未发布事件年龄。
-* 未发布事件数量。
-* 发布成功率与重试次数。
-* CDC Connector Lag。
-* Kafka Producer 错误与事务中止率。
-* 消费者重复事件比例。
-* Dead Letter Queue 数量。
-
-“接口创建订单成功”不能证明事件链路健康。
+定位原因时再看发布成功率、重试次数、Producer 错误；使用 CDC 时查看 Connector Lag，使用 Kafka 事务时查看中止率。消费者重复事件比例和失败队列中的记录，则帮助区分恢复重放与持续处理失败。监控需要能回答“哪一步停了、哪些事件受影响”，而不只是收集一组错误计数。
 
 ### 何时直接使用 Kafka Transaction
 
@@ -428,11 +417,7 @@ Kafka 输入 → 纯计算 → Kafka 输出
 
 例如聚合、过滤、Join 和 Topic 间转换。
 
-如果输出落入关系数据库，应优先考虑：
-
-* 在数据库事务中保存业务结果和已消费 Offset。
-* 使用事件 ID 对数据库写入去重。
-* 使用 Kafka Connect 等与目标系统协作的实现。
+如果输出落入关系数据库，提交边界又回到目标系统：可以让业务结果与消费位置共同持久化，或者用本文的事件 ID 去重，再确认消息。使用 Kafka Connect 等实现时，也要核对具体 Connector 怎样协调消费位置与目标写入，而不是仅凭组件名称推断保证。
 
 Kafka 官方也指出，写入外部系统时，关键在于协调 Consumer Position 与外部输出；一种方案是把 Offset 与输出存入同一目标系统事务中。[Apache Kafka 4.3：外部系统一致性](https://kafka.apache.org/43/design/design/#message-delivery-semantics)
 

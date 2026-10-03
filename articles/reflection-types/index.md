@@ -1,5 +1,5 @@
 ---
-title: Type
+title: Java 反射怎样保留和展开泛型类型
 date: 2019-10-29
 updated: 2026-10-03
 tags:
@@ -9,7 +9,9 @@ tags:
 domain: Java
 ---
 
-反射解析泛型时，Type 描述的是声明中的类型结构，不只是一个 Class。List<String>、T、? super Number 和 T[] 保留的信息不同；把所有 Type 都强转为 Class，会在真实的泛型字段上失败。
+为对象做序列化时，看到字段类型是 `List` 还不够：列表里应该放 `String`、某个业务对象，还是由外层泛型参数决定？`Field.getType()` 给出运行时类视图，`Field.getGenericType()` 则让我们继续读取声明中的类型实参。
+
+后一个方法返回 `Type`。它可能表示 `List<String>`，也可能表示尚未确定的 `T`、通配符 `? super Number` 或数组 `T[]`。解析工作的起点因此是识别当前结构，再沿它包含的类型继续向内读取。
 
 本文沿“从声明取出类型，再按结构展开”的路径认识五种标准表示。下面的完整程序仅依赖 JDK 标准库，已在 Windows、Oracle JDK 25.0.2（25.0.2+10-LTS-69）下编译运行。将五个完整类保存为同名 .java 文件，放在一个只含这些源文件的目录，执行 `javac -encoding UTF-8 -d out *.java`；各节给出对应运行命令。
 
@@ -29,9 +31,13 @@ domain: Java
 
 这些是标准反射返回的主要结构，Type 并不是 sealed 接口，不能据此声称全世界只有五个实现类。解析器应按公开接口处理结构，不依赖 sun.reflect 下的具体实现类名。
 
-## ParameterizedType：实参、原始类型和所有者
+## 展开参数化类型里的每一层
 
-getActualTypeArguments 返回实参，但实参本身仍是 Type，可能继续是参数化类型、变量或通配符。getRawType 描述参数化类型对应的原始类；getOwnerType 描述成员类型的所有者，不能用是否为 null 简单判断某个类是不是顶级类。
+### ParameterizedType 同时描述原始类、实参和所有者
+
+以 `List<List<String>>` 为例，外层的原始类型是 `List`，唯一实参仍是一个 `ParameterizedType`；继续展开，才会遇到内层实参 `String.class`。`getActualTypeArguments()` 返回 `Type[]` 正是为了表达这种递归结构。
+
+`getRawType()` 读取参数化类型对应的原始类，`getOwnerType()` 则读取成员类型的所有者。下面分别选择成员类、顶级类和局部类作为父类，对照三个方法的结果。示例已知这些父类声明都是参数化类型，所以直接强转；通用解析器必须先判断返回的结构。
 
 ```java
 package io.allurx;
@@ -135,7 +141,9 @@ public abstract class TypeToken<T> {
 
 执行 `java -cp out io.allurx.TypeToken`，实测输出 `java.util.List<java.lang.String>`。它利用声明留下的签名，不是从普通 List 对象内部“反向恢复”被擦除的实参。若写成含未解析变量的 TypeToken<List<T>>，得到的仍可能是 T。
 
-## TypeVariable：变量属于哪个声明
+## 类型尚未确定时，读取变量与边界
+
+### TypeVariable 的身份还包括声明者
 
 T、O 是类型变量；List<String> 中的 String 是 Class，不是 TypeVariable。变量可以定义在类、方法或构造器上。getBounds 读取上界，未显式声明上界时为 Object；变量声明不能用 super 指定下界。
 
@@ -198,9 +206,9 @@ private static void io.allurx.TypeVariableTest.test(java.lang.Object)[T,[class j
 
 [![类、方法和构造器的泛型声明关系](./images/generic-declaration.png)](./images/generic-declaration.png)
 
-## WildcardType：隐式 Object 上界也属于结果
+### WildcardType 表示实参范围，而不是一个确定类型
 
-通配符是一个类型实参表达式。? extends Number 有 Number 上界而无下界；? super Number 的上界为 Object、下界为 Number。无下界返回空数组，不代表 null 类型是一个普通 Class。
+读到 `List<? extends Number>` 时，我们知道元素类型受 `Number` 约束，却没有得到某个唯一元素类。`WildcardType` 保留的正是这种范围：`? extends Number` 有 `Number` 上界、没有下界；`? super Number` 有 `Number` 下界，上界则是 `Object`。无下界时返回空数组。
 
 ```java
 package io.allurx;
@@ -250,7 +258,7 @@ UpperBounds：[T],LowerBounds：[]
 
 第三个字段的上界仍是 T，说明边界也需要递归解析。获取边界只是读取声明，不会自动证明某个运行时对象满足业务需要的类型约束。
 
-## GenericArrayType：沿组件继续向内看
+## 泛型数组需要保留维度并继续解析组件
 
 String[] 可以由数组 Class 表达；T[]、List<String>[] 的组件保留泛型结构。多维数组还会递归：T[][] 的组件 T[] 本身就是 GenericArrayType，不能只允许组件为变量或参数化类型。
 
@@ -303,7 +311,9 @@ class sun.reflect.generics.reflectiveObjects.ParameterizedTypeImpl
 
 ## 解析真实声明时的边界
 
-完整解析通常需要同时维护结构递归与类型变量映射。递归界限可能循环，例如 T extends Comparable<T>；未经记录就无限展开边界会递归不止。参数化成员类型还可能从 owner 继承变量，数组则要保留维度。
+假设一个基类声明字段 `T value`，子类继承它时指定 `T` 为 `String`。字段本身的声明仍然是 `T`；要得出当前子类中应使用 `String`，解析器还需沿继承关系建立变量替换。只读出类型结构和结合使用上下文解析类型，是相邻但不同的两步。
+
+递归展开也可能再次遇到自身，例如 `T extends Comparable<T>`。解析器需要记录正在处理的声明，避免沿边界无限循环；参数化成员类型还可能从 owner 继承变量，数组则必须保留维度。
 
 如果目标只是识别某个已知字段类型，不必预先实现通用类型解析框架；先按所需结构处理，并为不支持的类型给出清楚结果。需要类型使用注解时，继续使用 [AnnotatedType](/annotated-type/) 读取平行的注解结构。
 
@@ -312,4 +322,5 @@ class sun.reflect.generics.reflectiveObjects.ParameterizedTypeImpl
 - [Type 的公开接口](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/Type.html)
 - [ParameterizedType：实参、原始类型和所有者](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/ParameterizedType.html)
 - [TypeVariable：声明者和边界](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/TypeVariable.html)
-- [WildcardType 与 GenericArrayType](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/GenericArrayType.html)
+- [WildcardType：通配符上下界](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/WildcardType.html)
+- [GenericArrayType：数组组件类型](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/reflect/GenericArrayType.html)

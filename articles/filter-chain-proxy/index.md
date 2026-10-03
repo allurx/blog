@@ -9,7 +9,9 @@ tags:
 domain: Spring
 ---
 
-配置了多条安全链，不意味着一个请求会把所有匹配链依次执行。FilterChainProxy 只选择按顺序遇到的第一条匹配链，再调用该链中的过滤器；匹配范围和顺序因此直接决定实际保护范围。
+为 `/api/**` 配了一条专用安全链，又给整站配了一条兜底链，接口却仍然跳到表单登录页。遇到这种现象，先看两条链的顺序：FilterChainProxy 找到第一条匹配链就停止查找。若兜底链排在前面，接口请求根本没有机会进入专用链。
+
+选中链之后，代理还要逐个调用链内过滤器，并在适当时机回到 Servlet 容器原本的过滤链。理解这两个动作，就能沿一条请求解释“规则为什么没生效”和“Controller 为什么没有执行”。
 
 本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的 Servlet 请求执行过程，前置背景是 [WebSecurity 如何构建多条链](/web-security/)。固定源码见 [FilterChainProxy 5.1.5](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/FilterChainProxy.java)。
 
@@ -27,13 +29,15 @@ Servlet 容器原始过滤链
 
 最后一条箭头有条件：安全过滤器可以拒绝访问、发送重定向或完成响应而不再调用 chain。FilterChainProxy 负责调度，不保证每个请求都到达 Controller。
 
-## HttpFirewall 先检查并包装请求
+## 从请求进入到选中安全链
+
+### HttpFirewall 先检查并包装请求
 
 `doFilterInternal` 先调用 HttpFirewall 取得 FirewalledRequest 和包装后的响应，默认使用 StrictHttpFirewall。请求被认为不合法时可能在选链之前被拒绝，不能把所有拒绝都归为授权规则不匹配。
 
 然后代理调用 getFilters，传入经过防火墙处理的请求。匹配结束后，进入安全链或返回原始链；适当阶段调用 FirewalledRequest.reset，恢复继续处理所需的请求状态。
 
-## getFilters 在第一条匹配处停止
+### getFilters 在第一条匹配处停止
 
 ```java
 private List<Filter> getFilters(HttpServletRequest request) {
@@ -56,9 +60,13 @@ private List<Filter> getFilters(HttpServletRequest request) {
 | B、A；请求 `/api/orders` | B，A 不再被检查 |
 | 没有任何匹配 | 返回 null，继续原始 Servlet 链 |
 
-匹配到一条过滤器列表为空的链时，同样直接继续原始链。WebSecurity 的忽略规则就是利用这个路径；后面再放一条更严格的链也不会补上被跳过的检查。
+第一行对应预期的 API 专用配置，第三行就是开篇故障的原因。这里的顺序发生在链与链之间，还没有涉及链内授权表达式。
 
-## VirtualFilterChain 怎样逐个调用过滤器
+匹配到一条过滤器列表为空的链时，同样直接继续原始链。WebSecurity 的忽略规则利用了这个路径：请求一旦选中空链，后面的严格链就不再参与。
+
+## 选中链之后，调用怎样推进和返回
+
+### VirtualFilterChain 维护下一项的位置
 
 选中非空过滤器列表后，代理创建 VirtualFilterChain。它保存原始 FilterChain、额外过滤器列表和当前位置，每次调用按以下逻辑推进：
 
@@ -76,9 +84,9 @@ else {
 
 这里省略日志。传给下一个过滤器的 chain 是 VirtualFilterChain 自己，所以过滤器调用 `chain.doFilter` 会重新进入同一个调度对象；当前位置已经递增，不会反复调用同一个过滤器。走到列表末尾后才切回原始 Servlet 链。
 
-这也是过滤器可以形成“进入时处理、返回时清理”结构的原因：调用下游是普通方法调用，结果或异常会沿调用栈返回到外层过滤器。
+可以把两个安全过滤器的执行顺序展开成 `A 进入 → B 进入 → 原始链 → B 返回 → A 返回`。调用下游是普通方法调用，异常也沿这个调用栈向外传播。因此，外层过滤器可以在调用前准备上下文，并在下游完成后清理；某个过滤器若提前写入响应且没有继续调用，后面的阶段就不会发生。
 
-## 上下文清理属于最外层调用边界
+### 最外层 finally 负责最终清理
 
 FilterChainProxy 用请求属性记录是否已进入自己的外层调用。首次进入时在 finally 中清理 SecurityContextHolder 并移除标记；嵌套调用仍可执行内部链，但不会在内层提前清除外层持有的上下文。
 
@@ -86,6 +94,6 @@ FilterChainProxy 用请求属性记录是否已进入自己的外层调用。首
 
 ## 排查时先确认命中哪条链
 
-应分别观察防火墙是否接受请求、getFilters 选中了哪条链、链内哪个过滤器提前返回，以及是否最终进入原始 Servlet 链。只看到安全 Bean 已存在，或某条规则能保护一个 URL，都不能证明其他路径也被覆盖。
+回到 `/api/orders` 跳登录页的问题，可以先在 `getFilters` 确认选中的链，再查看该链实际包含的认证入口和过滤器。如果请求在选链之前就失败，则检查防火墙；如果链正确却没有进入业务处理，则沿 `VirtualFilterChain` 找出停止调用下游的位置。这样每一步都缩小了问题范围。
 
 多链配置的代表性检查至少包含专用路径、公共路径、没有匹配的路径和重叠路径；它们检验的是匹配关系，不是构建是否成功。

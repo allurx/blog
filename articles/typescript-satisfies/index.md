@@ -6,9 +6,11 @@ domain: "TypeScript"
 tags: ["TypeScript","satisfies","类型推断"]
 ---
 
-配置对象既要符合 `AppConfig`，又希望后续代码知道 `mode` 确实是 `"development"`。直接加类型注解会把变量的公开类型设为 `AppConfig`；直接 `as AppConfig` 又不是同样的契约检查。`satisfies` 把这两个目标分开：检查赋值兼容性，同时保留表达式经推断和上下文类型化得到的类型。
+写配置时，常常希望同时做到两件事：拼错 `mode` 会报错，写下 `mode: "development"` 后，后续代码仍知道这个属性就是 `"development"`。
 
-这个“保留”有边界。它不会自动冻结对象或保留每个数字字面量，更不会在运行时校验 JSON。需要精确字面量与只读属性时，再组合 `as const`。该运算符自 TypeScript 4.9 提供，以下声明输出以 TypeScript 7.0.2、`--strict` 为例。
+类型注解能检查对象是否符合 `AppConfig`，但会把变量的公开类型设为 `AppConfig`。`satisfies` 提供另一种选择：检查对象是否符合要求，再把检查过程中推断出的具体类型交给后续代码。下面用同一份配置比较这两种写法，并看 `as const` 会再改变什么。
+
+`satisfies` 自 TypeScript 4.9 提供，以下声明输出以 TypeScript 7.0.2、`--strict` 为例。它参与编译期类型检查，运行时不会留下校验代码。
 
 ## 类型注解、satisfies 和断言各改变什么
 
@@ -22,7 +24,7 @@ TypeScript 4.9 引入 `satisfies`，官方定义是：验证表达式的类型�
 | `const x = value satisfies T` | 是 | `value` 经正常推断与上下文类型化后的类型 |
 | `const x = value as T` | 断言，不等同于契约检查 | `T` |
 
-因此，`satisfies` 不是“更短的类型注解”，而是“约束检查”和“结果类型”分离的运算符。
+以配置中的 mode 为例，注解后的消费者看到的是 `"development" | "production"`，因此必须接受两种可能；满足检查后的对象则可以保留这次初始化得到的 `"development"`。是否需要这么窄的类型，取决于这个对象是固定配置，还是后面还要切换模式。
 
 ## 上下文类型化仍会影响推断
 
@@ -36,6 +38,8 @@ TypeScript 4.9 引入 `satisfies`，官方定义是：验证表达式的类型�
 这些都是编译期行为，生成的 JavaScript 不包含 `satisfies`。
 
 ## 生成声明文件比较三个配置对象
+
+### 用相同值声明三个对象
 
 将下面代码保存为 `config.ts`。导出配置是为了从声明文件观察模块消费者看到的类型：
 
@@ -65,6 +69,8 @@ export const frozen = {
 } as const satisfies AppConfig;
 ```
 
+### 观察消费者看到的声明
+
 在已有 TypeScript 7.0.2 的项目中执行 `tsc --ignoreConfig config.ts --strict --declaration --emitDeclarationOnly --outDir types`。这里显式传入文件与编译参数，因此使用 7.0 的 `--ignoreConfig` 避免已有 `tsconfig.json` 触发 TS5112。本节在 Windows、TypeScript 7.0.2 下生成声明文件，包含以下导出（省略 `AppConfig`）：
 
 ```ts
@@ -83,11 +89,14 @@ export declare const frozen: {
 };
 ```
 
+### 拼错属性时，检查在哪里发生
+
 把 `checked` 中的 `mode` 改成 `mod`，同次验证得到 TS2561，编译器拒绝这个新鲜对象字面量。对象先赋给其他变量再做兼容性检查时，不能据此假设所有额外属性都会被禁止，仍要区分结构兼容与额外属性检查。
 
-## 在代码内配置和外部输入之间划清边界
+## 什么时候保留窄类型更合适
 
-- 对路由表、功能开关、主题配置等“代码内常量”，优先考虑 `satisfies`：既检查键和值，又保留具体属性供后续推断。
-- 只有确实需要深层只读和精确字面量时才组合 `as const`，否则可能让数组成为只读元组，给后续修改带来额外约束。
-- 对函数参数和模块边界，仍应显式使用稳定的公开类型；不要依赖某个对象偶然推断出的过窄结构作为长期 API。
-- `JSON.parse()`、网络响应和用户输入必须使用运行时校验器或手写解析逻辑；`satisfies` 不能验证运行时数据。
+路由表、主题配置和功能开关写在源码里时，`satisfies` 能同时检查配置形状，并保留每个属性的具体类型。若对象以后要从 development 切换到 production，或者端点数组需要修改，则应确认推断出的类型仍允许这些操作；`as const` 带来的只读元组可能恰好不符合需求。
+
+函数对外接受的配置通常仍适合用稳定的 `AppConfig` 表达。一个具体对象是 development，不表示所有调用者都只能传 development。对象内部的精确信息与公开 API 允许的范围，可以各自承担职责。
+
+如果配置来自 JSON 文件或网络响应，数据要等程序运行时才出现，此时仍需要解析和运行时校验。把 `satisfies AppConfig` 写在一个 `any` 值后面，无法替这些未知数据补上真实性保证。

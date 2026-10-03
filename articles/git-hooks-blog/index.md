@@ -6,13 +6,19 @@ tags: [Hexo, Git, Git-Hook, 自动部署]
 domain: Hexo
 ---
 
-Git 推送可以触发博客构建，但“代码已经保存”和“页面已经发布”是两个不同的结果。可靠的发布流程需要明确构建哪个提交，并在构建成功后才替换线上入口，避免访问者看到生成到一半的目录。
+写完文章，执行一次 Git 推送，服务器就更新博客，是 Git Hook 很直接的用法。不过，若钩子直接清空线上目录再开始生成，构建失败时读者可能只看到半成品。更稳妥的流程是把新提交放到独立目录构建，成功后再切换网站入口。
 
-下面面向 **Ubuntu 26.04 LTS** 这类使用 GNU 工具链的 Linux 服务器。目标软件组合为 **Git 2.56.0、Bash 5.x、Node.js 24.19.0 LTS、npm 12.2.0、nginx 1.30.5 stable**；`mv -T`、`mktemp` 来自 GNU coreutils，`flock` 来自 util-linux，使用发行版仍受维护的包。Hexo 8.1.2 与 NexT 8.29.0 的依赖准备见[入门文章](/hexo-writing/)。这些是部署目标条件，本文没有把 Windows 上的脚本解析或静态构建等同于完整 Linux 部署实测。[Ubuntu 支持周期](https://ubuntu.com/about/release-cycle)、[nginx 发行分支](https://nginx.org/en/download.html)
+本文采用三个位置完成这个流程：裸仓库保存源码，`releases/` 保存每次构建，`current` 符号链接指向正在提供服务的生成目录。沿着这三个位置，就能分清推送、构建和页面切换各自完成了什么。
+
+## 服务器与项目需要准备什么
+
+下面面向 **Ubuntu 26.04 LTS** 这类使用 GNU 工具链的 Linux 服务器。目标软件组合为 **Git 2.56.0、Bash 5.x、Node.js 24.19.0 LTS、npm 12.2.0、nginx 1.30.5 stable**；`mv -T`、`mktemp` 来自 GNU coreutils，`flock` 来自 util-linux，使用发行版仍受维护的包。Hexo 8.1.2 与 NexT 8.29.0 的依赖准备见[入门文章](/hexo-writing/)。以下配置面向这套 Linux 环境；本文未提供完整服务器部署实测。[Ubuntu 支持周期](https://ubuntu.com/about/release-cycle)、[nginx 发行分支](https://nginx.org/en/download.html)
 
 部署账号通过 SSH 接收推送，具有专用目录的写权限；仓库中的构建代码由可信维护者提交。部署前分别运行 `bash --version`、`git --version`、`node --version`、`npm --version`、`mv --version`、`flock --version` 和 `nginx -v`，确认实际安装包与目标能力。macOS 的 BSD 工具和 Windows Git Bash 不能直接当作这套服务端环境。
 
-## 保存完整项目，监听准确的分支
+## 把主分支推送接到部署钩子
+
+### 保存能够独立构建的项目
 
 版本库应保存完整 Hexo 项目，包括文章、站点配置、`_config.next.yml`、自定义资源和 `package-lock.json`。只保存 `source/` 会让主题、插件和构建条件游离在文章版本之外。项目准备可参考[Hexo 与 NexT 入门](/hexo-writing/)。
 
@@ -30,9 +36,13 @@ git remote add deploy deploy@server.example:/srv/blog/repo.git
 git push deploy main
 ```
 
+### 从钩子输入确认被更新的引用
+
 服务器使用 `post-receive`，它从标准输入接收 `旧提交 新提交 引用名`。只处理 `refs/heads/main`，忽略其他分支和删除引用。不能无条件构建裸仓库的 `HEAD`，因为它不一定指向刚被更新的分支。[Git 接收钩子](https://git-scm.com/docs/githooks#post-receive)
 
-## 在独立目录构建，再切换入口
+## 构建完成后再切换网站入口
+
+### 安装 post-receive 脚本
 
 将以下内容保存为 `/srv/blog/repo.git/hooks/post-receive`。脚本按阶段处理：筛选主分支更新、串行化部署、导出确切提交、安装并构建，最后替换静态入口。
 
@@ -98,7 +108,11 @@ chmod +x /srv/blog/repo.git/hooks/post-receive
 
 `git archive` 根据指定提交导出项目，子模块内容不会自动展开，因此这个示例使用 npm 管理 NexT，而不把主题藏在未导出的子模块中。[Git archive](https://git-scm.com/docs/git-archive)
 
+### 连续推送时，让发布顺序跟上主分支
+
 `flock` 让两个推送触发的构建顺序执行。取得锁后重新读取主分支，可以避免等待中的旧钩子最终把较旧版本覆盖到线上。构建后再次检查分支，能跳过已知过期产物；它不是 Git 引用与文件系统之间的原子事务，极短的竞争窗口中仍可能先激活一个完整版本，再由下一次钩子发布新版本。[flock 使用方式](https://man7.org/linux/man-pages/man1/flock.1.html)
+
+### 构建失败时，已有页面继续提供服务
 
 构建失败时，`current` 仍指向上一次成功产物；失败目录留在 `releases/`，便于排查。符号链接切换避免新请求命中半成品，但不能使已经打开页面的后续资源请求固定到同一个版本。需要严格保持跨请求版本一致时，应使用带版本的资源 URL，并保留相应版本资源。
 
@@ -131,6 +145,6 @@ printf '%s %s %s\n' "$revision" "$revision" refs/heads/main |
   (cd /srv/blog/repo.git && hooks/post-receive)
 ```
 
-`post-receive` 在引用更新之后执行，失败不会撤销已经保存的 Git 提交。因此推送成功不能代替构建与页面核验，构建失败也不需要重新提交同一篇正文。
+把发布结果分开观察后，故障恢复也更清楚：Git 已保存而构建失败时，修复构建条件并重新运行钩子即可；构建完成却没有看到新页面时，再检查 current、nginx 根目录与实际访问的地址。`post-receive` 在引用更新后执行，它的失败不会撤销已经保存的提交，因此没有必要仅为重跑构建再提交一份相同正文。
 
 发布目录的清理应另外安排，只删除确认不再被入口或资源引用的版本。这份脚本不自动删除版本，也不把可恢复的构建失败扩大为线上内容丢失。

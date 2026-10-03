@@ -10,7 +10,7 @@
         <relativePath/>
     </parent>
     <groupId>io.allurx</groupId>
-    <artifactId>historical-oauth-client-demo</artifactId>
+    <artifactId>oauth-client-demo</artifactId>
     <version>1.0.0</version>
     <properties>
         <java.version>11</java.version>

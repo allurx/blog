@@ -13,7 +13,7 @@ import { plainText } from "./text.ts";
 export interface TocEntry {
     id: string;
     title: string;
-    depth: 2 | 3 | 4 | 5 | 6;
+    depth: number;
 }
 
 const tableContainer = '<div class="table-scroll" tabindex="0" role="region" aria-label="表格">';
@@ -49,7 +49,7 @@ export function renderMarkdown(markdown: string, imageSize?: (url: string) => { 
                 let id = slug;
                 for (let duplicate = 2; ids.has(id); duplicate++) id = `${slug}-${duplicate}`;
                 ids.add(id);
-                if (depth === 2 || depth === 3 || depth === 4 || depth === 5 || depth === 6) toc.push({ id, title, depth });
+                toc.push({ id, title, depth });
                 return `<h${depth} id="${escapeHtml(id)}">${html}</h${depth}>\n`;
             },
             code({ text, lang }) {

@@ -9,7 +9,9 @@ tags:
 domain: Spring
 ---
 
-HTTP 请求进入业务处理之前，FilterSecurityInterceptor 把请求包装为安全对象，读取规则并调用访问决策器。它还借助基类维护临时身份和调用后处理，但这些扩展不等于直接拦截 Controller 方法或修改其返回值。
+用户已经登录，访问 `/admin` 仍收到拒绝，最值得追踪的是请求进入业务处理前的授权过程：这个 URL 匹配了什么规则，当前身份有哪些权限，访问决策器最终做了什么决定？在本文分析的版本中，FilterSecurityInterceptor 把这三件事串了起来。
+
+它还复用基类的临时身份和调用后处理能力。沿着“检查、调用、恢复”的顺序读源码，可以看清哪些逻辑属于 HTTP 过滤链，哪些只是基类提供的扩展点。
 
 本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE**。前置知识是 Authentication、ConfigAttribute 与[访问决策器](/access-decision-manager/)；固定源码见 [FilterSecurityInterceptor](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/access/intercept/FilterSecurityInterceptor.java) 和 [AbstractSecurityInterceptor](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/intercept/AbstractSecurityInterceptor.java)。
 
@@ -52,7 +54,9 @@ public void invoke(FilterInvocation fi) throws IOException, ServletException {
 
 最关键的顺序是：beforeInvocation 抛异常时，不会进入业务链；下游正常返回或抛异常都会执行 finallyInvocation；只有正常返回后才继续 afterInvocation。不能把后置处理描述成无条件执行。
 
-## beforeInvocation 先取得规则，再决定是否需要认证
+## beforeInvocation 怎样决定是否放行
+
+### 先取得当前请求的规则
 
 元数据源根据安全对象返回 ConfigAttribute 集合。本文的 HTTP 路径通常使用表达式元数据源，其父类按 RequestMatcher 的配置顺序查找，返回第一项匹配的属性。
 
@@ -67,7 +71,7 @@ public void invoke(FilterInvocation fi) throws IOException, ServletException {
 
 同一 URL 配置多条规则时，首先要看匹配顺序，而不是假定所有匹配属性会自动合并。[DefaultFilterInvocationSecurityMetadataSource 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/web/src/main/java/org/springframework/security/web/access/intercept/DefaultFilterInvocationSecurityMetadataSource.java)
 
-## 认证与授权在这里相继发生
+### 准备认证信息，再交给访问决策器
 
 `authenticateIfRequired()` 在令牌已经被信任且不要求始终重新认证时复用它；否则委托 AuthenticationManager，更新上下文后取得结果。接着执行：
 
@@ -75,9 +79,11 @@ public void invoke(FilterInvocation fi) throws IOException, ServletException {
 this.accessDecisionManager.decide(authenticated, object, attributes);
 ```
 
-正常返回表示当前受保护调用获准继续；AccessDeniedException 会发布相应失败事件并向外传播。匿名令牌也可能具有 authenticated 状态，能否访问仍由授权规则判断。[投票规则与全部弃权边界](/access-decision-manager/)
+以 `/admin` 为例，元数据源先给出管理员访问规则，认证步骤取得当前主体，决策器再判断这个主体是否满足规则。`decide` 正常返回后才执行下游链；抛出 AccessDeniedException 时，基类发布相应失败事件并向外传播异常。匿名令牌也可能具有 authenticated 状态，因此“已有 Authentication”还不能回答是否有权限。[投票规则与全部弃权边界](/access-decision-manager/)
 
-## RunAs 临时替换身份，finally 恢复原绑定
+## 获准调用后，临时状态如何恢复
+
+### RunAs 为本次调用安装临时身份
 
 授权通过后，RunAsManager 可以返回一次调用专用的 Authentication。NullRunAsManager 不替换身份；RunAsManagerImpl 识别 `RUN_AS_` 属性，在原权限基础上增加相应临时权限，并与配套提供者使用一致的 key。
 
@@ -98,7 +104,7 @@ protected void finallyInvocation(InterceptorStatusToken token) {
 
 这个恢复在下游失败时也会执行，避免临时身份泄漏到外层后续逻辑。[RunAsManagerImpl 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/intercept/RunAsManagerImpl.java)
 
-## afterInvocation 的返回值边界
+### afterInvocation 收不到 Controller 的返回对象
 
 AbstractSecurityInterceptor 可以把返回值交给 AfterInvocationManager 做后置授权或过滤，但 FilterSecurityInterceptor 调用时传入的是 null，因为 Servlet FilterChain 没有业务返回值。因此不能据此声称它会过滤 Controller 返回的集合。
 
@@ -106,6 +112,6 @@ AbstractSecurityInterceptor 可以把返回值交给 AfterInvocationManager 做�
 
 ## 把访问失败定位到正确阶段
 
-先确认元数据是否匹配到预期规则，再检查是否有认证信息、是否重新认证、决策器为何拒绝；若使用 RunAs，还要检查调用后上下文已恢复。向外传播的安全异常通常由位于外层的 [ExceptionTranslationFilter](/exception-translation-filter/)转换为响应，但响应已经提交时不能再假定能返回标准错误页。
+一个 403 只能告诉客户端访问被拒绝，不能直接指出失败阶段。若元数据源匹配了错误的规则，应调整规则顺序；若身份缺失，应向前追踪认证链；若身份和规则都正确，就继续看决策器的判断。使用 RunAs 的应用还需要检查异常返回后是否恢复了原上下文。向外传播的安全异常通常由位于外层的 [ExceptionTranslationFilter](/exception-translation-filter/)转换为响应，但响应已经提交时不能再假定能返回标准错误页。
 
 最小配置观察应包含无匹配属性、匿名访问、已登录但无权限、正常放行，以及业务链抛异常时的状态恢复。源码中的可选字段不等于应用已经启用相应扩展。

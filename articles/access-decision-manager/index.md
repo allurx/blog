@@ -9,15 +9,17 @@ tags:
 domain: Spring
 ---
 
-一次授权决定需要同时回答两个问题：每个投票者怎样解释规则，以及多张票怎样汇总。把这两层混在一起，会误以为“有一个拒绝就一定拒绝”，或把全部弃权当作允许。
+一个管理接口同时检查角色和访问时间：角色检查通过，时间检查拒绝，请求最后还能放行吗？在 Spring Security 的投票式授权中，答案取决于决策器。`AffirmativeBased` 会允许这组结果，`UnanimousBased` 会拒绝。把两个检查注册进去，并不自动意味着两个条件必须同时满足。
 
-本文研究 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的投票式授权体系。它是历史实现分析，当前项目应按所用版本选择授权 API；这里不把 AccessDecisionManager 当作新项目的默认架构。前置知识是 Authentication、GrantedAuthority 和配置属性 ConfigAttribute，可先看[请求授权入口](/filter-security-interceptor/)。
+要读懂这条授权链，需要分开看两件事：投票者根据什么给出票，决策器又怎样把票变成最终决定。
+
+本文以 **Spring Boot 2.1.5.RELEASE / Spring Security 5.1.5.RELEASE** 的投票式授权体系为准。需要先了解 `Authentication` 如何表示主体与权限；请求怎样进入授权组件，可参阅[请求授权入口](/filter-security-interceptor/)。下面的结论对应这一版本的 `AccessDecisionManager`，使用其他授权 API 时应重新核对调用关系。
 
 文中框架源码摘录来自所链接的固定版本，版权归 Spring 项目原作者，按 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 提供。省略部分通过原始实现查阅，摘录不作为独立 Java 程序编译。
 
 ## 先分清规则、投票者与决策器
 
-调用关系是：拦截器从元数据源取得配置属性，再把认证信息、安全对象和属性集合交给 AccessDecisionManager；决策器逐个调用 AccessDecisionVoter，最后正常返回或抛出 AccessDeniedException。
+访问管理接口时，拦截器先取得当前主体和这个接口的访问规则，再把它们交给 `AccessDecisionManager`。管理器让各个 `AccessDecisionVoter` 判断：我认识这条规则吗？当前主体满足它吗？投票完成后，管理器正常返回表示允许继续，抛出 `AccessDeniedException` 表示拒绝。
 
 | 对象 | 本次调用中的职责 |
 | --- | --- |
@@ -40,7 +42,9 @@ domain: Spring
 | 赞成和反对数量相同且都大于零 | 允许 | 由 `allowIfEqualGrantedDeniedDecisions` 决定，默认允许 | 拒绝 |
 | 全部弃权 | 由共同配置决定，默认拒绝 | 同左；不走平票放行逻辑 | 同左 |
 
-这张表描述汇总规则。UnanimousBased 还有另一项差异：它逐个属性调用投票者，不能无条件把另外两种策略的一组票原样套过来。
+把开篇的例子代入：一张角色赞成票和一张时间反对票，在 `AffirmativeBased` 下足够放行，在默认 `ConsensusBased` 下因平票也会放行，在 `UnanimousBased` 下会被反对票挡住。只有第三种符合“任何检查都可以否决”的意图。
+
+表格适合比较汇总方式，但 `UnanimousBased` 还改变了每次投票收到的输入：它逐个传入配置属性。下面的角色例子会说明，这个差异也能改变结果。
 
 ### AffirmativeBased：一张赞成票即可放行
 
@@ -102,7 +106,9 @@ public int vote(Authentication authentication, Object object,
 }
 ```
 
-上面的 `authentication == null` 是直接反对的边界，不应被“只对支持的属性投票”这句简化描述遗漏。角色前缀属于进入授权组件后的字符串契约，数据库可以保存其他业务标识，再由应用转换成 `ROLE_...`；不能从默认前缀反推数据库必须按同样格式设计。[RoleVoter 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/vote/RoleVoter.java)
+把这段代码与前面的 `ROLE_ADMIN`、`ROLE_DBA` 例子对照，就能看出差异发生在内层比较成功后的立即返回。收到整个集合时，匹配 `ROLE_ADMIN` 已经足以赞成；只收到 `ROLE_DBA` 时，则遍历完权限仍找不到匹配，返回反对。
+
+代码开头还处理了一个更早的失败：`authentication == null` 会直接反对。至于 `ROLE_` 前缀，它约束的是传给投票者的字符串；数据库可以保存业务自己的角色标识，再在构建 `GrantedAuthority` 时转换。[RoleVoter 源码](https://github.com/spring-projects/spring-security/blob/5.1.5.RELEASE/core/src/main/java/org/springframework/security/access/vote/RoleVoter.java)
 
 ### AuthenticatedVoter：区分认证强度
 
@@ -122,6 +128,8 @@ WebExpressionVoter 找出 WebExpressionConfigAttribute，基于 FilterInvocation
 
 ## 怎样验证自己的组合
 
-先写出安全对象、配置属性和主体权限，再分别观察每个投票者的返回值，最后应用决策器规则。至少区分全部弃权、只有反对、赞成与反对混合、非零平票，以及多个独立属性的场景。上文表格是对固定版本代码的推导，不是对某个真实系统权限配置已经通过验证的声明。
+若管理接口要求“管理员并且处于允许访问的时间”，先把两项条件写成同一个明确的业务要求，再对照实际组件：两个投票者是否都收到所需属性？时间不满足时是否明确反对？决策器是否允许另一张赞成票覆盖它？这样才能把配置与预期的“并且”关系对应起来。
+
+验证时尤其值得构造“一项通过、一项失败”的输入。只测试全部通过和全部失败，三种策略往往给出同样结果，最容易漏掉组合方式的差别。以上行为是对固定版本源码的分析，实际应用仍需通过自己的请求与权限配置验证。
 
 配置器负责创建这些组件，拦截器负责调用它们。需要追踪一次 HTTP 授权失败时，继续看 [FilterSecurityInterceptor](/filter-security-interceptor/) 如何取得属性，以及 [ExceptionTranslationFilter](/exception-translation-filter/) 如何把拒绝转换为响应。
