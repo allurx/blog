@@ -32,35 +32,47 @@ export function renderPage({ path, title, description, body, assets, active, art
     const canonical = new URL(path, site.url).href;
     const websiteId = new URL("/#website", site.url).href;
     const author = { "@type": "Person", name: site.author };
-    const structuredData = article ? {
-        "@context": "https://schema.org",
-        "@type": "BlogPosting",
-        headline: article.title,
-        description,
-        url: canonical,
-        mainEntityOfPage: canonical,
-        inLanguage: "zh-CN",
-        author,
-        datePublished: `${article.date}T00:00:00+08:00`,
-        dateModified: `${article.updated ?? article.date}T00:00:00+08:00`,
-        articleSection: article.domain,
-        keywords: article.tags,
-        isPartOf: { "@id": websiteId },
-    } : path === "/" ? {
-        "@context": "https://schema.org",
-        "@type": "WebSite",
-        "@id": websiteId,
-        name: site.title,
-        alternateName: `${site.author} 的个人博客`,
-        description: site.description,
-        url: canonical,
-        inLanguage: "zh-CN",
-        author,
-    } : undefined;
-    const navigation = [["/", "文章"], ["/archives/", "归档"]]
-        .map(([url, label]) => `<a href="${url}"${active === url ? ' aria-current="page"' : ""}>
+    const structuredData = article
+        ? {
+              "@context": "https://schema.org",
+              "@type": "BlogPosting",
+              headline: article.title,
+              description,
+              url: canonical,
+              mainEntityOfPage: canonical,
+              inLanguage: "zh-CN",
+              author,
+              datePublished: `${article.date}T00:00:00+08:00`,
+              dateModified: `${article.updated ?? article.date}T00:00:00+08:00`,
+              articleSection: article.domain,
+              keywords: article.tags,
+              isPartOf: { "@id": websiteId },
+          }
+        : path === "/"
+          ? {
+                "@context": "https://schema.org",
+                "@type": "WebSite",
+                "@id": websiteId,
+                name: site.title,
+                alternateName: `${site.author} 的个人博客`,
+                description: site.description,
+                url: canonical,
+                inLanguage: "zh-CN",
+                author,
+            }
+          : undefined;
+    const navigation = (
+        [
+            ["/", "文章"],
+            ["/archives/", "归档"],
+        ] as const
+    )
+        .map(
+            ([url, label]) => `<a href="${url}"${active === url ? ' aria-current="page"' : ""}>
     ${icon(url === "/" ? "file" : "archive")}<span>${label}</span>
-  </a>`).join("\n");
+  </a>`
+        )
+        .join("\n");
 
     return `<!doctype html>
 <html lang="zh-CN">

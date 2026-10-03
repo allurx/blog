@@ -5,193 +5,200 @@
 
 /* 目录在竖向工具左侧展开；标题固定，章节列表独立滚动。 */
 .article-navigation {
-  grid-area: toc;
-  min-width: 0;
+    grid-area: toc;
+    min-width: 0;
 }
 .toc {
-  -webkit-user-select: none;
-  user-select: none;
-  display: flex;
-  flex-direction: column;
-  position: static;
-  width: 100%;
-  max-height: min(65dvh, 38rem);
-  margin: 0;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 1.15rem;
-  background: var(--toc-bg);
-  color: var(--color);
-  font-size: .875rem;
-  line-height: 1.65;
+    -webkit-user-select: none;
+    user-select: none;
+    display: flex;
+    flex-direction: column;
+    position: static;
+    width: 100%;
+    max-height: min(65dvh, 38rem);
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 1.15rem;
+    background: var(--toc-bg);
+    color: var(--color);
+    font-size: 0.875rem;
+    line-height: 1.65;
 }
 .toc-header {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: .75rem;
-  min-height: 4rem;
-  padding: .8rem 1rem;
-  border-bottom: 1px solid var(--border);
-  background: linear-gradient(115deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent);
+    display: flex;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-height: 4rem;
+    padding: 0.8rem 1rem;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(115deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent);
 }
 .toc-header h2 {
-  margin: 0;
-  font-size: .9rem;
-  font-weight: 650;
+    margin: 0;
+    font-size: 0.9rem;
+    font-weight: 650;
 }
 .toc-header p {
-  margin: .1rem 0 0;
-  color: var(--muted);
-  font-size: .75rem;
+    margin: 0.1rem 0 0;
+    color: var(--muted);
+    font-size: 0.75rem;
 }
 .toc-close {
-  display: none;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  padding: 0;
-  border: 1px solid var(--control-border);
-  border-radius: .8rem;
-  background: var(--panel);
-  color: var(--muted);
+    display: none;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 1px solid var(--control-border);
+    border-radius: 0.8rem;
+    background: var(--panel);
+    color: var(--muted);
 }
 .toc-list {
-  flex: 1;
-  min-height: 0;
-  padding: .35rem .65rem .75rem;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: var(--control-border) transparent;
+    flex: 1;
+    min-height: 0;
+    padding: 0.35rem 0.65rem 0.75rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--control-border) transparent;
 }
 .toc ol {
-  list-style: none;
-  margin: 0;
-  padding: 0;
+    list-style: none;
+    margin: 0;
+    padding: 0;
 }
 .toc ol ol {
-  margin-block: .25rem .5rem;
-  margin-left: .65rem;
-  padding-left: .25rem;
-  border-left: 1px solid color-mix(in srgb, var(--muted) 28%, var(--toc-bg));
+    margin-block: 0.25rem 0.5rem;
+    margin-left: 0.65rem;
+    padding-left: 0.25rem;
+    border-left: 1px solid color-mix(in srgb, var(--muted) 28%, var(--toc-bg));
 }
 .toc ol ol ol ol {
-  margin-left: .25rem;
+    margin-left: 0.25rem;
 }
 .toc li {
-  margin: .2rem 0;
+    margin: 0.2rem 0;
 }
 .toc-list > ol > li + li {
-  margin-top: .55rem;
-  padding-top: .45rem;
-  border-top: 1px solid var(--control-border);
+    margin-top: 0.55rem;
+    padding-top: 0.45rem;
+    border-top: 1px solid var(--control-border);
 }
 .toc-list > ol > li > a {
-  color: var(--color);
-  font-weight: 600;
+    color: var(--color);
+    font-weight: 600;
 }
 .toc-list > ol > li > ol > li > a {
-  color: var(--color);
-  font-weight: 500;
+    color: var(--color);
+    font-weight: 500;
 }
 .toc ol ol a {
-  font-size: .8125rem;
+    font-size: 0.8125rem;
 }
 .toc a {
-  display: block;
-  min-height: 44px;
-  padding: .65rem;
-  border-radius: .65rem;
-  color: var(--muted);
-  text-decoration: none;
-  overflow-wrap: anywhere;
+    display: block;
+    min-height: 44px;
+    padding: 0.65rem;
+    border-radius: 0.65rem;
+    color: var(--muted);
+    text-decoration: none;
+    overflow-wrap: anywhere;
 }
 .toc a[aria-current="location"] {
-  background: var(--accent-soft);
-  color: var(--accent);
-  font-weight: 600;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
 }
 .toc :focus-visible {
-  outline-offset: -2px;
+    outline-offset: -2px;
 }
 @media (hover: hover) and (pointer: fine) {
-  .toc a:hover, .toc-close:hover {
-    background: var(--surface);
-    color: var(--accent);
-  }
+    .toc a:hover,
+    .toc-close:hover {
+        background: var(--surface);
+        color: var(--accent);
+    }
 }
-.toc a:active, .toc-close:active {
-  background: var(--accent-soft);
-  color: var(--accent);
+.toc a:active,
+.toc-close:active {
+    background: var(--accent-soft);
+    color: var(--accent);
 }
 
 @supports selector(:popover-open) {
-  .article-navigation {
-    position: fixed;
-    width: 0;
-    height: 0;
-  }
-  .toc:not(:popover-open) {
-    display: none;
-    pointer-events: none;
-  }
-  .toc {
-    --toc-right: calc(var(--rail-right) + var(--rail-width) + var(--rail-gap));
-    --toc-bottom: max(1rem, env(safe-area-inset-bottom));
-    position: fixed;
-    inset: auto var(--toc-right) var(--toc-bottom) auto;
-    width: min(22rem, calc(100% - var(--toc-right) - max(.5rem, env(safe-area-inset-left))));
-    height: auto;
-    max-height: min(65dvh, 32rem, calc(100dvh - var(--toc-bottom) - max(1rem, env(safe-area-inset-top))));
-    margin: 0;
-    border-color: var(--control-border);
-    box-shadow: var(--floating-shadow);
-  }
-  .toc-close {
-    display: flex;
-  }
+    .article-navigation {
+        position: fixed;
+        width: 0;
+        height: 0;
+    }
+    .toc:not(:popover-open) {
+        display: none;
+        pointer-events: none;
+    }
+    .toc {
+        --toc-right: calc(var(--rail-right) + var(--rail-width) + var(--rail-gap));
+        --toc-bottom: max(1rem, env(safe-area-inset-bottom));
+        position: fixed;
+        inset: auto var(--toc-right) var(--toc-bottom) auto;
+        width: min(22rem, calc(100% - var(--toc-right) - max(0.5rem, env(safe-area-inset-left))));
+        height: auto;
+        max-height: min(65dvh, 32rem, calc(100dvh - var(--toc-bottom) - max(1rem, env(safe-area-inset-top))));
+        margin: 0;
+        border-color: var(--control-border);
+        box-shadow: var(--floating-shadow);
+    }
+    .toc-close {
+        display: flex;
+    }
 }
 @media (height < 28rem) {
-  .toc-header {
-    min-height: 3.25rem;
-    padding-block: .3rem;
-  }
-  .toc-header p {
-    display: none;
-  }
+    .toc-header {
+        min-height: 3.25rem;
+        padding-block: 0.3rem;
+    }
+    .toc-header p {
+        display: none;
+    }
 }
 @media (prefers-reduced-motion: no-preference) {
-  @supports selector(:popover-open) {
-    .toc[popover] {
-      opacity: 0;
-      transform: translateX(.5rem);
-      transition: opacity 180ms ease, transform 180ms ease, display 180ms allow-discrete, overlay 180ms allow-discrete;
+    @supports selector(:popover-open) {
+        .toc[popover] {
+            opacity: 0;
+            transform: translateX(0.5rem);
+            transition:
+                opacity 180ms ease,
+                transform 180ms ease,
+                display 180ms allow-discrete,
+                overlay 180ms allow-discrete;
+        }
+        .toc:popover-open {
+            opacity: 1;
+            transform: none;
+        }
+        @starting-style {
+            .toc:popover-open {
+                opacity: 0;
+                transform: translateX(0.5rem);
+            }
+        }
     }
-    .toc:popover-open {
-      opacity: 1;
-      transform: none;
-    }
-    @starting-style {
-      .toc:popover-open {
-        opacity: 0;
-        transform: translateX(.5rem);
-      }
-    }
-  }
 }
 @media (forced-colors: active) {
-  .toc a[aria-current="location"] {
-    outline: 2px solid Highlight;
-    outline-offset: -2px;
-  }
+    .toc a[aria-current="location"] {
+        outline: 2px solid Highlight;
+        outline-offset: -2px;
+    }
 }
 @media print {
-  .article-navigation, .toc {
-    display: none !important;
-  }
+    .article-navigation,
+    .toc {
+        display: none !important;
+    }
 }

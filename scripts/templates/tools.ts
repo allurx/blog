@@ -9,9 +9,10 @@ import { icon } from "../icons.ts";
  * 列表、归档和文章共用同一竖向工具栏，页面仅决定返回入口及是否提供目录。
  */
 export function renderPageTools(page: "home" | "archive" | "article", hasToc = false): string {
-    const destination = page === "home"
-        ? `<a href="/archives/" aria-label="文章归档" title="文章归档">${icon("archive")}<span>归档</span></a>`
-        : `<a href="/" aria-label="返回文章列表" title="返回文章列表">${icon("arrow-left")}<span>列表</span></a>`;
+    const destination =
+        page === "home"
+            ? `<a href="/archives/" aria-label="文章归档" title="文章归档">${icon("archive")}<span>归档</span></a>`
+            : `<a href="/" aria-label="返回文章列表" title="返回文章列表">${icon("arrow-left")}<span>列表</span></a>`;
     return `<details class="page-tools">
   <summary class="page-tools-toggle" title="页面工具">${icon("more-horizontal")}${icon("close")}<span class="sr-only tools-expand-label">展开工具</span><span class="sr-only tools-collapse-label">收起工具</span></summary>
   <nav class="page-tools-actions" aria-label="页面工具">

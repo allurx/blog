@@ -5,23 +5,25 @@
 
 /* 各页面共用静态冷暖光晕，刷新时不重播入场动画。 */
 body {
-  display: flow-root;
-  min-height: 100vh;
-  isolation: isolate;
+    display: flow-root;
+    min-height: 100vh;
+    isolation: isolate;
 }
 
 body::before {
-  content: "";
-  position: fixed;
-  inset: -12vmax;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse at 16% 18%, var(--tint), transparent 46%),
-    radial-gradient(ellipse at 87% 74%, var(--glow), transparent 44%),
-    radial-gradient(ellipse at 70% 10%, var(--bloom), transparent 42%);
+    content: "";
+    position: fixed;
+    inset: -12vmax;
+    z-index: -1;
+    pointer-events: none;
+    background:
+        radial-gradient(ellipse at 16% 18%, var(--tint), transparent 46%),
+        radial-gradient(ellipse at 87% 74%, var(--glow), transparent 44%),
+        radial-gradient(ellipse at 70% 10%, var(--bloom), transparent 42%);
 }
 
 @media print, (forced-colors: active) {
-  body::before { display: none; }
+    body::before {
+        display: none;
+    }
 }

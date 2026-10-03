@@ -10,7 +10,8 @@ export function initializeArticleToc(): void {
     const toc = document.querySelector<HTMLElement>(".toc");
     if (!toc) return;
 
-    const list = toc.querySelector<HTMLElement>(".toc-list")!;
+    const list = toc.querySelector<HTMLElement>(".toc-list");
+    if (!list) throw new Error("文章目录缺少列表容器");
     const sections = [...list.querySelectorAll<HTMLAnchorElement>('a[href^="#"]')].flatMap((link) => {
         const heading = document.getElementById(decodeURIComponent(link.hash.slice(1)));
         return heading ? [{ link, heading }] : [];
@@ -22,17 +23,21 @@ export function initializeArticleToc(): void {
     const updateCurrentSection = () => {
         frame = undefined;
         const sectionBoundary = Number.parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
-        const atEnd = window.scrollY > 0 && Math.ceil(window.scrollY + window.innerHeight) >= document.documentElement.scrollHeight;
+        const atEnd =
+            window.scrollY > 0 &&
+            Math.ceil(window.scrollY + window.innerHeight) >= document.documentElement.scrollHeight;
         // 短末节到不了判定线时仍标记末节；原生锚点允许不足一个 CSS 像素的舍入差异。
-        const current = atEnd ? sections.at(-1)?.link
-            : sections.findLast(({ heading }) => heading.getBoundingClientRect().top < sectionBoundary + 1)?.link ?? sections[0]?.link;
+        const current = atEnd
+            ? sections.at(-1)?.link
+            : (sections.findLast(({ heading }) => heading.getBoundingClientRect().top < sectionBoundary + 1)?.link ??
+              sections[0]?.link);
         if (current === currentLink) return;
         currentLink?.removeAttribute("aria-current");
         current?.setAttribute("aria-current", "location");
         currentLink = current;
     };
     const scheduleUpdate = () => {
-        if (frame === undefined) frame = requestAnimationFrame(updateCurrentSection);
+        frame ??= requestAnimationFrame(updateCurrentSection);
     };
     window.addEventListener("scroll", scheduleUpdate, { passive: true });
     window.addEventListener("resize", scheduleUpdate);
@@ -69,7 +74,13 @@ export function initializeArticleToc(): void {
         const hadTabIndex = section.heading.hasAttribute("tabindex");
         if (!hadTabIndex) {
             section.heading.tabIndex = -1;
-            section.heading.addEventListener("blur", () => section.heading.removeAttribute("tabindex"), { once: true });
+            section.heading.addEventListener(
+                "blur",
+                () => {
+                    section.heading.removeAttribute("tabindex");
+                },
+                { once: true }
+            );
         }
         section.heading.focus({ preventScroll: true });
     });

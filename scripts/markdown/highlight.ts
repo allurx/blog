@@ -16,7 +16,18 @@ import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 
 // 只加载文章使用的语法；高亮在构建时完成，浏览器只接收静态标记。
-for (const [name, language] of Object.entries({ bash, c, java, javascript, json, markdown, sql, typescript, xml, yaml })) {
+for (const [name, language] of Object.entries({
+    bash,
+    c,
+    java,
+    javascript,
+    json,
+    markdown,
+    sql,
+    typescript,
+    xml,
+    yaml,
+})) {
     hljs.registerLanguage(name, language);
 }
 hljs.registerAliases("mysql", { languageName: "sql" });

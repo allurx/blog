@@ -5,74 +5,44 @@
 
 /* 冷暖光晕、内容表面与控件共用一套层次；文字区域始终保持足够对比。 */
 :root {
-  --panel: #ffffff;
-  --glass: #ffffffde;
-  --field-bg: #f4f6fb;
-  --toc-bg: #eaf0fb;
-  --surface: #f0f3fa;
-  --surface-hover: #e8edfa;
-  --muted: #59667f;
-  --border: #7e91ba26;
-  --control-border: #7e91ba40;
-  --accent: #4b5fc7;
-  --accent-soft: #edf0ff;
-  --selection: #dce3ff;
-  --danger: #b94353;
-  --success: #35725d;
-  --tint: #bad4ff9e;
-  --glow: #f9d8c985;
-  --bloom: #d5ccfa70;
-  --focus-ring: #6073cde6;
-  --focus-shadow: 0 0 0 3px #7185dc20;
-  --panel-shadow: 0 24px 80px #2838660c, 0 4px 16px #28386605;
-  --floating-shadow: 0 16px 48px #2338611f, 0 2px 8px #2338610a;
-  --syntax-keyword: #946089;
-  --syntax-string: #39704d;
-  --syntax-number: #925819;
-  --syntax-title: #346587;
-  --syntax-comment: #68748a;
-  --page-width: 70rem;
-  --gutter: clamp(1rem, 3vw, 2.5rem);
-  --sheet-padding: clamp(1.25rem, 4vw, 3rem);
-  --header-height: 4.5rem;
-  --header-top: max(1rem, env(safe-area-inset-top));
-  --anchor-offset: 2rem;
-  --control-radius: .8rem;
-  --mono: "Cascadia Code", "SFMono-Regular", Consolas, ui-monospace, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --panel: #ffffff;
+    --glass: #ffffffde;
+    --field-bg: #f4f6fb;
+    --toc-bg: #eaf0fb;
+    --surface: #f0f3fa;
+    --surface-hover: #e8edfa;
+    --muted: #59667f;
+    --border: #7e91ba26;
+    --control-border: #7e91ba40;
+    --accent: #4b5fc7;
+    --accent-soft: #edf0ff;
+    --selection: #dce3ff;
+    --danger: #b94353;
+    --success: #35725d;
+    --tint: #bad4ff9e;
+    --glow: #f9d8c985;
+    --bloom: #d5ccfa70;
+    --focus-ring: #6073cde6;
+    --focus-shadow: 0 0 0 3px #7185dc20;
+    --panel-shadow: 0 24px 80px #2838660c, 0 4px 16px #28386605;
+    --floating-shadow: 0 16px 48px #2338611f, 0 2px 8px #2338610a;
+    --syntax-keyword: #946089;
+    --syntax-string: #39704d;
+    --syntax-number: #925819;
+    --syntax-title: #346587;
+    --syntax-comment: #68748a;
+    --page-width: 70rem;
+    --gutter: clamp(1rem, 3vw, 2.5rem);
+    --sheet-padding: clamp(1.25rem, 4vw, 3rem);
+    --header-height: 4.5rem;
+    --header-top: max(1rem, env(safe-area-inset-top));
+    --anchor-offset: 2rem;
+    --control-radius: 0.8rem;
+    --mono: "Cascadia Code", "SFMono-Regular", Consolas, ui-monospace, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 :root[data-theme="dark"] {
-  --panel: #1a2336;
-  --glass: #1a2336e8;
-  --field-bg: #222e44;
-  --toc-bg: #24324b;
-  --surface: #243047;
-  --surface-hover: #2c3a56;
-  --muted: #b0bcd4;
-  --border: #b1c6f21c;
-  --control-border: #b1c6f233;
-  --accent: #b6c4ff;
-  --accent-soft: #2d395c;
-  --selection: #42558b;
-  --danger: #f1a5b4;
-  --success: #a4d4bb;
-  --tint: #344b8b7a;
-  --glow: #66495357;
-  --bloom: #50477d61;
-  --focus-ring: #b6c4ffb3;
-  --focus-shadow: 0 0 0 3px #b6c4ff20;
-  --panel-shadow: 0 24px 80px #03091833, 0 4px 16px #0309181f;
-  --floating-shadow: 0 16px 48px #03091866, 0 2px 8px #03091840;
-  --syntax-keyword: #dfb1d9;
-  --syntax-string: #a3cbb1;
-  --syntax-number: #ebc5a0;
-  --syntax-title: #99cee6;
-  --syntax-comment: #a7b6d0;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
     --panel: #1a2336;
     --glass: #1a2336e8;
     --field-bg: #222e44;
@@ -99,29 +69,61 @@
     --syntax-number: #ebc5a0;
     --syntax-title: #99cee6;
     --syntax-comment: #a7b6d0;
-  }
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --panel: #1a2336;
+        --glass: #1a2336e8;
+        --field-bg: #222e44;
+        --toc-bg: #24324b;
+        --surface: #243047;
+        --surface-hover: #2c3a56;
+        --muted: #b0bcd4;
+        --border: #b1c6f21c;
+        --control-border: #b1c6f233;
+        --accent: #b6c4ff;
+        --accent-soft: #2d395c;
+        --selection: #42558b;
+        --danger: #f1a5b4;
+        --success: #a4d4bb;
+        --tint: #344b8b7a;
+        --glow: #66495357;
+        --bloom: #50477d61;
+        --focus-ring: #b6c4ffb3;
+        --focus-shadow: 0 0 0 3px #b6c4ff20;
+        --panel-shadow: 0 24px 80px #03091833, 0 4px 16px #0309181f;
+        --floating-shadow: 0 16px 48px #03091866, 0 2px 8px #03091840;
+        --syntax-keyword: #dfb1d9;
+        --syntax-string: #a3cbb1;
+        --syntax-number: #ebc5a0;
+        --syntax-title: #99cee6;
+        --syntax-comment: #a7b6d0;
+    }
 }
 
 @media (width < 40rem) {
-  :root {
-    --header-height: 4rem;
-    --header-top: max(.5rem, env(safe-area-inset-top));
-  }
+    :root {
+        --header-height: 4rem;
+        --header-top: max(0.5rem, env(safe-area-inset-top));
+    }
 }
 
 @media (height < 28rem) {
-  :root {
-    --anchor-offset: 1rem;
-  }
+    :root {
+        --anchor-offset: 1rem;
+    }
 }
 
 @media print {
-  :root, :root[data-theme], :root:not([data-theme="light"]) {
-    --panel: white;
-    --surface: #f4f4f4;
-    --muted: #444;
-    --border: #bbb;
-    --accent: #222;
-    --anchor-offset: 0px;
-  }
+    :root,
+    :root[data-theme],
+    :root:not([data-theme="light"]) {
+        --panel: white;
+        --surface: #f4f4f4;
+        --muted: #444;
+        --border: #bbb;
+        --accent: #222;
+        --anchor-offset: 0px;
+    }
 }

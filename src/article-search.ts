@@ -22,7 +22,7 @@ export function initializeArticleSearch(): void {
     const empty = document.querySelector<HTMLElement>("#empty-state");
     const rows = [...document.querySelectorAll<HTMLElement>(".article-row")].map((element) => ({
         element,
-        searchable: (element.dataset.search ?? element.textContent ?? "").toLocaleLowerCase(),
+        searchable: (element.dataset["search"] ?? element.textContent).toLocaleLowerCase(),
     }));
 
     // 普通 details 不会像原生 select 自动避让视口，按入口两侧的实际空间限制弹层。
@@ -32,7 +32,7 @@ export function initializeArticleSearch(): void {
         const below = window.innerHeight - bounds.bottom;
         const above = bounds.top;
         const openAbove = above > below;
-        domain.dataset.placement = openAbove ? "above" : "below";
+        domain.dataset["placement"] = openAbove ? "above" : "below";
         domain.style.setProperty("--domain-space", `${Math.max(0, openAbove ? above : below)}px`);
     };
 
@@ -42,28 +42,38 @@ export function initializeArticleSearch(): void {
         fitDomainMenu();
     };
     for (const group of filters.querySelectorAll<HTMLDetailsElement>(".domain-group")) {
-        const choices = group.querySelector<HTMLElement>(".domain-choices")!;
-        const synchronizeChoices = () => { choices.inert = !group.open; };
+        const choices = group.querySelector<HTMLElement>(".domain-choices");
+        if (!choices) throw new Error("领域分组缺少选项容器");
+        const synchronizeChoices = () => {
+            choices.inert = !group.open;
+        };
         group.addEventListener("toggle", synchronizeChoices);
         synchronizeChoices();
     }
 
     const filterArticles = (updateUrl = true): void => {
         const query = search.value.trim();
-        const selectedDomains = new Set(domainOptions.filter((option) => option.checked && !option.disabled).map((option) => option.value));
+        const selectedDomains = new Set(
+            domainOptions.filter((option) => option.checked && !option.disabled).map((option) => option.value)
+        );
         const terms = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
         let visible = 0;
         for (const { element, searchable } of rows) {
-            element.hidden = !terms.every((term) => searchable.includes(term))
-                || selectedDomains.size > 0 && !selectedDomains.has(element.dataset.domain ?? "");
+            element.hidden =
+                !terms.every((term) => searchable.includes(term)) ||
+                (selectedDomains.size > 0 && !selectedDomains.has(element.dataset["domain"] ?? ""));
             if (!element.hidden) visible++;
         }
 
         const filtered = !!query || selectedDomains.size > 0;
-        if (domainSelection) domainSelection.textContent = selectedDomains.size ? `已选 ${selectedDomains.size} 个领域` : "全部领域";
+        if (domainSelection)
+            domainSelection.textContent = selectedDomains.size ? `已选 ${selectedDomains.size} 个领域` : "全部领域";
         if (count) {
             count.textContent = filtered ? `${visible} / ${rows.length} 篇` : `${rows.length} 篇`;
-            count.setAttribute("aria-label", filtered ? `共 ${rows.length} 篇文章，找到 ${visible} 篇` : `共 ${rows.length} 篇文章`);
+            count.setAttribute(
+                "aria-label",
+                filtered ? `共 ${rows.length} 篇文章，找到 ${visible} 篇` : `共 ${rows.length} 篇文章`
+            );
         }
         if (empty) empty.hidden = visible !== 0;
         if (clearFilters) clearFilters.hidden = !filtered;
@@ -93,9 +103,11 @@ export function initializeArticleSearch(): void {
         filterArticles();
     });
     search.addEventListener("input", (event) => {
-        if (!(event as InputEvent).isComposing) filterArticles();
+        if (!event.isComposing) filterArticles();
     });
-    search.addEventListener("compositionend", () => filterArticles());
+    search.addEventListener("compositionend", () => {
+        filterArticles();
+    });
     search.addEventListener("keydown", (event) => {
         if (event.key === "Escape" && domain?.open) return;
         if (event.key !== "Escape" || event.isComposing || !search.value) return;
@@ -103,7 +115,9 @@ export function initializeArticleSearch(): void {
         search.value = "";
         filterArticles();
     });
-    domain?.addEventListener("change", () => filterArticles());
+    domain?.addEventListener("change", () => {
+        filterArticles();
+    });
     domain?.addEventListener("toggle", synchronizeDomainPanel);
     window.addEventListener("resize", fitDomainMenu);
     window.addEventListener("scroll", fitDomainMenu, { passive: true });

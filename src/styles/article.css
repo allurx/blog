@@ -5,119 +5,121 @@
 
 /* 正文保留自然文档滚动，目录与工具使用同一语义结构适配可用空间。 */
 .article-page {
-  --article-padding: clamp(1.25rem, 2.5vw, 2rem);
-  display: grid;
-  grid-template-areas: "toc" "article";
-  gap: 1rem;
-  align-items: start;
+    --article-padding: clamp(1.25rem, 2.5vw, 2rem);
+    display: grid;
+    grid-template-areas: "toc" "article";
+    gap: 1rem;
+    align-items: start;
 }
 .article-page > article {
-  grid-area: article;
-  min-width: 0;
-  padding: var(--article-padding);
-  border: 1px solid var(--border);
-  border-radius: 1.35rem;
-  background: var(--panel);
-  box-shadow: var(--panel-shadow);
+    grid-area: article;
+    min-width: 0;
+    padding: var(--article-padding);
+    border: 1px solid var(--border);
+    border-radius: 1.35rem;
+    background: var(--panel);
+    box-shadow: var(--panel-shadow);
 }
 .article-header {
-  margin-bottom: 1.75rem;
-  padding-bottom: 1.5rem;
-  border-bottom: 1px solid var(--border);
+    margin-bottom: 1.75rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--border);
 }
 .article-header h1 {
-  margin: 0 0 1.1rem;
-  font-size: clamp(1.7rem, 3vw, 2.4rem);
-  line-height: 1.45;
-  font-weight: 600;
-  letter-spacing: -.025em;
-  overflow-wrap: anywhere;
-  text-wrap: balance;
-  scroll-margin-top: 0;
+    margin: 0 0 1.1rem;
+    font-size: clamp(1.7rem, 3vw, 2.4rem);
+    line-height: 1.45;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+    scroll-margin-top: 0;
 }
 .article-meta {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: .5rem 1rem;
-  color: var(--muted);
-  font-size: .8rem;
-  line-height: 1.8;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem 1rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+    line-height: 1.8;
 }
 .article-meta time {
-  font-variant-numeric: tabular-nums;
+    font-variant-numeric: tabular-nums;
 }
 .article-domain {
-  padding: .1rem .6rem;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  color: var(--accent);
+    padding: 0.1rem 0.6rem;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
 }
 .article-page .prose {
-  min-width: 0;
+    min-width: 0;
 }
 .article-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: .5rem;
-  list-style: none;
-  margin: .8rem 0 0;
-  padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    list-style: none;
+    margin: 0.8rem 0 0;
+    padding: 0;
 }
 .article-tags li {
-  padding: .15rem .6rem;
-  border-radius: 999px;
-  background: var(--field-bg);
-  color: var(--muted);
-  font-size: .75rem;
-  overflow-wrap: anywhere;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    background: var(--field-bg);
+    color: var(--muted);
+    font-size: 0.75rem;
+    overflow-wrap: anywhere;
 }
 .without-toc {
-  grid-template-areas: "article";
+    grid-template-areas: "article";
 }
 
 @supports selector(:popover-open) {
-  .article-page {
-    grid-template-areas: "article";
-  }
+    .article-page {
+        grid-template-areas: "article";
+    }
 }
 
 @media (width < 40rem) {
-  .article-page {
-    --article-padding: 1rem;
-  }
-  .article-page > article {
-    border-radius: 0;
-  }
-  .article-header {
-    margin-bottom: 1.5rem;
-    padding-bottom: 1.25rem;
-  }
-  .article-meta {
-    gap: .4rem .75rem;
-  }
+    .article-page {
+        --article-padding: 1rem;
+    }
+    .article-page > article {
+        border-radius: 0;
+    }
+    .article-header {
+        margin-bottom: 1.5rem;
+        padding-bottom: 1.25rem;
+    }
+    .article-meta {
+        gap: 0.4rem 0.75rem;
+    }
 }
 
 @media print {
-  .article-page {
-    display: block;
-  }
-  .article-page > article, .article-page.without-toc > article {
-    max-width: none;
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: none;
-    box-shadow: none;
-  }
-  .article-header {
-    margin-bottom: 1.5rem;
-  }
-  .article-header h1 {
-    font-size: 22pt;
-  }
-  .article-domain, .article-tags li {
-    background: none;
-    color: inherit;
-  }
+    .article-page {
+        display: block;
+    }
+    .article-page > article,
+    .article-page.without-toc > article {
+        max-width: none;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: none;
+        box-shadow: none;
+    }
+    .article-header {
+        margin-bottom: 1.5rem;
+    }
+    .article-header h1 {
+        font-size: 22pt;
+    }
+    .article-domain,
+    .article-tags li {
+        background: none;
+        color: inherit;
+    }
 }

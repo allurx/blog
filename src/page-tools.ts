@@ -10,8 +10,9 @@ export function initializePageTools(): void {
     const toolbox = document.querySelector<HTMLDetailsElement>(".page-tools");
     if (!toolbox) return;
 
-    const summary = toolbox.querySelector<HTMLElement>("summary")!;
-    const actions = toolbox.querySelector<HTMLElement>(".page-tools-actions")!;
+    const summary = toolbox.querySelector<HTMLElement>("summary");
+    const actions = toolbox.querySelector<HTMLElement>(".page-tools-actions");
+    if (!summary || !actions) throw new Error("页面工具缺少开关或操作容器");
     const toc = document.querySelector<HTMLElement>(".toc");
     const narrow = window.matchMedia("(width < 40rem)");
     const closeToc = () => {
@@ -20,7 +21,7 @@ export function initializePageTools(): void {
         return true;
     };
     const adaptTools = () => {
-        delete toolbox.dataset.motionReady;
+        delete toolbox.dataset["motionReady"];
         const focusedInside = toolbox.contains(document.activeElement);
         const closedToc = narrow.matches && closeToc();
         toolbox.open = !narrow.matches;
@@ -33,7 +34,9 @@ export function initializePageTools(): void {
         if (!toolbox.open && closeToc()) summary.focus({ preventScroll: true });
     });
     // 仅在用户开始操作后启用过渡，桌面初始展开保持静态。
-    const enableMotion = () => { toolbox.dataset.motionReady = ""; };
+    const enableMotion = () => {
+        toolbox.dataset["motionReady"] = "";
+    };
     toolbox.addEventListener("pointerdown", enableMotion);
     toolbox.addEventListener("keydown", enableMotion);
     narrow.addEventListener("change", adaptTools);

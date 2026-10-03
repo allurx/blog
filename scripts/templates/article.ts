@@ -12,8 +12,10 @@ import { renderPageTools } from "./tools.ts";
 
 function articleDates(article: Article): string {
     const published = `<span>发布于 <time datetime="${article.date}">${article.date}</time></span>`;
-    const updated = article.updated && article.updated !== article.date
-        ? `<span><span aria-hidden="true">·</span> 更新于 <time datetime="${article.updated}">${article.updated}</time></span>` : "";
+    const updated =
+        article.updated && article.updated !== article.date
+            ? `<span><span aria-hidden="true">·</span> 更新于 <time datetime="${article.updated}">${article.updated}</time></span>`
+            : "";
     return published + updated;
 }
 
@@ -26,20 +28,34 @@ function articleTags(article: Article): string {
 
 function articleToc(entries: TocEntry[]): string {
     if (!entries.length) return "";
-    interface Section { heading: TocEntry; children: Section[] }
+    interface Section {
+        heading: TocEntry;
+        children: Section[];
+    }
     const sections: Section[] = [];
     const ancestors: Section[] = [];
 
     // 跳级标题依附最近的较浅标题，没有可用父级时成为顶层入口。
     for (const entry of entries) {
-        while (ancestors.length && ancestors.at(-1)!.heading.depth >= entry.depth) ancestors.pop();
+        let parent = ancestors.at(-1);
+        while (parent && parent.heading.depth >= entry.depth) {
+            ancestors.pop();
+            parent = ancestors.at(-1);
+        }
         const section: Section = { heading: entry, children: [] };
-        (ancestors.at(-1)?.children ?? sections).push(section);
+        (parent?.children ?? sections).push(section);
         ancestors.push(section);
     }
 
-    const renderList = (items: Section[]): string => `<ol>${items.map(({ heading, children }) => `<li><a href="#${escapeHtml(heading.id)}">${escapeHtml(heading.title)}</a>${children.length
-        ? "\n" + renderList(children) : ""}</li>`).join("\n")}</ol>`;
+    const renderList = (items: Section[]): string =>
+        `<ol>${items
+            .map(
+                ({ heading, children }) =>
+                    `<li><a href="#${escapeHtml(heading.id)}">${escapeHtml(heading.title)}</a>${
+                        children.length ? "\n" + renderList(children) : ""
+                    }</li>`
+            )
+            .join("\n")}</ol>`;
 
     return `<nav id="article-toc" class="toc" popover="auto" aria-labelledby="toc-title">
   <div class="toc-header">
@@ -56,9 +72,20 @@ function articleToc(entries: TocEntry[]): string {
  */
 export function renderArticle(article: Article): string {
     const articleUrl = new URL(article.url, site.url);
-    const imageSizes = new Map(article.assets.map((asset) => [new URL("/" + asset.outputPath, site.url).href, asset.imageSize]));
-    const rendered = renderMarkdown(article.markdown, (href) => imageSizes.get(new URL(href, articleUrl).href),
-        ["main", "theme-select", "copy-status", "article-title", "article-end", "article-toc", "toc-title", "page-top", "page-end"]);
+    const imageSizes = new Map(
+        article.assets.map((asset) => [new URL("/" + asset.outputPath, site.url).href, asset.imageSize])
+    );
+    const rendered = renderMarkdown(article.markdown, (href) => imageSizes.get(new URL(href, articleUrl).href), [
+        "main",
+        "theme-select",
+        "copy-status",
+        "article-title",
+        "article-end",
+        "article-toc",
+        "toc-title",
+        "page-top",
+        "page-end",
+    ]);
 
     return `<main id="main" class="article-page page-with-tools${rendered.toc.length ? "" : " without-toc"}">
   <aside class="article-navigation" aria-label="阅读导航">

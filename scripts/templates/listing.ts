@@ -10,13 +10,19 @@ import { escapeHtml } from "../markdown/html.ts";
 import { renderPageTools } from "./tools.ts";
 
 function articleRows(articles: Article[]): string {
-    return articles.map((article) => {
-        const tags = article.tags.filter((tag) => tag !== article.domain);
-        const badges = tags.slice(0, 2).map((tag) => `<span class="article-tag">${escapeHtml(tag)}</span>`).join(" ");
-        const remaining = tags.slice(2);
-        const extra = remaining.length ? `<span class="article-tag article-tag-more" title="${escapeHtml(remaining.join("、"))}"><span aria-hidden="true">+${remaining.length}</span><span class="sr-only">其余标签：${escapeHtml(remaining.join("、"))}</span></span>` : "";
+    return articles
+        .map((article) => {
+            const tags = article.tags.filter((tag) => tag !== article.domain);
+            const badges = tags
+                .slice(0, 2)
+                .map((tag) => `<span class="article-tag">${escapeHtml(tag)}</span>`)
+                .join(" ");
+            const remaining = tags.slice(2);
+            const extra = remaining.length
+                ? `<span class="article-tag article-tag-more" title="${escapeHtml(remaining.join("、"))}"><span aria-hidden="true">+${remaining.length}</span><span class="sr-only">其余标签：${escapeHtml(remaining.join("、"))}</span></span>`
+                : "";
 
-        return `<li class="article-row"
+            return `<li class="article-row"
     data-domain="${escapeHtml(article.domain)}"
     data-search="${escapeHtml([article.title, article.summary, article.domain, article.date, ...article.tags].join(" "))}">
   <a class="article-link" href="${escapeHtml(article.url)}" aria-labelledby="title-${escapeHtml(article.id)}"${tags.length ? ` aria-describedby="tags-${escapeHtml(article.id)}"` : ""}>
@@ -28,7 +34,8 @@ function articleRows(articles: Article[]): string {
     ${icon("arrow-right")}
   </a>
 </li>`;
-    }).join("\n");
+        })
+        .join("\n");
 }
 
 function articleDomainOptions(articles: Article[]): string {
@@ -37,19 +44,25 @@ function articleDomainOptions(articles: Article[]): string {
 
     // 领域导航展示完整知识范围；未收录的新方向仍可通过实际文章进入筛选。
     const known = new Set(domainGroups.flatMap((group) => group.domains));
-    const additional = [...counts.keys()].filter((domain) => !known.has(domain)).sort((a, b) => a.localeCompare(b, "zh-CN"));
+    const additional = [...counts.keys()]
+        .filter((domain) => !known.has(domain))
+        .sort((a, b) => a.localeCompare(b, "zh-CN"));
     const groups = additional.length ? [...domainGroups, { title: "其他领域", domains: additional }] : domainGroups;
-    return groups.map((group) => {
-        const total = group.domains.reduce((sum, domain) => sum + (counts.get(domain) ?? 0), 0);
-        const options = group.domains.map((domain) => {
-            const count = counts.get(domain) ?? 0;
-            return `<label class="domain-option"><input class="sr-only" type="checkbox" name="domain" value="${escapeHtml(domain)}"${count ? "" : " disabled"}><span class="domain-option-name">${escapeHtml(domain)}</span><span class="domain-option-count">${count}<span class="sr-only"> 篇文章</span></span>${icon("check")}</label>`;
-        }).join("\n");
-        return `<details class="domain-group">
+    return groups
+        .map((group) => {
+            const total = group.domains.reduce((sum, domain) => sum + (counts.get(domain) ?? 0), 0);
+            const options = group.domains
+                .map((domain) => {
+                    const count = counts.get(domain) ?? 0;
+                    return `<label class="domain-option"><input class="sr-only" type="checkbox" name="domain" value="${escapeHtml(domain)}"${count ? "" : " disabled"}><span class="domain-option-name">${escapeHtml(domain)}</span><span class="domain-option-count">${count}<span class="sr-only"> 篇文章</span></span>${icon("check")}</label>`;
+                })
+                .join("\n");
+            return `<details class="domain-group">
   <summary><span>${escapeHtml(group.title)}</span><span class="domain-group-count">${total} 篇</span>${icon("chevron-down")}</summary>
   <fieldset class="domain-choices"><legend class="sr-only">${escapeHtml(group.title)}</legend>${options}</fieldset>
 </details>`;
-    }).join("\n");
+        })
+        .join("\n");
 }
 
 /**
@@ -96,19 +109,25 @@ export function renderHome(articles: Article[]): string {
 export function renderArchive(articles: Article[]): string {
     const years = [...new Set(articles.map((article) => article.date.slice(0, 4)))];
     const yearLinks = years.map((year) => `<a href="#year-${year}">${year}</a>`).join("\n");
-    const sections = years.map((year) => {
-        const entries = articles.filter((article) => article.date.startsWith(year));
-        const rows = entries.map((article) => `<li>
+    const sections = years
+        .map((year) => {
+            const entries = articles.filter((article) => article.date.startsWith(year));
+            const rows = entries
+                .map(
+                    (article) => `<li>
   <time datetime="${article.date}">${article.date.slice(5).replace("-", ".")}</time>
   <a href="${escapeHtml(article.url)}">${escapeHtml(article.title)}</a>
   <span>${escapeHtml(article.domain)}</span>
-</li>`).join("\n");
+</li>`
+                )
+                .join("\n");
 
-        return `<section class="archive-year" id="year-${year}">
+            return `<section class="archive-year" id="year-${year}">
   <h2>${year}<span>${entries.length} 篇</span></h2>
   <ul>${rows}</ul>
 </section>`;
-    }).join("\n");
+        })
+        .join("\n");
 
     return `<main id="main" class="index-page page-with-tools page-panel">
   <header class="collection-heading" id="page-top">

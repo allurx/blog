@@ -3,16 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Marked, type Token } from "marked";
+import { Marked } from "marked";
+import type { MarkedToken, Token } from "marked";
 import { escapeHtml, safeRawHtml } from "./html.ts";
 
-function tokenText(token: Token): string {
+function tokenText(input: Token): string {
+    // 摘要与标题只读取 Marked 内置词法结果；块级公式扩展不参与这两个入口。
+    const token = input as MarkedToken;
     if (token.type === "code") return "";
 
     // 泛型中的未知标签（例如 Callable<V>）会作为文字显示，摘要也保留它。
     if (token.type === "html") return safeRawHtml(token.text) === escapeHtml(token.text) ? token.text : "";
     if (token.type === "list") return `${token.items.map(tokenText).join(" ")} `;
-    if ("tokens" in token && token.tokens) {
+    if ("tokens" in token) {
         const text = token.tokens.map(tokenText).join("");
         return ["blockquote", "paragraph", "list_item"].includes(token.type) ? `${text} ` : text;
     }
@@ -35,10 +38,13 @@ export function plainText(tokens: Token[]): string {
 }
 
 /**
- * 摘要来自开篇段落或列表，按 Unicode 字符截取，不拆开代理对。
+ * 摘要来自开篇段落或列表，按 Unicode 码点截取，不拆开代理对。
  */
 export function summarizeMarkdown(markdown: string): string {
-    const opening = new Marked().lexer(markdown).find((token) => ["paragraph", "list", "blockquote"].includes(token.type));
-    const characters = [...(opening ? plainText([opening]) : "")];
+    const opening = new Marked()
+        .lexer(markdown)
+        .find((token) => ["paragraph", "list", "blockquote"].includes(token.type));
+    const text = opening ? plainText([opening]) : "";
+    const characters = Array.from(text);
     return characters.length > 160 ? `${characters.slice(0, 160).join("")}…` : characters.join("");
 }
