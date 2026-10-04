@@ -9,7 +9,7 @@
         "node": ">=24"
     },
     "scripts": {
-        "dev": "vite --host 0.0.0.0",
+        "dev": "vite --open --host 0.0.0.0",
         "format": "prettier . --write",
         "format:check": "prettier . --check",
         "lint": "eslint . --max-warnings 0",
