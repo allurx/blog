@@ -1,11 +1,4 @@
 {
-    "extends": "./tsconfig.base.json",
-    "compilerOptions": {
-        "module": "NodeNext",
-        "moduleResolution": "NodeNext",
-        "lib": ["ES2025"],
-        "types": ["node"],
-        "erasableSyntaxOnly": true
-    },
-    "include": ["scripts/**/*.ts", "vite.config.ts", "site.config.ts"]
+    "extends": "@allurx/web-foundation/tsconfig/node",
+    "include": ["scripts/**/*.ts", "*.ts"]
 }

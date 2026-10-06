@@ -15,9 +15,9 @@
 
 按[开发指南](development.md#验证与预览)完成验证后，将已核验的改动提交并推送到 `main`。正文与必需附件在同一次提交中保存。定时与手动写作任务还须遵循[任务定义](../automation/daily-blog.md)的提交标记和恢复规则；其他文章正常发布，不受当天文章数量限制。
 
-`CI` 工作流对 PR 和 `main` 推送执行 `npm run verify` 与部署配置 dry-run，仅 `main` 推送进入 `production` 部署。验证 job 上传本次生成的 `dist/`，部署 job 按 artifact ID 下载同一份产物并执行 `npm run deploy`，不再次构建。部署前还会核对 `main` 是否仍指向本次提交，过时的运行会跳过部署。Node.js 版本由 [.node-version](../.node-version) 统一指定。
+[`CI` 工作流](../.github/workflows/ci.yml) 调用 [Web Foundation 静态站点工作流](https://github.com/allurx/web-foundation/blob/main/docs/deployment.md)，对 PR 和 `main` 推送执行 `npm run verify` 与部署配置 dry-run，仅 `main` 推送进入 `production` 部署。调用参数保留博客的 `dist/` 产物目录和公开地址，Worker 与域名仍由本工程的 Wrangler 配置维护。更新工作流时，完整 commit SHA 和版本注释必须对应 [package.json](../package.json) 中的基础包发布标签。Node.js 版本由 [.node-version](../.node-version) 统一指定。
 
-在 GitHub Actions 中找到本次 commit 对应的 `CI` 运行，确认 `verify` 通过且 `deploy` 实际执行成功；再到 Cloudflare Worker 的 Deployments 核对版本，版本 tag 为 commit SHA，message 链接本次 Actions 运行。最后访问本次受影响的公开页面，检查标题、日期、关键正文和附件，确认展示的是这次改动。
+在 GitHub Actions 中找到本次 commit 对应的 `CI` 运行，确认 `site / verify` 通过且 `site / deploy` 实际执行成功；再到 Cloudflare Worker 的 Deployments 核对版本，版本 tag 为 commit SHA，message 链接本次 Actions 运行。最后访问本次受影响的公开页面，检查标题、日期、关键正文和附件，确认展示的是这次改动。
 
 构建、部署和公开内容分别核对。失败时保留已保存成果，按实际失败阶段继续处理，不用重新生成文章补偿发布失败。写入、推送或部署结果不明确时，先回读目标提交和平台状态，再决定是否重试。被更新提交取代而跳过部署时，核对包含本次改动的后续部署与页面。
 

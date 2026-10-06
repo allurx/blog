@@ -4,13 +4,13 @@
 
 ## 工具与检查基线
 
-使用 [.node-version](../.node-version) 指定的 Node.js 版本线及 `npm ci` 安装锁定依赖。Prettier 负责排版，ESLint 检查代码语义，TypeScript 分别检查浏览器与 Node.js 环境；具体规则由 [package.json](../package.json)、[ESLint 配置](../eslint.config.mjs) 和 [TypeScript 配置](../tsconfig.json) 维护。
+使用 [.node-version](../.node-version) 指定的 Node.js 完整版本及 `npm ci` 安装锁定依赖。[Web Foundation](https://github.com/allurx/web-foundation) 统一维护工具版本和 Prettier、ESLint、TypeScript、Vite 配置；[package.json](../package.json) 固定基础包发布标签，博客只声明额外的内容处理依赖。文件检查范围由 [ESLint 配置](../eslint.config.ts) 和 [TypeScript 配置](../tsconfig.json) 维护，文章构建与站点专有设置仍留在本工程。
 
 `npm run format` 修改工程文件格式；文章及附件、依赖、构建输出和本地工作目录由 [.prettierignore](../.prettierignore) 排除。工程文本统一使用 LF，`articles/` 保留原始字节。迭代时可分别运行 `format:check`、`lint`、`type-check`，`npm run check` 按该顺序完成只读静态检查。
 
-浏览器代码使用 DOM 类型和 Vite 的模块解析，构建脚本使用 Node.js 类型及 `NodeNext`，并限制为 Node.js 可直接执行的可擦除 TypeScript 语法。第三方声明仍可能传递引入 DOM 类型，因此 Node.js 入口另通过 lint 禁止页面和客户端状态 API；这不限制 Node.js 原生支持的 `fetch`、`URL` 和定时器。依赖更新由 [Dependabot](../.github/dependabot.yml) 每周提出：npm 的 minor、patch 更新分组，大版本单独审查。TypeScript 暂保持 6.0 系列；升级版本线前核对 [typescript-eslint 的支持范围](https://typescript-eslint.io/users/dependency-versions/)，不要让类型感知 lint 使用未经支持的编译器。
+浏览器代码和 Node.js 构建脚本分别继承共享类型与 lint 配置，检查运行环境 API 的误用。共享规则与接入方法见 [Web Foundation 配置说明](https://github.com/allurx/web-foundation/blob/main/docs/configuration.md)。[Dependabot](../.github/dependabot.yml) 每周检查基础包、业务依赖和共享工作流引用；更新基础包时，同时核对工作流 SHA 属于同一次发布，再运行本工程验证。工具版本与兼容性约束由[基础库统一维护](https://github.com/allurx/web-foundation/blob/main/docs/dependencies.md)，不在博客重复声明。
 
-支持桌面与移动端主流常青浏览器的当前及前一个稳定大版本。JavaScript 构建目标显式设为 `es2023`，避免 Vite 升级隐式改变语法目标；这不等同于 Web API 支持保证，剪贴板、弹出层等增强仍须检测实际能力。验证保留无 JavaScript 阅读、打印及下文列出的完整操作链。
+支持桌面与移动端主流常青浏览器的当前及前一个稳定大版本。JavaScript 构建使用共享配置的 `baseline-widely-available`，对应范围由锁定的 Vite 版本确定；这不等同于 Web API 支持保证，剪贴板、弹出层等增强仍须检测实际能力。验证保留无 JavaScript 阅读、打印及下文列出的完整操作链。
 
 ## 构建过程与源码入口
 
