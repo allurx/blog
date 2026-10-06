@@ -23,8 +23,7 @@ jobs:
     site:
         # 配置分支保护时，检查名称为 site / verify。
         uses: allurx/web-foundation/.github/workflows/static-site.yml@v1.0.1
-        secrets:
-            CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        secrets: inherit
         with:
             # npm run verify 的输出目录，其中的文件会公开发布。
             asset-directory: dist/
