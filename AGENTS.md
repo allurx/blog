@@ -15,7 +15,7 @@
 - 正文、目录和文章链接在构建时写入 HTML，浏览器脚本只做渐进增强。保留自然文档滚动、原生锚点、无 JavaScript 阅读和打印。
 - 桌面与窄屏共用内容和语义结构。窄屏阅读中也应持续提供目录入口和文章工具，目录、代码和表格按可用空间处理局部溢出。参考 Aura Reader 的导航与工具交互时，保留博客的自然文档阅读方式，不引入应用式阅读器状态。
 - `scripts/` 负责内容契约、Markdown、静态页面和资源输出，`src/` 负责浏览器增强与样式。开发和生产共用内容清单、渲染与本地链接校验；`vite.config.ts` 只负责配置和插件接入，不新增重复构建路径或中间 HTML 目录。
-- 使用 `npm` 和 `package-lock.json`，本地与 CI 使用 `.node-version` 指定的 Node.js 完整版本。共同工具与检查配置由 `@allurx/web-foundation` 维护，包引用固定具体发布标签，工作流引用固定同次发布的完整 commit SHA；本工程只维护文件范围、内容构建与业务依赖。浏览器源码与 Node.js 构建脚本分别检查类型，不让浏览器代码隐式使用 Node.js 全局 API。
+- 使用 `npm` 和 `package-lock.json`，本地与 CI 使用 `.node-version` 指定的 Node.js 完整版本。共同工具与检查配置由 `@allurx/web-foundation` 维护，基础包与共享工作流固定同一不可变发布的具体版本标签；本工程只维护文件范围、内容构建与业务依赖。浏览器源码与 Node.js 构建脚本分别检查类型，不让浏览器代码隐式使用 Node.js 全局 API。
 - `npm run format` 统一工程文件格式；`articles/` 中的正文和附件不参与格式化，并保持原始字节。`npm run check` 依次执行格式、lint 和类型检查；`npm run verify` 在静态门禁通过后构建并校验内容。
 - 支持桌面与移动端主流常青浏览器的当前及前一个稳定大版本；增强功能仍按实际 API 能力检测，保留无 JavaScript 阅读与打印。
 - 修改后执行 `npm run verify`。交互或样式变化还需按开发指南完成实际浏览器验证，覆盖完整操作链、连续布局切换和运行时诊断。缺少执行环境时明确验证缺口；云端写作还须核对相应提交的 GitHub Actions 验证结果，不能声称执行过本地检查。
@@ -24,6 +24,6 @@
 ## 发布约束
 
 - 发布使用 Cloudflare Workers 静态资源，GitHub Actions 是唯一自动部署入口，仅 `main` 推送部署；PR 只验证。`npm run verify` 生成已验证产物，`npm run deploy` 只部署该产物，不重复构建。Worker 与自定义域名统一由 `wrangler.jsonc` 维护；生产凭据保存在 GitHub `production` Environment，部署只允许 `main`。
-- GitHub Actions 使用完整 commit SHA 固定并保留版本注释，Dependabot 同时维护 Actions 和 npm 依赖；常规更新分组，大版本分别审查，工具版本必须在相互支持范围内，经验证后处理；不因维护依赖而改变直接在 `main` 开发的约定。
+- 第三方 GitHub Actions 使用完整 commit SHA 固定并保留版本注释，Dependabot 同时维护 Actions 和 npm 依赖；常规更新分组，大版本分别审查，工具版本必须在相互支持范围内，经验证后处理；不因维护依赖而改变直接在 `main` 开发的约定。
 - 正文和必需附件在同一次 Git 提交中保存，不强推、不改写历史。写入结果不明确时先回读目标文件与提交，再决定是否重试。
 - 分别取得 Git 保存、对应提交的构建、部署和公开页面证据。失败时保留已完成成果并说明未完成阶段，不能把旧页面可访问当作新版本已发布。

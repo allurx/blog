@@ -4,8 +4,8 @@
 
 ## 首次配置
 
-1. 在 GitHub 仓库的 Actions variables 中设置 `CLOUDFLARE_ACCOUNT_ID`，值为目标 Cloudflare 账户 ID。
-2. 创建 GitHub `production` Environment，仅允许 `main` 部署，并在其中保存 Secret `CLOUDFLARE_API_TOKEN`。使用本项目独立的 token，按目标账户和 `allurx.io` 区域限定 Worker 部署及自定义域名所需的权限。Custom Domains 当前不支持按单个 Worker 限定角色，不能用仅限单 Worker 的权限替代域名管理所需授权；具体范围见 [Workers 权限说明](https://developers.cloudflare.com/workers/authorization/workers/)。
+1. 创建 GitHub `production` Environment，仅允许 `main` 部署。
+2. 在该环境的 Variables 中设置 `CLOUDFLARE_ACCOUNT_ID`，并在 Secrets 中保存 `CLOUDFLARE_API_TOKEN`。使用本项目独立的 token，按目标账户和 `allurx.io` 区域限定 Worker 部署及自定义域名所需的权限。Custom Domains 当前不支持按单个 Worker 限定角色，不能用仅限单 Worker 的权限替代域名管理所需授权；具体范围见 [Workers 权限说明](https://developers.cloudflare.com/workers/authorization/workers/)。
 3. 确认账户中已存在配置所指向的 Worker，域名所属区域已托管在该账户中。域名、`workers.dev` 和预览 URL 的设置以 Wrangler 配置为准，避免在控制台另行维护冲突值。
 4. 从 Workers Builds 切换时，先准备好上述凭据及 [CI 工作流](../.github/workflows/ci.yml)，完成首次 Actions 部署及公开页面核验，再停用原 Worker 的 Workers Builds Git 触发器。确认后续推送只由 Actions 自动部署，不保留两套常驻发布入口。
 
@@ -15,7 +15,7 @@
 
 按[开发指南](development.md#验证与预览)完成验证后，将已核验的改动提交并推送到 `main`。正文与必需附件在同一次提交中保存。定时与手动写作任务还须遵循[任务定义](../automation/daily-blog.md)的提交标记和恢复规则；其他文章正常发布，不受当天文章数量限制。
 
-[`CI` 工作流](../.github/workflows/ci.yml) 调用 [Web Foundation 静态站点工作流](https://github.com/allurx/web-foundation/blob/main/docs/deployment.md)，对 PR 和 `main` 推送执行 `npm run verify` 与部署配置 dry-run，仅 `main` 推送进入 `production` 部署。调用参数保留博客的 `dist/` 产物目录和公开地址，Worker 与域名仍由本工程的 Wrangler 配置维护。更新工作流时，完整 commit SHA 和版本注释必须对应 [package.json](../package.json) 中的基础包发布标签。Node.js 版本由 [.node-version](../.node-version) 统一指定。
+[`CI` 工作流](../.github/workflows/ci.yml) 调用 [Web Foundation 静态站点工作流](https://github.com/allurx/web-foundation/blob/main/docs/deployment.md)，对 PR 和 `main` 推送执行 `npm run verify` 与部署配置 dry-run，仅 `main` 推送进入 `production` 部署。调用参数保留博客的 `dist/` 产物目录和公开地址，Worker 与域名仍由本工程的 Wrangler 配置维护。基础包与共享工作流固定到同一个不可变发布的具体版本标签，更新时保持两处一致。调用通过 `secrets` 显式映射唯一的 `CLOUDFLARE_API_TOKEN`，部署 job 仍绑定 `production` 环境。Node.js 版本由 [.node-version](../.node-version) 统一指定。
 
 在 GitHub Actions 中找到本次 commit 对应的 `CI` 运行，确认 `site / verify` 通过且 `site / deploy` 实际执行成功；再到 Cloudflare Worker 的 Deployments 核对版本，版本 tag 为 commit SHA，message 链接本次 Actions 运行。最后访问本次受影响的公开页面，检查标题、日期、关键正文和附件，确认展示的是这次改动。
 

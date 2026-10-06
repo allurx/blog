@@ -8,7 +8,7 @@
 
 `npm run format` 修改工程文件格式；文章及附件、依赖、构建输出和本地工作目录由 [.prettierignore](../.prettierignore) 排除。工程文本统一使用 LF，`articles/` 保留原始字节。迭代时可分别运行 `format:check`、`lint`、`type-check`，`npm run check` 按该顺序完成只读静态检查。
 
-浏览器代码和 Node.js 构建脚本分别继承共享类型与 lint 配置，检查运行环境 API 的误用。共享规则与接入方法见 [Web Foundation 配置说明](https://github.com/allurx/web-foundation/blob/main/docs/configuration.md)。[Dependabot](../.github/dependabot.yml) 每周检查基础包、业务依赖和共享工作流引用；更新基础包时，同时核对工作流 SHA 属于同一次发布，再运行本工程验证。工具版本与兼容性约束由[基础库统一维护](https://github.com/allurx/web-foundation/blob/main/docs/dependencies.md)，不在博客重复声明。
+浏览器代码和 Node.js 构建脚本分别继承共享类型与 lint 配置，检查运行环境 API 的误用。共享规则与接入方法见 [Web Foundation 配置说明](https://github.com/allurx/web-foundation/blob/main/docs/configuration.md)。[Dependabot](../.github/dependabot.yml) 每周检查基础包、业务依赖和共享工作流引用；更新时，将基础包与共享工作流一并固定到同一个不可变发布标签，再运行本工程验证。工具版本与兼容性约束由[基础库统一维护](https://github.com/allurx/web-foundation/blob/main/docs/dependencies.md)，不在博客重复声明。
 
 支持桌面与移动端主流常青浏览器的当前及前一个稳定大版本。JavaScript 构建使用共享配置的 `baseline-widely-available`，对应范围由锁定的 Vite 版本确定；这不等同于 Web API 支持保证，剪贴板、弹出层等增强仍须检测实际能力。验证保留无 JavaScript 阅读、打印及下文列出的完整操作链。
 
