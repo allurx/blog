@@ -12,6 +12,7 @@ export interface PageAssets {
     script: string;
     styles: string[];
     initialStyles: string;
+    initialSearch: string;
 }
 
 export interface PageOptions {
@@ -74,6 +75,13 @@ export function renderPage({ path, title, description, body, assets, active, art
         )
         .join("\n");
 
+    // 筛选结果就绪前避免绘制默认列表；内联脚本异常时在解析完成后恢复静态阅读。
+    const searchPreparation =
+        path === "/"
+            ? `<style>html[data-search-pending] body{visibility:hidden}</style>
+  <script>(()=>{const params=new URLSearchParams(location.search);if(params.has("q")||params.has("domain")){document.documentElement.setAttribute("data-search-pending","");document.addEventListener("DOMContentLoaded",()=>document.documentElement.removeAttribute("data-search-pending"),{once:true})}})();</script>`
+            : "";
+
     return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -82,6 +90,7 @@ export function renderPage({ path, title, description, body, assets, active, art
   <meta name="color-scheme" content="light dark">
   <script>(()=>{try{const theme=localStorage.getItem("blog-theme");if(theme==="light"||theme==="dark")document.documentElement.dataset.theme=theme}catch{}})();</script>
   <style>${assets.initialStyles}</style>
+  ${searchPreparation}
   <noscript><style>[data-pending]{display:none!important}</style></noscript>
   <title>${escapeHtml(fullTitle)}</title>
   <meta name="description" content="${escapeHtml(description)}">
@@ -137,6 +146,7 @@ export function renderPage({ path, title, description, body, assets, active, art
       <a href="/rss.xml">${icon("rss")}<span>RSS</span></a>
     </nav>
   </footer>
+  ${path === "/" ? `<script>${assets.initialSearch}</script>` : ""}
 </body>
 </html>`;
 }

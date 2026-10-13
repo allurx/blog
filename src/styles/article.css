@@ -5,7 +5,7 @@
 
 /* 正文保留自然文档滚动，目录与工具使用同一语义结构适配可用空间。 */
 .article-page {
-    --article-padding: clamp(1.25rem, 2.5vw, 2rem);
+    --article-padding: clamp(1.25rem, 3vw, 2.5rem);
     display: grid;
     grid-template-areas: "toc" "article";
     gap: 1rem;
@@ -84,7 +84,7 @@
 
 @media (width < 40rem) {
     .article-page {
-        --article-padding: 1rem;
+        --article-padding: 1.25rem;
     }
     .article-page > article {
         border-radius: 0;

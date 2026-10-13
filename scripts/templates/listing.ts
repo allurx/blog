@@ -43,15 +43,17 @@ function articleDomainOptions(articles: Article[]): string {
     for (const article of articles) counts.set(article.domain, (counts.get(article.domain) ?? 0) + 1);
 
     // 领域导航展示完整知识范围；未收录的新方向仍可通过实际文章进入筛选。
-    const known = new Set(domainGroups.flatMap((group) => group.domains));
+    const known = new Set(domainGroups.flatMap((group) => [group.title, ...group.domains]));
     const additional = [...counts.keys()]
         .filter((domain) => !known.has(domain))
         .sort((a, b) => a.localeCompare(b, "zh-CN"));
     const groups = additional.length ? [...domainGroups, { title: "其他领域", domains: additional }] : domainGroups;
     return groups
         .map((group) => {
-            const total = group.domains.reduce((sum, domain) => sum + (counts.get(domain) ?? 0), 0);
-            const options = group.domains
+            // 文章可以直接归入大组，同名领域应计入本组并能在这里选中。
+            const domains = [...new Set([...(counts.has(group.title) ? [group.title] : []), ...group.domains])];
+            const total = domains.reduce((sum, domain) => sum + (counts.get(domain) ?? 0), 0);
+            const options = domains
                 .map((domain) => {
                     const count = counts.get(domain) ?? 0;
                     return `<label class="domain-option"><input class="sr-only" type="checkbox" name="domain" value="${escapeHtml(domain)}"${count ? "" : " disabled"}><span class="domain-option-name">${escapeHtml(domain)}</span><span class="domain-option-count">${count}<span class="sr-only"> 篇文章</span></span>${icon("check")}</label>`;

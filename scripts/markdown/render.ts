@@ -18,6 +18,8 @@ export interface TocEntry {
 
 const defaultRenderer = new Renderer();
 const tableContainer = '<div class="table-scroll" tabindex="0" role="region" aria-label="表格">';
+// 紧邻分隔符的内容不能是空白，结束符后不能接数字，以免把两笔美元金额识别为公式。
+const inlineMath = /(?<![\\$])\$(?![\s$])((?:\\[^\n]|[^\\$\n])+?)(?<!\s)\$(?![\d$])/;
 
 /**
  * Markdown 是正文唯一来源。生成锚点、目录、MathML 和渐进增强所需的静态结构。
@@ -32,7 +34,37 @@ export function renderMarkdown(
     const ids = new Set(reservedIds);
     const parser = new Marked({ async: false, gfm: true });
     parser.use({
+        hooks: {
+            emStrongMask(source) {
+                // TeX 的下标与乘号不能提前参与 Markdown 的斜体、粗体配对。
+                return source.replace(
+                    new RegExp(inlineMath.source, "g"),
+                    (match) => `[${"a".repeat(match.length - 2)}]`
+                );
+            },
+        },
         extensions: [
+            {
+                name: "inlineMath",
+                level: "inline",
+                start(source) {
+                    return source.indexOf("$");
+                },
+                tokenizer(source, tokens) {
+                    if (this.lexer.state.inRawBlock || tokens.at(-1)?.raw.endsWith("$")) return undefined;
+                    const match = inlineMath.exec(source);
+                    if (match?.index !== 0) return undefined;
+                    return { type: "inlineMath", raw: match[0], text: match[1] ?? "" };
+                },
+                renderer(token) {
+                    return renderToString(String(token["text"]), {
+                        displayMode: false,
+                        output: "mathml",
+                        throwOnError: true,
+                        trust: false,
+                    });
+                },
+            },
             {
                 name: "displayMath",
                 level: "block",

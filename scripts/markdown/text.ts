@@ -8,7 +8,9 @@ import type { MarkedToken, Token } from "marked";
 import { escapeHtml, safeRawHtml } from "./html.ts";
 
 function tokenText(input: Token): string {
-    // 摘要与标题只读取 Marked 内置词法结果；块级公式扩展不参与这两个入口。
+    // 目录保留标题中的公式文本，避免行内公式扩展使标题与锚点缺字。
+    if (input.type === "inlineMath" && "text" in input) return String(input["text"]);
+
     const token = input as MarkedToken;
     if (token.type === "code") return "";
 

@@ -28,7 +28,7 @@
 | 页面壳、文章与列表模板         | [scripts/templates/](../scripts/templates/)；`shell.ts` 生成元信息和 JSON-LD，品牌、作者和站点地址来自 [site.config.ts](../site.config.ts)                        |
 | 内容与资源清单、本地链接校验   | [scripts/site.ts](../scripts/site.ts)、[scripts/links.ts](../scripts/links.ts)                                                                                    |
 | 生产输出、开发服务器接入       | [scripts/build.ts](../scripts/build.ts)、[scripts/dev-plugin.ts](../scripts/dev-plugin.ts)                                                                        |
-| 浏览器增强                     | [src/main.ts](../src/main.ts) 初始化主题、搜索、代码复制、目录和页面工具，各功能由同目录中的模块维护                                                              |
+| 浏览器增强                     | [src/main.ts](../src/main.ts) 初始化主题、代码复制、目录和页面工具；[src/article-search.ts](../src/article-search.ts) 在首页内联执行，首次绘制前恢复筛选状态      |
 | 页面壳、列表与文章布局         | [src/styles.css](../src/styles.css) 汇集 [src/styles/](../src/styles/) 中的颜色尺寸、公共背景、控件及页面样式                                                     |
 | 正文排版、代码与表格           | [src/styles/prose.css](../src/styles/prose.css)                                                                                                                   |
 | 文章目录与当前章节状态         | [src/styles/toc.css](../src/styles/toc.css)、[src/article-toc.ts](../src/article-toc.ts)                                                                          |
@@ -38,13 +38,15 @@
 
 `public/` 保存全站资源。图标以 `public/favicon.svg` 为维护源，`favicon.ico` 和 `apple-touch-icon.png` 是由它导出的兼容文件；修改图标时同步导出这两个文件。响应头在 `public/_headers` 中维护。
 
+首页筛选脚本与首屏主题样式由 [scripts/initial-assets.ts](../scripts/initial-assets.ts) 统一读取，开发和生产共用。筛选脚本保持自包含，在整页静态结构解析完成后同步执行；带筛选参数的页面在状态恢复前暂缓显示，避免刷新时先显示总数或完整列表再切换结果。无 JavaScript 时保留静态文章列表。
+
 代码高亮由构建时的 highlight.js 生成，浏览器仅加载对应主题样式。支持语言在 [scripts/markdown/highlight.ts](../scripts/markdown/highlight.ts) 中显式注册；无语言标记或不支持的语言保留为转义后的纯文本，不自动猜测。高亮支持范围不限制文章选题或示例语言。
 
 ## 阅读界面
 
 正文、目录和文章链接在构建时写入 HTML，浏览器脚本只增强操作体验。文章保持自然文档滚动和原生锚点，不以脚本接管正文路由、章节内容或阅读进度。桌面与窄屏共用一份正文和目录语义，代码和表格在各自区域内处理溢出。
 
-文章列表、归档和详情的主体面板共用宽度与左右对齐线，窄屏页面使用全部可用宽度。页面工具在文档流之外悬浮，纵向分组排列，可展开和折叠，移动端默认折叠；正文不为工具预留额外内边距。列表提供归档入口，归档提供列表入口，详情另提供目录；各页都能前往顶部和底部。目录使用原生弹出层，每次打开定位当前章节，展开期间的正文滚动只更新章节标记，不强制移动目录列表。工具与目录开合都不改变正文宽度或阅读位置。
+文章列表、归档和详情的主体面板共用宽度与左右对齐线，窄屏页面使用全部可用宽度。页面工具在文档流之外悬浮，纵向分组排列，可展开和折叠；只有面板外侧空间足够时默认展开，其余宽度默认折叠，选章后也收起工具，避免持续遮挡正文。正文不为工具预留额外内边距。列表提供归档入口，归档提供列表入口，详情另提供目录；各页都能前往顶部和底部。目录使用原生弹出层，每次打开定位当前章节，展开期间的正文滚动只更新章节标记，不强制移动目录列表。工具与目录开合都不改变正文宽度或阅读位置。
 
 目录从 Markdown 解析出的标题生成，保留原有顺序和级别，不限制正文标题的起始级别，也不要求连续使用各级标题。标题跳级时依附最近的较浅标题，没有父标题时作为顶层入口；正文没有标题时不显示目录。文章组织由内容决定，解析器不通过校验或过滤来规定写作结构。
 

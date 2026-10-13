@@ -14,7 +14,7 @@ export function initializePageTools(): void {
     const actions = toolbox.querySelector<HTMLElement>(".page-tools-actions");
     if (!summary || !actions) throw new Error("页面工具缺少开关或操作容器");
     const toc = document.querySelector<HTMLElement>(".toc");
-    const narrow = window.matchMedia("(width < 40rem)");
+    const narrow = window.matchMedia("(width < 82rem)");
     const closeToc = () => {
         if (!toc || !("hidePopover" in HTMLElement.prototype) || !toc.matches(":popover-open")) return false;
         toc.hidePopover();
@@ -39,6 +39,12 @@ export function initializePageTools(): void {
     };
     toolbox.addEventListener("pointerdown", enableMotion);
     toolbox.addEventListener("keydown", enableMotion);
+    // 目录已将焦点交给目标章节后收起临时工具，避免继续遮住正文。
+    toc?.addEventListener("click", (event) => {
+        if (!narrow.matches || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
+            return;
+        if (event.target instanceof Element && event.target.closest('.toc-list a[href^="#"]')) toolbox.open = false;
+    });
     narrow.addEventListener("change", adaptTools);
     actions.inert = !toolbox.open;
 }

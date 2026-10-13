@@ -26,5 +26,5 @@ export function renderPageTools(page: "home" | "archive" | "article", hasToc = f
   </div>
   </nav>
 </details>
-<script>document.currentScript.previousElementSibling.open=matchMedia("(width >= 40rem)").matches;</script>`;
+<script>document.currentScript.previousElementSibling.open=matchMedia("(width >= 82rem)").matches;</script>`;
 }

@@ -8,13 +8,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build as buildAssets, type Manifest } from "vite";
 import { site } from "../site.config.ts";
+import { readInitialAssets } from "./initial-assets.ts";
 import { checkLocalLinks } from "./links.ts";
 import { renderSite } from "./pages.ts";
 import { readSite } from "./site.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const content = await readSite(root);
-const initialStyles = await readFile(join(root, "src/styles/initial-theme.css"), "utf8");
+const initialAssets = await readInitialAssets(root);
 
 // Vite 生成带指纹的浏览器资源，正文与文章附件使用稳定的文章目录。
 await buildAssets({ configFile: join(root, "vite.config.ts") });
@@ -28,7 +29,7 @@ if (!stylesheet?.file) throw new Error("Vite manifest 缺少 src/styles.css 入�
 const documents = renderSite(content.articles, {
     script: "/" + entry.file,
     styles: ["/" + stylesheet.file],
-    initialStyles,
+    ...initialAssets,
 });
 const browserFiles = new Set(
     Object.values(manifest).flatMap((asset) => [asset.file, ...(asset.css ?? []), ...(asset.assets ?? [])])

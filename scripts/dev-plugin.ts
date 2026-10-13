@@ -7,6 +7,7 @@ import { readFile } from "node:fs/promises";
 import { extname, join, relative } from "node:path";
 import type { Plugin } from "vite";
 import { site } from "../site.config.ts";
+import { initialAssetPaths, readInitialAssets } from "./initial-assets.ts";
 import { checkLocalLinks } from "./links.ts";
 import { renderSite } from "./pages.ts";
 import { readSite } from "./site.ts";
@@ -35,12 +36,10 @@ export function articlePages(root: string): Plugin {
         name: "blog:pages",
         apply: "serve",
         async configureServer(server) {
-            const initialStylesPath = "src/styles/initial-theme.css";
-
             async function generate() {
                 const content = await readSite(root);
-                const initialStyles = await readFile(join(root, initialStylesPath), "utf8");
-                const assets = { script: "/src/main.ts", styles: ["/src/styles.css"], initialStyles };
+                const initialAssets = await readInitialAssets(root);
+                const assets = { script: "/src/main.ts", styles: ["/src/styles.css"], ...initialAssets };
                 const documents = renderSite(content.articles, assets);
                 checkLocalLinks(
                     documents,
@@ -58,13 +57,13 @@ export function articlePages(root: string): Plugin {
             let current = await generate();
             let regeneration = Promise.resolve();
 
-            // 内联首屏样式、正文与资源共用刷新入口；编辑过程中校验失败时保留上一版页面并显示错误。
+            // 内联首屏资源与文章共用刷新入口；编辑过程中校验失败时保留上一版页面并显示错误。
             const refresh = (path: string): void => {
                 const input = relative(root, path).replaceAll("\\", "/");
                 if (
                     !input.startsWith("articles/") &&
                     !input.startsWith("public/") &&
-                    input !== initialStylesPath &&
+                    !Object.values(initialAssetPaths).includes(input) &&
                     input !== "LICENSE.txt"
                 )
                     return;
@@ -81,7 +80,7 @@ export function articlePages(root: string): Plugin {
             server.watcher.add([
                 join(root, "articles"),
                 join(root, "public"),
-                join(root, initialStylesPath),
+                ...Object.values(initialAssetPaths).map((path) => join(root, path)),
                 join(root, "LICENSE.txt"),
             ]);
             for (const event of ["add", "change", "unlink"] as const) server.watcher.on(event, refresh);

@@ -6,7 +6,7 @@
 /**
  * 筛选静态文章列表，以 URL 保存可分享及浏览器返回后恢复的条件。
  */
-export function initializeArticleSearch(): void {
+(() => {
     const search = document.querySelector<HTMLInputElement>("#search");
     const filters = document.querySelector<HTMLFormElement>(".article-filters");
     if (!search || !filters) return;
@@ -147,4 +147,5 @@ export function initializeArticleSearch(): void {
     restoreFilters();
     synchronizeDomainPanel();
     filters.closest<HTMLElement>(".collection-toolbar")?.removeAttribute("data-pending");
-}
+    document.documentElement.removeAttribute("data-search-pending");
+})();
