@@ -94,6 +94,7 @@ export function renderPage({ path, title, description, body, assets, active, art
   <noscript><style>[data-pending]{display:none!important}</style></noscript>
   <title>${escapeHtml(fullTitle)}</title>
   <meta name="description" content="${escapeHtml(description)}">
+  <meta name="baidu-site-verification" content="codeva-M6c5BvrTod">
   <meta name="author" content="${escapeHtml(site.author)}">
   ${path === "/404.html" ? '<meta name="robots" content="noindex">' : ""}
   <link rel="canonical" href="${escapeHtml(canonical)}">
