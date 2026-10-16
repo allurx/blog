@@ -1,5 +1,6 @@
 {
     "$schema": "https://docs.renovatebot.com/renovate-schema.json",
     "extends": ["github>allurx/allurx-build#v1.0.0"],
-    "baseBranchPatterns": ["main"]
+    "baseBranchPatterns": ["main"],
+    "ignorePaths": ["articles/**"]
 }
