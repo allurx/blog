@@ -1,4 +1,4 @@
 {
-    "extends": "@allurx/web-foundation/tsconfig/node",
+    "extends": "@allurx/js-config/tsconfig/node",
     "include": ["scripts/**/*.ts", "*.ts"]
 }

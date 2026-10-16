@@ -7,7 +7,7 @@
 1. 创建 GitHub `production` Environment，仅允许 `main` 部署。
 2. 在该环境的 Variables 中设置 `CLOUDFLARE_ACCOUNT_ID`，并在 Secrets 中保存 `CLOUDFLARE_API_TOKEN`。使用本项目独立的 token，按目标账户和 `allurx.io` 区域限定 Worker 部署及自定义域名所需的权限。Custom Domains 当前不支持按单个 Worker 限定角色，不能用仅限单 Worker 的权限替代域名管理所需授权；具体范围见 [Workers 权限说明](https://developers.cloudflare.com/workers/authorization/workers/)。
 3. 确认账户中已存在配置所指向的 Worker，域名所属区域已托管在该账户中。域名、`workers.dev` 和预览 URL 的设置以 Wrangler 配置为准，避免在控制台另行维护冲突值。
-4. 从 Workers Builds 切换时，先准备好上述凭据及 [CI 工作流](../.github/workflows/ci.yml)，完成首次 Actions 部署及公开页面核验，再停用原 Worker 的 Workers Builds Git 触发器。确认后续推送只由 Actions 自动部署，不保留两套常驻发布入口。
+4. 禁用 Workers Builds 的 Git 触发器，由 [CI 工作流](../.github/workflows/ci.yml)作为唯一自动部署入口。
 
 配置方法见 [GitHub Actions 部署](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)、[Wrangler 配置来源](https://developers.cloudflare.com/workers/wrangler/configuration/#source-of-truth)和[自定义域名](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
 
@@ -15,7 +15,7 @@
 
 按[开发指南](development.md#验证与预览)完成验证后，将已核验的改动提交并推送到 `main`。正文与必需附件在同一次提交中保存。定时与手动写作任务还须遵循[任务定义](../automation/daily-blog.md)的提交标记和恢复规则；其他文章正常发布，不受当天文章数量限制。
 
-[`CI` 工作流](../.github/workflows/ci.yml) 调用 [Web Foundation 静态站点工作流](https://github.com/allurx/web-foundation/blob/main/docs/deployment.md)，对 PR、`main` 推送和手动派发执行 `npm run verify` 与部署配置 dry-run，仅 `main` 的推送或 `workflow_dispatch` 进入 `production` 部署。机器人合并符合策略的依赖 PR 后，会显式派发 CI，重新验证并部署实际的主分支提交。调用参数保留博客的 `dist/` 产物目录和公开地址，Worker 与域名仍由本工程的 Wrangler 配置维护。共享工作流跟随 Web Foundation 的 `main`，基础包继续固定不可变发布标签和锁文件。工作流调用使用 `secrets: inherit`，部署 job 仍绑定 `production` 环境。Node.js 版本由 [.node-version](../.node-version) 统一指定。
+[`CI` 工作流](../.github/workflows/ci.yml) 调用 [allurx-build 静态站点工作流](https://github.com/allurx/allurx-build/blob/main/docs/cloudflare-static-site.md)，对 PR、`main` 推送和手动派发执行 `npm run verify` 与部署配置 dry-run，仅 `main` 的推送或 `workflow_dispatch` 进入 `production` 部署。Renovate 合并符合策略的依赖 PR 后，由正常的 push CI 重新验证并部署实际的主分支提交。调用参数保留博客的 `dist/` 产物目录和公开地址，Worker 与域名仍由本工程的 Wrangler 配置维护。共享工作流固定 allurx-build 的完整 commit SHA，配置包通过 npm 精确版本和锁文件固定；两者独立更新。工作流调用使用 `secrets: inherit`，部署 job 仍绑定 `production` 环境。Node.js 版本由 [.node-version](../.node-version) 统一指定。
 
 在 GitHub Actions 中找到本次 commit 对应的 `CI` 运行，确认 `site / verify` 通过且 `site / deploy` 实际执行成功；再到 Cloudflare Worker 的 Deployments 核对版本，版本 tag 为 commit SHA，message 链接本次 Actions 运行。最后访问本次受影响的公开页面，检查标题、日期、关键正文和附件，确认展示的是这次改动。
 

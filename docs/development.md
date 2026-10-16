@@ -4,11 +4,11 @@
 
 ## 工具与检查基线
 
-使用 [.node-version](../.node-version) 指定的 Node.js 完整版本及 `npm ci` 安装锁定依赖。[Web Foundation](https://github.com/allurx/web-foundation) 统一维护工具版本和 Prettier、ESLint、TypeScript、Vite 配置；[package.json](../package.json) 固定基础包发布标签，博客只声明额外的内容处理依赖。文件检查范围由 [ESLint 配置](../eslint.config.ts) 和 [TypeScript 配置](../tsconfig.json) 维护，文章构建与站点专有设置仍留在本工程。
+使用 [.node-version](../.node-version) 指定的 Node.js 完整版本及 `npm ci` 安装锁定依赖。[JS Config](https://github.com/allurx/allurx-build/tree/main/js-config) 提供 Prettier、ESLint、TypeScript、Vite 配置；[package.json](../package.json) 直接声明配置包、开发工具和内容处理依赖的精确版本。文件检查范围由 [ESLint 配置](../eslint.config.ts) 和 [TypeScript 配置](../tsconfig.json) 维护，文章构建与站点专有设置仍留在本工程。
 
 `npm run format` 修改工程文件格式；文章及附件、依赖、构建输出和本地工作目录由 [.prettierignore](../.prettierignore) 排除。工程文本统一使用 LF，`articles/` 保留原始字节。迭代时可分别运行 `format:check`、`lint`、`type-check`，`npm run check` 按该顺序完成只读静态检查。
 
-浏览器代码和 Node.js 构建脚本分别继承共享类型与 lint 配置，检查运行环境 API 的误用。共享规则与接入方法见 [Web Foundation 配置说明](https://github.com/allurx/web-foundation/blob/main/docs/configuration.md)。[Dependabot](../.github/dependabot.yml) 每周检查基础包、业务依赖和第三方 Actions；符合[共享策略](https://github.com/allurx/web-foundation/blob/main/docs/dependencies.md)的更新通过站点验证后自动合并，并重新验证、部署 `main`。基础包保持固定发布标签和锁文件，共享工作流跟随 `main`，两者分别更新。工具版本与兼容性约束由[基础库统一维护](https://github.com/allurx/web-foundation/blob/main/docs/dependencies.md)，不在博客重复声明。
+浏览器代码和 Node.js 构建脚本分别继承共享类型与 lint 配置，检查运行环境 API 的误用。共享规则与接入方法见 [JS Config 配置说明](https://github.com/allurx/allurx-build/blob/main/js-config/README.md)。[Renovate 配置](../.github/renovate.json)继承 allurx-build 的版本化策略，向 `main` 提交配置包、项目依赖和 Actions 的更新 PR；安装启用、自动合并条件及失败处理见[共享依赖更新指南](https://github.com/allurx/allurx-build/blob/main/docs/dependency-updates.md)。配置包使用 npm 精确版本和锁文件，共享工作流使用完整 commit SHA，升级时分别核对兼容性并验证。
 
 支持桌面与移动端主流常青浏览器的当前及前一个稳定大版本。JavaScript 构建使用共享配置的 `baseline-widely-available`，对应范围由锁定的 Vite 版本确定；这不等同于 Web API 支持保证，剪贴板、弹出层等增强仍须检测实际能力。验证保留无 JavaScript 阅读、打印及下文列出的完整操作链。
 

@@ -4,7 +4,7 @@
  */
 
 import { defineConfig, globalIgnores } from "eslint/config";
-import base, { browser, node, typeChecked } from "@allurx/web-foundation/eslint";
+import base, { browser, node, typeChecked } from "@allurx/js-config/eslint";
 
 export default defineConfig(
     // 正文与附件保留原始字节，生成物和本地资料不进入源码检查。

@@ -5,12 +5,12 @@
 
 import { fileURLToPath } from "node:url";
 import { mergeConfig } from "vite";
-import foundation from "@allurx/web-foundation/vite";
+import baseConfig from "@allurx/js-config/vite";
 import { articlePages } from "./scripts/dev-plugin.ts";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 
-export default mergeConfig(foundation, {
+export default mergeConfig(baseConfig, {
     root,
     // 样式独立于渐进增强脚本，使开发与生产页面都能在首次绘制前加载 CSS。
     input: ["src/main.ts", "src/styles.css"],

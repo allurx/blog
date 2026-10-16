@@ -24,18 +24,10 @@ concurrency:
 jobs:
     site:
         # 配置分支保护时，检查名称为 site / verify。
-        uses: allurx/web-foundation/.github/workflows/static-site.yml@main
+        uses: allurx/allurx-build/.github/workflows/cloudflare-static-site.yml@71684ece317c5344be9f5dae18f2512c88bc56b1 # v1.0.0
         secrets: inherit
         with:
             # npm run verify 的输出目录，其中的文件会公开发布。
             asset-directory: dist/
             # GitHub 部署记录中的站点链接；填写这里不会自动配置域名。
             production-url: https://blog.allurx.io
-
-    dependabot-merge:
-        needs: site
-        permissions:
-            contents: write
-            pull-requests: write
-            actions: write
-        uses: allurx/web-foundation/.github/workflows/dependabot-site.yml@main
