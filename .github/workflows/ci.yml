@@ -3,12 +3,14 @@
 
 name: CI
 
-# PR 只检查；推送 main 会在检查通过后部署站点。
+# PR 只检查；main 的 push 或 workflow_dispatch 在检查通过后部署站点。
 on:
     pull_request:
     push:
         branches:
             - main
+
+    workflow_dispatch:
 
 permissions:
     contents: read
@@ -22,10 +24,18 @@ concurrency:
 jobs:
     site:
         # 配置分支保护时，检查名称为 site / verify。
-        uses: allurx/web-foundation/.github/workflows/static-site.yml@v1.0.2
+        uses: allurx/web-foundation/.github/workflows/static-site.yml@main
         secrets: inherit
         with:
             # npm run verify 的输出目录，其中的文件会公开发布。
             asset-directory: dist/
             # GitHub 部署记录中的站点链接；填写这里不会自动配置域名。
             production-url: https://blog.allurx.io
+
+    dependabot-merge:
+        needs: site
+        permissions:
+            contents: write
+            pull-requests: write
+            actions: write
+        uses: allurx/web-foundation/.github/workflows/dependabot-site.yml@main
