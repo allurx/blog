@@ -114,5 +114,13 @@ export function renderSite(articles: Article[], assets: PageAssets): Map<string,
   ${articleUrls}
 </urlset>`
     );
+    documents.set(
+        "robots.txt",
+        `User-agent: *
+Allow: /
+
+Sitemap: ${absoluteUrl("/sitemap.xml")}
+`
+    );
     return documents;
 }

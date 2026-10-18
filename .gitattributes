@@ -1,3 +1,6 @@
+# Copyright 2026 allurx
+# SPDX-License-Identifier: Apache-2.0
+
 # 工程文本统一使用 LF；文章及附件保留原始字节。
 * text=auto eol=lf
 articles/** -text

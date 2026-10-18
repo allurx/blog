@@ -6,7 +6,7 @@
 
 使用 [.node-version](../.node-version) 指定的 Node.js 完整版本及 `npm ci` 安装锁定依赖。[JS Config](https://github.com/allurx/allurx-build/tree/main/js-config) 提供 Prettier、ESLint、TypeScript、Vite 配置；[package.json](../package.json) 直接声明配置包、开发工具和内容处理依赖的精确版本。文件检查范围由 [ESLint 配置](../eslint.config.ts) 和 [TypeScript 配置](../tsconfig.json) 维护，文章构建与站点专有设置仍留在本工程。
 
-`npm run format` 修改工程文件格式；文章及附件、依赖、构建输出和本地工作目录由 [.prettierignore](../.prettierignore) 排除。工程文本统一使用 LF，`articles/` 保留原始字节。迭代时可分别运行 `format:check`、`lint`、`type-check`，`npm run check` 按该顺序完成只读静态检查。
+`npm run format` 修改工程文件格式；文章及附件、依赖、构建输出和本地工作目录由 [.prettierignore](../.prettierignore) 排除。工程文本统一使用 LF，`articles/` 保留原始字节。迭代时可分别运行 `format:check`、`lint`、`type-check`，`npm run check` 按该顺序完成静态检查。
 
 浏览器代码和 Node.js 构建脚本分别继承共享类型与 lint 配置，检查运行环境 API 的误用。共享规则与接入方法见 [JS Config 配置说明](https://github.com/allurx/allurx-build/blob/main/js-config/README.md)。[Renovate 配置](../.github/renovate.json)继承 allurx-build 的版本化策略，向 `main` 提交配置包、项目依赖和 Actions 的更新 PR；安装启用、自动合并条件及失败处理见[共享依赖更新指南](https://github.com/allurx/allurx-build/blob/main/docs/dependency-updates.md)。配置包使用 npm 精确版本和锁文件，共享工作流使用完整 commit SHA，升级时分别核对兼容性并验证。
 
@@ -65,7 +65,7 @@ npm run verify
 npm run preview
 ```
 
-`verify` 执行一次格式、lint、类型检查和生产构建，并校验文章目录、元数据、本地链接、锚点及资源路径。GitHub Actions 使用相同命令和 [.node-version](../.node-version) 指定的 Node.js；部署阶段直接使用本次验证产物。完整命令以 [package.json](../package.json) 为准。
+`check` 执行格式、lint 和类型检查，`build` 生成静态站点并校验文章目录、元数据、本地链接、锚点及资源路径；`verify` 依次执行两者，完成本地与 CI 的完整门禁。GitHub Actions 使用相同命令和 [.node-version](../.node-version) 指定的 Node.js；部署阶段直接使用本次验证产物。完整命令以 [package.json](../package.json) 为准。
 
 `preview` 使用 Workers 本地环境，在 `http://127.0.0.1:4173` 提供 `dist/` 中的页面。并行预览其他工程时，可用 `npm run preview -- --port 4175` 覆盖端口。按本次修改检查页面内容、静态路由、响应头以及资源是否正常加载。
 

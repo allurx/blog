@@ -10,6 +10,7 @@ export default defineConfig(
     // 正文与附件保留原始字节，生成物和本地资料不进入源码检查。
     globalIgnores(["articles/", "dist/", "node_modules/", ".vite/", ".wrangler/", ".certs/", "work/"]),
     base,
+
     {
         files: ["**/*.ts"],
         extends: [typeChecked],
@@ -17,6 +18,7 @@ export default defineConfig(
             parserOptions: { tsconfigRootDir: import.meta.dirname },
         },
     },
+
     { files: ["src/**/*.ts"], extends: [browser] },
     { files: ["scripts/**/*.ts", "*.ts"], extends: [node] }
 );

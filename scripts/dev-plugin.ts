@@ -124,7 +124,9 @@ export function articlePages(root: string): Plugin {
                         response.statusCode = found === undefined || path === "404.html" ? 404 : 200;
                         response.setHeader(
                             "Content-Type",
-                            html ? "text/html; charset=utf-8" : "application/xml; charset=utf-8"
+                            html
+                                ? "text/html; charset=utf-8"
+                                : (contentTypes[extname(path)] ?? "application/xml; charset=utf-8")
                         );
                         const body = html ? await server.transformIndexHtml(url.pathname, document) : document;
                         response.end(request.method === "HEAD" ? undefined : body);

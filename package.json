@@ -13,15 +13,15 @@
         "format": "prettier . --write",
         "format:check": "prettier . --check",
         "lint": "eslint . --max-warnings 0",
-        "type-check": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+        "type-check": "tsc -b --noEmit",
         "check": "npm run format:check && npm run lint && npm run type-check",
-        "verify": "npm run build",
-        "build": "npm run check && node scripts/build.ts",
+        "build": "node scripts/build.ts",
+        "verify": "npm run check && npm run build",
         "preview": "wrangler dev",
         "deploy": "wrangler deploy"
     },
     "devDependencies": {
-        "@allurx/js-config": "1.0.1",
+        "@allurx/js-config": "1.1.0",
         "@types/node": "24.19.2",
         "eslint": "10.12.0",
         "highlight.js": "11.12.0",
@@ -31,7 +31,7 @@
         "prettier": "3.9.10",
         "typescript": "6.0.3",
         "vite": "8.3.4",
-        "wrangler": "4.149.0",
+        "wrangler": "4.151.1",
         "yaml": "2.9.1"
     },
     "prettier": "@allurx/js-config/prettier"

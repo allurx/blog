@@ -1,4 +1,7 @@
 {
     "extends": "@allurx/js-config/tsconfig/node",
+    "compilerOptions": {
+        "tsBuildInfoFile": "./node_modules/.cache/typescript/tsconfig.node.tsbuildinfo"
+    },
     "include": ["scripts/**/*.ts", "*.ts"]
 }
