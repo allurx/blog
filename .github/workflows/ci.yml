@@ -24,7 +24,7 @@ concurrency:
 jobs:
     site:
         # 配置分支保护时，检查名称为 site / verify。
-        uses: allurx/allurx-build/.github/workflows/cloudflare-static-site.yml@79ef08b3ae6b3b124bb9208199df562fd8107353 # workflows-v2.0.0
+        uses: allurx/allurx-build/.github/workflows/cloudflare-static-site.yml@f3cd85d5d435fb3093ad3c027f6788923aa802e7 # workflows-v2.0.0
         secrets: inherit
         with:
             # npm run verify 的输出目录，其中的文件会公开发布。
